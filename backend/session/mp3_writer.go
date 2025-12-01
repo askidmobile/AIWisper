@@ -25,11 +25,14 @@ func GetFFmpegPath() string {
 // Ищет в следующих местах (в порядке приоритета):
 // 1. Resources директория .app bundle (для packaged приложения)
 // 2. Рядом с исполняемым файлом
-// 3. Системный PATH
+// 3. В текущей рабочей директории
+// 4. Системный PATH
 func getFFmpegPath() string {
 	if ffmpegPath != "" {
 		return ffmpegPath
 	}
+
+	var searchPaths []string
 
 	// Получаем путь к текущему исполняемому файлу
 	execPath, err := os.Executable()
@@ -37,23 +40,30 @@ func getFFmpegPath() string {
 		execDir := filepath.Dir(execPath)
 
 		// Вариант 1: внутри .app bundle (MacOS/../Resources/ffmpeg)
-		appResourcesPath := filepath.Join(execDir, "..", "Resources", "ffmpeg")
-		if fileExists(appResourcesPath) {
-			ffmpegPath = appResourcesPath
-			log.Printf("Using bundled FFmpeg: %s", ffmpegPath)
-			return ffmpegPath
-		}
+		searchPaths = append(searchPaths, filepath.Join(execDir, "..", "Resources", "ffmpeg"))
 
 		// Вариант 2: рядом с исполняемым файлом
-		localPath := filepath.Join(execDir, "ffmpeg")
-		if fileExists(localPath) {
-			ffmpegPath = localPath
-			log.Printf("Using local FFmpeg: %s", ffmpegPath)
+		searchPaths = append(searchPaths, filepath.Join(execDir, "ffmpeg"))
+	}
+
+	// Вариант 3: в текущей рабочей директории
+	if cwd, err := os.Getwd(); err == nil {
+		searchPaths = append(searchPaths, filepath.Join(cwd, "ffmpeg"))
+		searchPaths = append(searchPaths, filepath.Join(cwd, "vendor", "ffmpeg"))
+		searchPaths = append(searchPaths, filepath.Join(cwd, "build", "resources", "ffmpeg"))
+		searchPaths = append(searchPaths, filepath.Join(cwd, "..", "build", "resources", "ffmpeg"))
+	}
+
+	// Проверяем все пути
+	for _, path := range searchPaths {
+		if fileExists(path) {
+			ffmpegPath = path
+			log.Printf("Using FFmpeg: %s", ffmpegPath)
 			return ffmpegPath
 		}
 	}
 
-	// Вариант 3: системный PATH
+	// Вариант 4: системный PATH
 	systemPath, err := exec.LookPath("ffmpeg")
 	if err == nil {
 		ffmpegPath = systemPath
@@ -63,7 +73,8 @@ func getFFmpegPath() string {
 
 	// Fallback: просто "ffmpeg" - может сработает
 	ffmpegPath = "ffmpeg"
-	log.Printf("FFmpeg not found, using default: %s", ffmpegPath)
+	log.Printf("FFmpeg not found in any location, using default: %s", ffmpegPath)
+	log.Printf("Searched paths: %v", searchPaths)
 	return ffmpegPath
 }
 
@@ -222,8 +233,16 @@ func ExtractSegment(mp3Path string, startMs, endMs int64, targetSampleRate int) 
 		return nil, fmt.Errorf("invalid duration: start=%v end=%v", startMs, endMs)
 	}
 
+	// Проверяем существование MP3 файла
+	if !fileExists(mp3Path) {
+		return nil, fmt.Errorf("mp3 file not found: %s", mp3Path)
+	}
+
+	ffmpegBin := getFFmpegPath()
+	log.Printf("ExtractSegment: ffmpeg=%s, mp3=%s, start=%.1fs, duration=%.1fs", ffmpegBin, mp3Path, startSec, duration)
+
 	// FFmpeg: извлекаем фрагмент и конвертируем в raw PCM
-	cmd := exec.Command(getFFmpegPath(),
+	cmd := exec.Command(ffmpegBin,
 		"-ss", fmt.Sprintf("%.3f", startSec), // seek to start
 		"-i", mp3Path,
 		"-t", fmt.Sprintf("%.3f", duration), // duration
@@ -236,7 +255,11 @@ func ExtractSegment(mp3Path string, startMs, endMs int64, targetSampleRate int) 
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("ffmpeg extract failed: %w", err)
+		// Получаем stderr для диагностики
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("ffmpeg extract failed (exit %d): %s", exitErr.ExitCode(), string(exitErr.Stderr))
+		}
+		return nil, fmt.Errorf("ffmpeg extract failed: %w (ffmpeg path: %s)", err, ffmpegBin)
 	}
 
 	// Конвертируем bytes в float32

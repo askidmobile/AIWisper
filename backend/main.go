@@ -762,12 +762,42 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 
 			// Применяем модель и язык из запроса (если указаны)
 			if msg.Model != "" {
-				if err := engine.SetModel(msg.Model); err != nil {
-					log.Printf("Failed to set model %s: %v", msg.Model, err)
-					conn.WriteJSON(Message{Type: "error", Data: fmt.Sprintf("Failed to load model: %v", err)})
-					continue
+				// Пробуем загрузить модель, если путь не существует - используем текущую
+				modelPath := msg.Model
+				if _, err := os.Stat(modelPath); os.IsNotExist(err) {
+					// Пробуем найти модель в текущей директории по имени файла
+					modelName := filepath.Base(modelPath)
+					alternativePaths := []string{
+						modelName,
+						filepath.Join("backend", modelName),
+						filepath.Join("..", "backend", modelName),
+					}
+
+					found := false
+					for _, altPath := range alternativePaths {
+						if _, err := os.Stat(altPath); err == nil {
+							modelPath = altPath
+							found = true
+							log.Printf("Model found at alternative path: %s", altPath)
+							break
+						}
+					}
+
+					if !found {
+						log.Printf("Model %s not found, using current model", msg.Model)
+						// Не меняем модель, используем текущую
+						modelPath = ""
+					}
 				}
-				log.Printf("Model switched to: %s", msg.Model)
+
+				if modelPath != "" {
+					if err := engine.SetModel(modelPath); err != nil {
+						log.Printf("Failed to set model %s: %v", modelPath, err)
+						conn.WriteJSON(Message{Type: "error", Data: fmt.Sprintf("Failed to load model: %v", err)})
+						continue
+					}
+					log.Printf("Model switched to: %s", modelPath)
+				}
 			}
 			if msg.Language != "" {
 				engine.SetLanguage(msg.Language)

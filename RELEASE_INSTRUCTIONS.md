@@ -1,3 +1,11 @@
+# ✅ Релиз AIWisper v1.0.1 готов!
+
+## Исправлена проблема с electron-updater
+
+Проблема была решена: `electron-updater` перемещен из `devDependencies` в `dependencies` в `package.json`.
+
+---
+
 # Инструкция по созданию релиза AIWisper v1.0.1
 
 ## Файлы для релиза

@@ -203,26 +203,26 @@ autoUpdater.on('checking-for-update', () => {
     log('Checking for updates...');
 });
 
-autoUpdater.on('update-available', (info) => {
+autoUpdater.on('update-available', (info: any) => {
     log(`Update available: ${info.version}`);
 });
 
-autoUpdater.on('update-not-available', (info) => {
+autoUpdater.on('update-not-available', (info: any) => {
     log(`No updates available. Current version: ${info.version}`);
 });
 
-autoUpdater.on('error', (err) => {
+autoUpdater.on('error', (err: Error) => {
     logError(`Auto-updater error: ${err.message}`);
 });
 
-autoUpdater.on('download-progress', (progressObj) => {
+autoUpdater.on('download-progress', (progressObj: any) => {
     let msg = `Download speed: ${progressObj.bytesPerSecond}`;
     msg = `${msg} - Downloaded ${progressObj.percent}%`;
     msg = `${msg} (${progressObj.transferred}/${progressObj.total})`;
     log(msg);
 });
 
-autoUpdater.on('update-downloaded', (info) => {
+autoUpdater.on('update-downloaded', (info: any) => {
     log(`Update downloaded: ${info.version}`);
     
     // Показываем уведомление пользователю
