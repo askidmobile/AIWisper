@@ -1,0 +1,93 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# Node.js / Frontend
+node_modules/
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+frontend/dist/
+frontend/dist-electron/
+frontend/release/
+frontend/coverage/
+
+# Go
+# Binaries
+*.exe
+*.test
+*.prof
+go.work
+go.work.sum
+
+# C/C++ Build Artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.obj
+*.out
+*.app
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+!backend/whisper.cpp/Makefile
+
+# Project Specific Binaries
+backend_bin
+backend/backend_bin
+backend/aiwisper
+backend/testrecord
+backend/cmd/testmic/testmic
+backend/cmd/testrecord/testrecord
+
+# Test files
+backend/test.aiff
+backend/testrecord/
+
+# Models (Large files)
+backend/faster-whisper-small-ct2/
+backend/whisper.cpp/models/*.bin
+backend/whisper.cpp/models/*.wav
+backend/*.bin
+backend/*.wav
+
+# Data & Sessions
+data/
+backend/data/
+
+# Build Artifacts
+build/
+.build/
+*.metallib
+
+# Vendor binaries
+vendor/ffmpeg/ffmpeg
+
+# Whisper.cpp build artifacts
+backend/whisper.cpp/build/
+backend/whisper.cpp/main
+backend/whisper.cpp/server
+backend/whisper.cpp/stream
+backend/whisper.cpp/quantize
+backend/whisper.cpp/bench
+backend/whisper.cpp/command
+backend/whisper.cpp/talk
+backend/whisper.cpp/talk-llama

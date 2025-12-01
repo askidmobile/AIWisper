@@ -1,0 +1,120 @@
+{
+  "name": "aiwisper",
+  "version": "1.0.1",
+  "description": "AIWisper - Speech to Text Application",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build && tsc -p electron/tsconfig.json",
+    "preview": "vite preview",
+    "electron:dev": "concurrently \"vite\" \"wait-on tcp:5173 && tsc -p electron/tsconfig.json && electron .\"",
+    "electron:build": "vite build && tsc -p electron/tsconfig.json && electron-builder --mac",
+    "electron:build:dmg": "vite build && tsc -p electron/tsconfig.json && electron-builder --mac dmg",
+    "electron:build:dir": "vite build && tsc -p electron/tsconfig.json && electron-builder --mac dir"
+  },
+  "keywords": [],
+  "author": "AIWisper Team",
+  "license": "MIT",
+  "type": "commonjs",
+  "build": {
+    "appId": "com.aiwisper.app",
+    "productName": "AIWisper",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "release",
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/resources/",
+        "to": ".",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "sst",
+        "repo": "AIWisper"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build-resources/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build-resources/entitlements.mac.plist",
+      "entitlementsInherit": "build-resources/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "AIWisper needs access to your microphone to transcribe speech to text.",
+        "NSAppleEventsUsageDescription": "AIWisper needs access to control the system for audio capture.",
+        "NSScreenCaptureUsageDescription": "AIWisper needs screen capture permission to record system audio for transcription."
+      },
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build-resources/icon.ico"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "build-resources/icon.png",
+      "category": "AudioVideo"
+    }
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@types/semver": "^7.7.1",
+    "@vitejs/plugin-react": "^5.1.1",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^39.2.4",
+    "electron-builder": "^26.0.12",
+    "electron-updater": "^6.6.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4",
+    "wait-on": "^9.0.3"
+  }
+}
