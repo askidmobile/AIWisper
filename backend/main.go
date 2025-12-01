@@ -4,6 +4,7 @@ import (
 	"aiwisper/ai"
 	"aiwisper/audio"
 	"aiwisper/session"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -138,6 +139,12 @@ func handleSessionsAPI(w http.ResponseWriter, r *http.Request, mgr *session.Mana
 	// File server для аудио файлов (MP3 и WAV для совместимости)
 	path := r.URL.Path[len("/api/sessions/"):]
 
+	// Если path пустой - это запрос списка сессий
+	if path == "" {
+		handleSessionsList(w, r, mgr)
+		return
+	}
+
 	// Парсим путь: {sessionId}/full.mp3 или {sessionId}/chunk/{chunkIndex}.mp3
 	if len(path) < 36 {
 		http.NotFound(w, r)
@@ -237,6 +244,30 @@ func handleSessionsAPI(w http.ResponseWriter, r *http.Request, mgr *session.Mana
 
 	w.Header().Set("Content-Type", contentType)
 	http.ServeFile(w, r, filePath)
+}
+
+// handleSessionsList возвращает список всех сессий в JSON формате
+func handleSessionsList(w http.ResponseWriter, r *http.Request, mgr *session.Manager) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sessions := mgr.ListSessions()
+	infos := make([]*SessionInfo, len(sessions))
+	for i, s := range sessions {
+		infos[i] = &SessionInfo{
+			ID:            s.ID,
+			StartTime:     s.StartTime,
+			Status:        string(s.Status),
+			TotalDuration: int64(s.TotalDuration / time.Millisecond),
+			ChunksCount:   len(s.Chunks),
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	json.NewEncoder(w).Encode(infos)
 }
 
 func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.Engine, sessionMgr *session.Manager) {
@@ -813,26 +844,72 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 			})
 
 			// Перетранскрибируем
-			go func(chunk *session.Chunk, sessID string, dataDir string) {
-				log.Printf("Retranscribing chunk %d with current model settings", chunk.Index)
+			go func(chunk *session.Chunk, sessID string, dataDir string, isStereo bool) {
+				log.Printf("Retranscribing chunk %d with current model settings, stereo=%v", chunk.Index, isStereo)
 
-				// Извлекаем аудио из MP3
 				mp3Path := filepath.Join(dataDir, "full.mp3")
-				samples, err := session.ExtractSegment(mp3Path, chunk.StartMs, chunk.EndMs, session.WhisperSampleRate)
-				if err != nil {
-					log.Printf("Failed to extract segment for retranscription: %v", err)
-					sessionMgr.UpdateChunkTranscription(sessID, chunk.ID, "", err)
-					return
-				}
 
-				text, err := engine.Transcribe(samples, false)
-				if err != nil {
-					log.Printf("Retranscription failed: %v", err)
+				if isStereo {
+					// Стерео: извлекаем раздельные каналы и транскрибируем отдельно
+					micSamples, sysSamples, err := session.ExtractSegmentStereo(mp3Path, chunk.StartMs, chunk.EndMs, session.WhisperSampleRate)
+					if err != nil {
+						log.Printf("Failed to extract stereo segment for retranscription: %v", err)
+						sessionMgr.UpdateChunkTranscription(sessID, chunk.ID, "", err)
+						return
+					}
+
+					// Транскрибируем оба канала параллельно
+					var micSegments, sysSegments []ai.TranscriptSegment
+					var wg sync.WaitGroup
+					var micErr, sysErr error
+
+					wg.Add(2)
+					go func() {
+						defer wg.Done()
+						micSegments, micErr = engine.TranscribeWithSegments(micSamples)
+					}()
+					go func() {
+						defer wg.Done()
+						sysSegments, sysErr = engine.TranscribeWithSegments(sysSamples)
+					}()
+					wg.Wait()
+
+					if micErr != nil && sysErr != nil {
+						log.Printf("Retranscription failed for both channels: mic=%v, sys=%v", micErr, sysErr)
+						sessionMgr.UpdateChunkTranscription(sessID, chunk.ID, "", micErr)
+						return
+					}
+
+					// Собираем текст из сегментов
+					var micText, sysText string
+					for _, seg := range micSegments {
+						micText += seg.Text + " "
+					}
+					for _, seg := range sysSegments {
+						sysText += seg.Text + " "
+					}
+
+					log.Printf("Retranscription complete: mic=%d chars, sys=%d chars", len(micText), len(sysText))
+					sessionMgr.UpdateChunkStereoWithSegments(sessID, chunk.ID, micText, sysText,
+						convertSegments(micSegments, "mic"), convertSegments(sysSegments, "sys"), nil)
 				} else {
-					log.Printf("Retranscription complete: %d chars", len(text))
+					// Моно: простая транскрипция
+					samples, err := session.ExtractSegment(mp3Path, chunk.StartMs, chunk.EndMs, session.WhisperSampleRate)
+					if err != nil {
+						log.Printf("Failed to extract segment for retranscription: %v", err)
+						sessionMgr.UpdateChunkTranscription(sessID, chunk.ID, "", err)
+						return
+					}
+
+					text, err := engine.Transcribe(samples, false)
+					if err != nil {
+						log.Printf("Retranscription failed: %v", err)
+					} else {
+						log.Printf("Retranscription complete: %d chars", len(text))
+					}
+					sessionMgr.UpdateChunkTranscription(sessID, chunk.ID, text, err)
 				}
-				sessionMgr.UpdateChunkTranscription(sessID, chunk.ID, text, err)
-			}(targetChunk, sess.ID, sess.DataDir)
+			}(targetChunk, sess.ID, sess.DataDir, targetChunk.IsStereo)
 		}
 	}
 

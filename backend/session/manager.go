@@ -400,6 +400,9 @@ func (m *Manager) LoadSessions() error {
 			continue
 		}
 
+		// Устанавливаем DataDir (не сохраняется в JSON)
+		session.DataDir = filepath.Join(m.dataDir, entry.Name())
+
 		// Загружаем чанки
 		chunksDir := filepath.Join(m.dataDir, entry.Name(), "chunks")
 		chunkFiles, _ := filepath.Glob(filepath.Join(chunksDir, "*.json"))

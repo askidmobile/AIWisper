@@ -72,6 +72,43 @@ const formatDate = (dateStr: string): string => {
     });
 };
 
+// Electron IPC для открытия папки с записями
+const openDataFolder = async () => {
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { ipcRenderer } = require('electron');
+        const result = await ipcRenderer.invoke('open-data-folder');
+        if (!result.success) {
+            console.error('Failed to open data folder:', result.error);
+        }
+    } catch (err) {
+        console.error('Failed to open data folder:', err);
+    }
+};
+
+// Звуковой сигнал "пип" при начале записи (Web Audio API)
+const playBeep = (frequency: number = 800, duration: number = 150, volume: number = 0.3) => {
+    try {
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        
+        oscillator.frequency.value = frequency;
+        oscillator.type = 'sine';
+        
+        gainNode.gain.setValueAtTime(volume, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + duration / 1000);
+        
+        oscillator.start(audioContext.currentTime);
+        oscillator.stop(audioContext.currentTime + duration / 1000);
+    } catch (err) {
+        console.error('Failed to play beep:', err);
+    }
+};
+
 function App() {
     const [logs, setLogs] = useState<string[]>([]);
     const [status, setStatus] = useState('Disconnected');
@@ -109,6 +146,12 @@ function App() {
     // Share menu
     const [showShareMenu, setShowShareMenu] = useState(false);
     const [copySuccess, setCopySuccess] = useState(false);
+
+    // Highlight chunk after retranscription
+    const [highlightedChunkId, setHighlightedChunkId] = useState<string | null>(null);
+    
+    // Track if new chunk was added (for auto-scroll during recording only)
+    const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
 
     const transcriptionRef = useRef<HTMLDivElement | null>(null);
 
@@ -172,6 +215,7 @@ function App() {
                         case 'session_started':
                             setCurrentSession(msg.session);
                             setIsRecording(true);
+                            playBeep(800, 150, 0.3); // Звуковой сигнал начала записи
                             addLog(`Session started: ${msg.session.id.substring(0, 8)}...`);
                             break;
 
@@ -189,6 +233,8 @@ function App() {
                                 if (!prev || prev.id !== msg.sessionId) return prev;
                                 return { ...prev, chunks: [...prev.chunks, msg.chunk] };
                             });
+                            // Автоскролл только при создании нового чанка во время записи
+                            setShouldAutoScroll(true);
                             break;
 
                         case 'chunk_transcribed':
@@ -202,12 +248,16 @@ function App() {
                                 return { ...prev, chunks };
                             });
                             
-                            // Обновляем выбранную сессию
+                            // Обновляем выбранную сессию и подсвечиваем чанк
                             setSelectedSession(prev => {
                                 if (!prev || prev.id !== msg.sessionId) return prev;
                                 const chunks = prev.chunks.map(c => c.id === msg.chunk.id ? msg.chunk : c);
                                 return { ...prev, chunks };
                             });
+                            
+                            // Подсвечиваем перетранскрибированный чанк (мигание)
+                            setHighlightedChunkId(msg.chunk.id);
+                            setTimeout(() => setHighlightedChunkId(null), 2000);
                             break;
 
                         case 'session_details':
@@ -439,14 +489,16 @@ function App() {
         addLog(`Файл ${filename} скачан`);
     }, [selectedSession, generateFullText, addLog]);
 
+    // Автоскролл только при создании новых чанков во время записи
     useEffect(() => {
-        if (transcriptionRef.current) {
+        if (shouldAutoScroll && transcriptionRef.current) {
             transcriptionRef.current.scrollTo({
                 top: transcriptionRef.current.scrollHeight,
                 behavior: 'smooth'
             });
+            setShouldAutoScroll(false);
         }
-    }, [currentSession?.chunks, selectedSession?.chunks]);
+    }, [shouldAutoScroll]);
 
     // Закрытие share меню при клике вне его
     useEffect(() => {
@@ -514,8 +566,23 @@ function App() {
                 display: 'flex',
                 flexDirection: 'column'
             }}>
-                <div style={{ padding: '1rem', borderBottom: '1px solid #333' }}>
+                <div style={{ padding: '1rem', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <h2 style={{ margin: 0, fontSize: '1rem', color: '#888' }}>📁 Записи</h2>
+                    <button
+                        onClick={openDataFolder}
+                        title="Открыть папку с записями"
+                        style={{
+                            padding: '0.3rem 0.5rem',
+                            fontSize: '0.75rem',
+                            backgroundColor: '#333',
+                            color: '#888',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        📂
+                    </button>
                 </div>
                 
                 <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -1011,14 +1078,17 @@ function App() {
                                     const chunkAudioUrl = displaySession ? 
                                         `http://localhost:8080/api/sessions/${displaySession.id}/chunk/${chunk.index}.mp3` : '';
                                     const isPlaying = playingAudio === chunkAudioUrl;
+                                    const isHighlighted = highlightedChunkId === chunk.id;
                                     
                                     return (
                                         <div key={chunk.id} style={{ 
                                             padding: '0.6rem 0.8rem', 
                                             marginBottom: '0.4rem', 
-                                            backgroundColor: '#12121f', 
+                                            backgroundColor: isHighlighted ? '#1a3a2a' : '#12121f', 
                                             borderRadius: '4px',
-                                            borderLeft: `3px solid ${chunk.status === 'completed' ? '#4caf50' : chunk.status === 'failed' ? '#f44336' : '#ff9800'}`
+                                            borderLeft: `3px solid ${chunk.status === 'completed' ? '#4caf50' : chunk.status === 'failed' ? '#f44336' : '#ff9800'}`,
+                                            transition: 'background-color 0.3s ease',
+                                            animation: isHighlighted ? 'highlight-pulse 0.5s ease-in-out 2' : 'none'
                                         }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
                                                 <span style={{ color: '#888' }}>
@@ -1141,6 +1211,11 @@ function App() {
                 @keyframes pulse {
                     0%, 100% { opacity: 1; }
                     50% { opacity: 0.5; }
+                }
+                @keyframes highlight-pulse {
+                    0% { background-color: #12121f; }
+                    50% { background-color: #2a4a3a; }
+                    100% { background-color: #1a3a2a; }
                 }
             `}</style>
         </div>

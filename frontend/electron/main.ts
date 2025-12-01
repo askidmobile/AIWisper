@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, BrowserWindow, dialog, shell, ipcMain } from 'electron';
 import path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
@@ -9,6 +9,7 @@ app.setName('AIWisper');
 
 let mainWindow: BrowserWindow | null;
 let goProcess: ChildProcess | null = null;
+let sessionsDataDir: string = ''; // Путь к папке с записями
 
 const isDev = !app.isPackaged;
 
@@ -105,6 +106,9 @@ function startGoBackend() {
         dataDir = path.join(app.getPath('userData'), 'sessions');
         cwd = resourcesPath;
     }
+
+    // Сохраняем путь к данным глобально для IPC
+    sessionsDataDir = dataDir;
 
     // Создаём директорию для данных
     if (!fs.existsSync(dataDir)) {
@@ -261,6 +265,23 @@ app.on('ready', () => {
             }, 3000);
         }
     }, isDev ? 0 : 500);
+});
+
+// IPC: открыть папку с записями
+ipcMain.handle('open-data-folder', async () => {
+    if (sessionsDataDir && fs.existsSync(sessionsDataDir)) {
+        log(`Opening data folder: ${sessionsDataDir}`);
+        await shell.openPath(sessionsDataDir);
+        return { success: true, path: sessionsDataDir };
+    } else {
+        logError(`Data folder not found: ${sessionsDataDir}`);
+        return { success: false, error: 'Data folder not found' };
+    }
+});
+
+// IPC: получить путь к папке с записями
+ipcMain.handle('get-data-folder-path', () => {
+    return sessionsDataDir;
 });
 
 app.on('window-all-closed', () => {

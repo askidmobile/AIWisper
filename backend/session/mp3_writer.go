@@ -38,18 +38,25 @@ func getFFmpegPath() string {
 	execPath, err := os.Executable()
 	if err == nil {
 		execDir := filepath.Dir(execPath)
+		log.Printf("FFmpeg search: execDir=%s", execDir)
 
 		// Вариант 1: внутри .app bundle (MacOS/../Resources/ffmpeg)
 		searchPaths = append(searchPaths, filepath.Join(execDir, "..", "Resources", "ffmpeg"))
 
 		// Вариант 2: рядом с исполняемым файлом
 		searchPaths = append(searchPaths, filepath.Join(execDir, "ffmpeg"))
+
+		// Вариант 3: в той же директории что и backend (Resources)
+		// Это для случая когда backend запущен из Resources
+		searchPaths = append(searchPaths, filepath.Join(filepath.Dir(execPath), "ffmpeg"))
 	}
 
-	// Вариант 3: в текущей рабочей директории
+	// Вариант 4: в текущей рабочей директории
 	if cwd, err := os.Getwd(); err == nil {
+		log.Printf("FFmpeg search: cwd=%s", cwd)
 		searchPaths = append(searchPaths, filepath.Join(cwd, "ffmpeg"))
-		searchPaths = append(searchPaths, filepath.Join(cwd, "vendor", "ffmpeg"))
+		searchPaths = append(searchPaths, filepath.Join(cwd, "vendor", "ffmpeg", "ffmpeg")) // vendor/ffmpeg/ffmpeg
+		searchPaths = append(searchPaths, filepath.Join(cwd, "vendor", "ffmpeg"))           // vendor/ffmpeg (если это файл)
 		searchPaths = append(searchPaths, filepath.Join(cwd, "build", "resources", "ffmpeg"))
 		searchPaths = append(searchPaths, filepath.Join(cwd, "..", "build", "resources", "ffmpeg"))
 	}
@@ -63,7 +70,7 @@ func getFFmpegPath() string {
 		}
 	}
 
-	// Вариант 4: системный PATH
+	// Вариант 5: системный PATH
 	systemPath, err := exec.LookPath("ffmpeg")
 	if err == nil {
 		ffmpegPath = systemPath
