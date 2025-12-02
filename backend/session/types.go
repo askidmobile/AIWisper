@@ -35,6 +35,7 @@ type Session struct {
 	DataDir       string        `json:"dataDir"`
 	TotalDuration time.Duration `json:"totalDuration"`
 	SampleCount   int64         `json:"sampleCount"`
+	Summary       string        `json:"summary,omitempty"` // AI-generated summary
 
 	Chunks []*Chunk `json:"chunks"`
 

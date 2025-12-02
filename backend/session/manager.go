@@ -403,6 +403,12 @@ func (m *Manager) LoadSessions() error {
 		// Устанавливаем DataDir (не сохраняется в JSON)
 		session.DataDir = filepath.Join(m.dataDir, entry.Name())
 
+		// Загружаем summary если есть
+		summaryPath := filepath.Join(m.dataDir, entry.Name(), "summary.txt")
+		if summaryData, err := os.ReadFile(summaryPath); err == nil {
+			session.Summary = string(summaryData)
+		}
+
 		// Загружаем чанки
 		chunksDir := filepath.Join(m.dataDir, entry.Name(), "chunks")
 		chunkFiles, _ := filepath.Glob(filepath.Join(chunksDir, "*.json"))
@@ -483,4 +489,27 @@ func (m *Manager) GetChunkWAVPath(sessionID string, chunkIndex int) (string, err
 		return "", err
 	}
 	return filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.wav", chunkIndex)), nil
+}
+
+// SetSessionSummary устанавливает summary для сессии
+func (m *Manager) SetSessionSummary(sessionID string, summary string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	session.mu.Lock()
+	session.Summary = summary
+	session.mu.Unlock()
+
+	// Сохраняем summary в отдельный файл
+	summaryPath := filepath.Join(session.DataDir, "summary.txt")
+	if err := os.WriteFile(summaryPath, []byte(summary), 0644); err != nil {
+		return fmt.Errorf("failed to save summary: %w", err)
+	}
+
+	return nil
 }

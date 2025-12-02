@@ -15,6 +15,29 @@ import (
 	"time"
 )
 
+// StatusCallback функция для уведомления о статусе операций
+type StatusCallback func(status string, message string)
+
+// Глобальный callback для уведомлений (устанавливается из main.go)
+var globalStatusCallback StatusCallback
+var globalStatusMu sync.Mutex
+
+// SetGlobalStatusCallback устанавливает глобальный callback для уведомлений
+func SetGlobalStatusCallback(cb StatusCallback) {
+	globalStatusMu.Lock()
+	defer globalStatusMu.Unlock()
+	globalStatusCallback = cb
+}
+
+func notifyGlobalStatus(status, message string) {
+	globalStatusMu.Lock()
+	cb := globalStatusCallback
+	globalStatusMu.Unlock()
+	if cb != nil {
+		cb(status, message)
+	}
+}
+
 type Engine struct {
 	model       whisper.Model
 	modelPath   string
@@ -221,19 +244,31 @@ func (e *Engine) SetModel(path string) error {
 		return nil
 	}
 
-	// Нормализуем путь для сравнения
-	absPath, _ := filepath.Abs(path)
-	absCurrentPath, _ := filepath.Abs(e.modelPath)
+	// Проверяем, это HuggingFace ID или локальный путь
+	isHuggingFaceID := strings.Contains(path, "/") && !strings.HasPrefix(path, "/")
+
+	// Нормализуем путь для сравнения (только для локальных путей)
+	var absPath, absCurrentPath string
+	if !isHuggingFaceID {
+		absPath, _ = filepath.Abs(path)
+		absCurrentPath, _ = filepath.Abs(e.modelPath)
+	} else {
+		absPath = path
+		absCurrentPath = e.modelPath
+	}
 
 	if absPath == absCurrentPath {
 		return nil // Та же модель, ничего не делаем
 	}
 
-	if _, err := os.Stat(path); err != nil {
-		return err
+	// Проверяем существование файла только для локальных путей
+	if !isHuggingFaceID {
+		if _, err := os.Stat(path); err != nil {
+			return err
+		}
 	}
 
-	log.Printf("Switching model from %s to %s", e.modelPath, path)
+	log.Printf("Switching model from %s to %s (HuggingFace: %v)", e.modelPath, path, isHuggingFaceID)
 
 	useFaster := isFasterModel(path)
 	var newModel whisper.Model
@@ -295,8 +330,23 @@ func (e *Engine) IsFaster() bool {
 }
 
 func isFasterModel(path string) bool {
+	// GGML модели - это .bin файлы
+	if strings.HasSuffix(path, ".bin") {
+		return false
+	}
+
+	// HuggingFace ID (формат owner/repo, без расширения файла и не путь к файлу)
+	// Например: "antony66/whisper-large-v3-russian"
+	if strings.Contains(path, "/") && !strings.HasPrefix(path, "/") && !strings.Contains(path, ".") {
+		return true
+	}
+
 	info, err := os.Stat(path)
 	if err != nil {
+		// Если файл не существует и это похоже на HuggingFace ID
+		if strings.Contains(path, "/") && !strings.HasPrefix(path, "/") {
+			return true
+		}
 		return false
 	}
 	if info.IsDir() {
@@ -310,35 +360,178 @@ func isFasterModel(path string) bool {
 	return strings.HasSuffix(path, ".ct2") || strings.Contains(path, "faster-whisper")
 }
 
+// ensureFasterWhisperInstalled проверяет и автоматически устанавливает faster-whisper
+func ensureFasterWhisperInstalled() (string, error) {
+	// Находим Python
+	pythonPaths := []string{
+		// Dev: venv в проекте
+		filepath.Join("backend", ".venv", "bin", "python3"),
+		// Homebrew Python
+		"/opt/homebrew/bin/python3",
+		"/usr/local/bin/python3",
+		// System Python
+		"/usr/bin/python3",
+		"python3",
+	}
+
+	var pythonWithFW string
+	var pythonWithoutFW string
+
+	for _, p := range pythonPaths {
+		// Проверяем существование
+		fullPath := p
+		if _, err := os.Stat(p); err != nil {
+			if path, err := exec.LookPath(p); err == nil {
+				fullPath = path
+			} else {
+				continue
+			}
+		}
+
+		// Проверяем что faster-whisper установлен
+		cmd := exec.Command(fullPath, "-c", "import faster_whisper")
+		if err := cmd.Run(); err == nil {
+			pythonWithFW = fullPath
+			break
+		}
+
+		// Запоминаем первый найденный Python без faster-whisper
+		if pythonWithoutFW == "" {
+			pythonWithoutFW = fullPath
+		}
+		log.Printf("Python %s found but faster-whisper not installed", fullPath)
+	}
+
+	// Если нашли Python с faster-whisper - используем его
+	if pythonWithFW != "" {
+		return pythonWithFW, nil
+	}
+
+	// Если нет Python вообще - ошибка
+	if pythonWithoutFW == "" {
+		return "", fmt.Errorf("python3 not found. Please install Python 3")
+	}
+
+	// Автоматически устанавливаем faster-whisper
+	log.Printf("Installing faster-whisper automatically using %s...", pythonWithoutFW)
+	notifyGlobalStatus("installing", "Устанавливаю faster-whisper... Это может занять несколько минут.")
+
+	// Пробуем установить с --user --break-system-packages (для macOS с Homebrew Python)
+	installCmd := exec.Command(pythonWithoutFW, "-m", "pip", "install",
+		"--user", "--break-system-packages", "faster-whisper")
+	installCmd.Env = append(os.Environ(), "PIP_DISABLE_PIP_VERSION_CHECK=1")
+
+	output, err := installCmd.CombinedOutput()
+	if err != nil {
+		// Пробуем без --break-system-packages (для других систем)
+		log.Printf("First install attempt failed, trying without --break-system-packages...")
+		installCmd2 := exec.Command(pythonWithoutFW, "-m", "pip", "install", "--user", "faster-whisper")
+		installCmd2.Env = append(os.Environ(), "PIP_DISABLE_PIP_VERSION_CHECK=1")
+		output2, err2 := installCmd2.CombinedOutput()
+		if err2 != nil {
+			return "", fmt.Errorf("failed to install faster-whisper: %v\nOutput: %s\n%s", err2, string(output), string(output2))
+		}
+		output = output2
+	}
+
+	log.Printf("faster-whisper installation output: %s", string(output))
+
+	// Проверяем что установка прошла успешно
+	checkCmd := exec.Command(pythonWithoutFW, "-c", "import faster_whisper; print('OK')")
+	if err := checkCmd.Run(); err != nil {
+		return "", fmt.Errorf("faster-whisper installed but import failed: %v", err)
+	}
+
+	log.Printf("faster-whisper successfully installed!")
+	notifyGlobalStatus("installed", "faster-whisper успешно установлен!")
+	return pythonWithoutFW, nil
+}
+
 func transcribeFasterWhisper(samples []float32, lang, modelPath string) (string, error) {
 	if err := ensureFasterModelFiles(modelPath); err != nil {
 		return "", err
 	}
 
+	log.Printf("transcribeFasterWhisper: samples=%d, lang=%s, model=%s", len(samples), lang, modelPath)
+
 	tmpDir := os.TempDir()
 	wavPath := filepath.Join(tmpDir, fmt.Sprintf("fw-%d.wav", time.Now().UnixNano()))
 	if err := writeWav16k(wavPath, samples); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to write WAV: %w", err)
 	}
 	defer os.Remove(wavPath)
 
-	python := filepath.Join("backend", ".venv", "bin", "python3")
-	if _, err := os.Stat(python); err != nil {
-		python = "python3"
+	// Проверяем размер WAV файла
+	if info, err := os.Stat(wavPath); err == nil {
+		log.Printf("WAV file created: %s, size: %d bytes", wavPath, info.Size())
 	}
 
-	args := []string{
-		"backend/faster_whisper_cli.py",
-		"--model", modelPath,
-		"--language", lang,
-		"--file", wavPath,
+	// Получаем Python с faster-whisper (автоматически установит если нужно)
+	python, err := ensureFasterWhisperInstalled()
+	if err != nil {
+		return "", err
 	}
-	cmd := exec.Command(python, args...)
+
+	log.Printf("Using Python: %s", python)
+
+	// Используем inline Python скрипт вместо файла
+	// Это работает в любом окружении без необходимости искать файл скрипта
+	script := fmt.Sprintf(`
+import sys
+try:
+    from faster_whisper import WhisperModel
+    
+    model = WhisperModel(
+        %q,
+        device="auto",
+        compute_type="auto",
+    )
+    
+    vad_parameters = {
+        "threshold": 0.5,
+        "min_speech_duration_ms": 250,
+        "min_silence_duration_ms": 2000,
+        "window_size_samples": 1024,
+        "speech_pad_ms": 400,
+    }
+    
+    segments, _ = model.transcribe(
+        %q,
+        beam_size=5,
+        best_of=5,
+        language=%s,
+        task="transcribe",
+        temperature=0.0,
+        condition_on_previous_text=False,
+        no_speech_threshold=0.5,
+        hallucination_silence_threshold=2.0,
+        vad_filter=True,
+        vad_parameters=vad_parameters,
+        word_timestamps=True,
+    )
+    
+    text_parts = [seg.text.strip() for seg in segments]
+    print(" ".join(tp for tp in text_parts if tp))
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+`, modelPath, wavPath, func() string {
+		if lang == "auto" {
+			return "None"
+		}
+		return fmt.Sprintf("%q", lang)
+	}())
+
+	cmd := exec.Command(python, "-c", script)
+	log.Printf("Running faster-whisper transcription...")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("faster-whisper failed: %v, output: %s", err, string(out))
 	}
-	return strings.TrimSpace(string(out)), nil
+
+	result := strings.TrimSpace(string(out))
+	log.Printf("Faster-whisper result: %q", result)
+	return result, nil
 }
 
 func writeWav16k(path string, samples []float32) error {
@@ -398,6 +591,12 @@ func writeWav16k(path string, samples []float32) error {
 }
 
 func ensureFasterModelFiles(modelPath string) error {
+	// Для HuggingFace ID - faster-whisper сам скачает модель
+	if strings.Contains(modelPath, "/") && !strings.HasPrefix(modelPath, "/") {
+		log.Printf("HuggingFace model ID detected: %s - faster-whisper will download automatically", modelPath)
+		return nil
+	}
+
 	info, err := os.Stat(modelPath)
 	if err != nil {
 		return err

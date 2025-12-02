@@ -3,10 +3,13 @@ package main
 import (
 	"aiwisper/ai"
 	"aiwisper/audio"
+	"aiwisper/models"
 	"aiwisper/session"
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -66,6 +69,29 @@ type Message struct {
 	// Devices
 	Devices                   []audio.AudioDevice `json:"devices,omitempty"`
 	ScreenCaptureKitAvailable bool                `json:"screenCaptureKitAvailable,omitempty"`
+
+	// Models
+	Models   []models.ModelState `json:"models,omitempty"`
+	ModelID  string              `json:"modelId,omitempty"`
+	Progress float64             `json:"progress,omitempty"`
+	Error    string              `json:"error,omitempty"`
+
+	// Summary
+	Summary string `json:"summary,omitempty"`
+
+	// Ollama settings
+	OllamaModel  string        `json:"ollamaModel,omitempty"`
+	OllamaUrl    string        `json:"ollamaUrl,omitempty"`
+	OllamaModels []OllamaModel `json:"ollamaModels,omitempty"` // Список доступных моделей Ollama
+}
+
+// OllamaModel информация о модели Ollama
+type OllamaModel struct {
+	Name       string `json:"name"`
+	Size       int64  `json:"size"`
+	IsCloud    bool   `json:"isCloud"`    // Cloud модель (remote)
+	Family     string `json:"family"`     // Семейство модели
+	Parameters string `json:"parameters"` // Размер параметров (3.2B, 8B, etc)
 }
 
 // SessionInfo краткая информация о сессии для списка
@@ -82,10 +108,18 @@ func main() {
 
 	modelPath := flag.String("model", "ggml-base.bin", "Path to Whisper model")
 	dataDir := flag.String("data", "data/sessions", "Directory for session data")
+	modelsDir := flag.String("models", "", "Directory for downloaded models (default: dataDir/../models)")
 	flag.Parse()
 
 	log.Printf("Model path: %s", *modelPath)
 	log.Printf("Data directory: %s", *dataDir)
+
+	// Определяем директорию для моделей
+	modelsDirPath := *modelsDir
+	if modelsDirPath == "" {
+		modelsDirPath = filepath.Join(filepath.Dir(*dataDir), "models")
+	}
+	log.Printf("Models directory: %s", modelsDirPath)
 
 	// Initialize Audio
 	log.Println("Initializing audio capture...")
@@ -101,6 +135,14 @@ func main() {
 		log.Fatalf("Failed to init session manager: %v", err)
 	}
 	log.Println("Session manager initialized")
+
+	// Initialize Model Manager
+	log.Println("Initializing model manager...")
+	modelMgr, err := models.NewManager(modelsDirPath)
+	if err != nil {
+		log.Fatalf("Failed to init model manager: %v", err)
+	}
+	log.Println("Model manager initialized")
 
 	// Initialize AI
 	log.Println("Loading Whisper model...")
@@ -120,7 +162,7 @@ func main() {
 			return
 		}
 		defer conn.Close()
-		handleConnection(conn, capture, whisperEngine, sessionMgr)
+		handleConnection(conn, capture, whisperEngine, sessionMgr, modelMgr)
 	})
 
 	// Static file serving for audio files
@@ -270,13 +312,37 @@ func handleSessionsList(w http.ResponseWriter, r *http.Request, mgr *session.Man
 	json.NewEncoder(w).Encode(infos)
 }
 
-func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.Engine, sessionMgr *session.Manager) {
+func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.Engine, sessionMgr *session.Manager, modelMgr *models.Manager) {
 	var mu sync.Mutex
 	var currentSession *session.Session
 	var mp3Writer *session.MP3Writer // MP3 вместо WAV для экономии места
 	var chunkBuffer *session.ChunkBuffer
 	var stopChan chan struct{}
 	var sessionUseVoiceIsolation bool // Флаг режима Voice Isolation для текущей сессии
+
+	// Callback для прогресса скачивания моделей
+	modelMgr.SetProgressCallback(func(modelID string, progress float64, status models.ModelStatus, err error) {
+		errStr := ""
+		if err != nil {
+			errStr = err.Error()
+		}
+		conn.WriteJSON(Message{
+			Type:     "model_progress",
+			ModelID:  modelID,
+			Progress: progress,
+			Data:     string(status),
+			Error:    errStr,
+		})
+	})
+
+	// Callback для статуса установки faster-whisper
+	ai.SetGlobalStatusCallback(func(status, message string) {
+		log.Printf("Status callback: %s - %s", status, message)
+		conn.WriteJSON(Message{
+			Type: "status",
+			Data: status + ": " + message,
+		})
+	})
 
 	// Callback для готовых чанков - транскрибируем
 	sessionMgr.SetOnChunkReady(func(chunk *session.Chunk) {
@@ -552,6 +618,113 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 				ScreenCaptureKitAvailable: audio.ScreenCaptureKitAvailable(),
 			})
 
+		// ===== Model Management =====
+		case "get_models":
+			// Получить список всех моделей с их статусами
+			modelStates := modelMgr.GetAllModelsState()
+			conn.WriteJSON(Message{
+				Type:   "models_list",
+				Models: modelStates,
+			})
+
+		case "download_model":
+			// Скачать модель
+			modelID := msg.ModelID
+			if modelID == "" {
+				conn.WriteJSON(Message{Type: "error", Data: "modelId is required"})
+				continue
+			}
+			if err := modelMgr.DownloadModel(modelID); err != nil {
+				conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+				continue
+			}
+			conn.WriteJSON(Message{
+				Type:    "download_started",
+				ModelID: modelID,
+			})
+
+		case "cancel_download":
+			// Отменить скачивание
+			modelID := msg.ModelID
+			if modelID == "" {
+				conn.WriteJSON(Message{Type: "error", Data: "modelId is required"})
+				continue
+			}
+			if err := modelMgr.CancelDownload(modelID); err != nil {
+				conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+				continue
+			}
+			conn.WriteJSON(Message{
+				Type:    "download_cancelled",
+				ModelID: modelID,
+			})
+
+		case "delete_model":
+			// Удалить модель
+			modelID := msg.ModelID
+			if modelID == "" {
+				conn.WriteJSON(Message{Type: "error", Data: "modelId is required"})
+				continue
+			}
+			if err := modelMgr.DeleteModel(modelID); err != nil {
+				conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+				continue
+			}
+			conn.WriteJSON(Message{
+				Type:    "model_deleted",
+				ModelID: modelID,
+			})
+			// Отправляем обновлённый список
+			conn.WriteJSON(Message{
+				Type:   "models_list",
+				Models: modelMgr.GetAllModelsState(),
+			})
+
+		case "set_active_model":
+			// Установить активную модель
+			modelID := msg.ModelID
+			if modelID == "" {
+				conn.WriteJSON(Message{Type: "error", Data: "modelId is required"})
+				continue
+			}
+
+			// Получаем путь к модели
+			modelPath := modelMgr.GetModelPath(modelID)
+			if modelPath == "" {
+				conn.WriteJSON(Message{Type: "error", Data: "unknown model"})
+				continue
+			}
+
+			// Проверяем что модель скачана
+			if !modelMgr.IsModelDownloaded(modelID) {
+				conn.WriteJSON(Message{Type: "error", Data: "model not downloaded"})
+				continue
+			}
+
+			// Устанавливаем активную модель в менеджере
+			if err := modelMgr.SetActiveModel(modelID); err != nil {
+				conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+				continue
+			}
+
+			// Загружаем модель в движок
+			if engine != nil {
+				if err := engine.SetModel(modelPath); err != nil {
+					conn.WriteJSON(Message{Type: "error", Data: fmt.Sprintf("failed to load model: %v", err)})
+					continue
+				}
+			}
+
+			conn.WriteJSON(Message{
+				Type:    "active_model_changed",
+				ModelID: modelID,
+			})
+			// Отправляем обновлённый список
+			conn.WriteJSON(Message{
+				Type:   "models_list",
+				Models: modelMgr.GetAllModelsState(),
+			})
+
 		case "get_sessions":
 			sessions := sessionMgr.ListSessions()
 			infos := make([]*SessionInfo, len(sessions))
@@ -587,6 +760,10 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 				conn.WriteJSON(Message{Type: "error", Data: "Session already active"})
 				continue
 			}
+
+			// Очищаем буферы от старых данных перед началом новой записи
+			capture.ClearBuffers()
+			log.Println("Audio buffers cleared for new session")
 
 			// Создаём сессию
 			sess, err := sessionMgr.CreateSession(session.SessionConfig{
@@ -910,6 +1087,105 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					sessionMgr.UpdateChunkTranscription(sessID, chunk.ID, text, err)
 				}
 			}(targetChunk, sess.ID, sess.DataDir, targetChunk.IsStereo)
+
+		case "get_ollama_models":
+			// Получить список моделей Ollama
+			ollamaUrl := msg.OllamaUrl
+			if ollamaUrl == "" {
+				ollamaUrl = "http://localhost:11434"
+			}
+
+			ollamaModels, err := getOllamaModels(ollamaUrl)
+			if err != nil {
+				conn.WriteJSON(Message{
+					Type:  "ollama_models",
+					Error: err.Error(),
+				})
+				continue
+			}
+
+			conn.WriteJSON(Message{
+				Type:         "ollama_models",
+				OllamaModels: ollamaModels,
+			})
+
+		case "generate_summary":
+			// Генерация summary для сессии
+			sess, err := sessionMgr.GetSession(msg.SessionID)
+			if err != nil {
+				conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+				continue
+			}
+
+			// Собираем текст транскрипции
+			var transcriptText strings.Builder
+			for _, chunk := range sess.Chunks {
+				if chunk.Status != session.ChunkStatusCompleted {
+					continue
+				}
+				if len(chunk.Dialogue) > 0 {
+					for _, seg := range chunk.Dialogue {
+						speaker := "Вы"
+						if seg.Speaker == "sys" {
+							speaker = "Собеседник"
+						}
+						transcriptText.WriteString(fmt.Sprintf("%s: %s\n", speaker, seg.Text))
+					}
+				} else if chunk.MicText != "" || chunk.SysText != "" {
+					if chunk.MicText != "" {
+						transcriptText.WriteString(fmt.Sprintf("Вы: %s\n", chunk.MicText))
+					}
+					if chunk.SysText != "" {
+						transcriptText.WriteString(fmt.Sprintf("Собеседник: %s\n", chunk.SysText))
+					}
+				} else if chunk.Transcription != "" {
+					transcriptText.WriteString(chunk.Transcription + "\n")
+				}
+			}
+
+			if transcriptText.Len() == 0 {
+				conn.WriteJSON(Message{Type: "error", Data: "No transcription available"})
+				continue
+			}
+
+			// Отправляем уведомление о начале генерации
+			conn.WriteJSON(Message{
+				Type:      "summary_started",
+				SessionID: sess.ID,
+			})
+
+			// Получаем настройки Ollama из запроса
+			ollamaModel := msg.OllamaModel
+			ollamaUrl := msg.OllamaUrl
+			if ollamaModel == "" {
+				ollamaModel = "llama3.2"
+			}
+			if ollamaUrl == "" {
+				ollamaUrl = "http://localhost:11434"
+			}
+
+			// Генерируем summary асинхронно
+			go func(sessID string, text string, model string, url string) {
+				summary, err := generateSummaryWithLLM(text, model, url)
+				if err != nil {
+					log.Printf("Summary generation error: %v", err)
+					conn.WriteJSON(Message{
+						Type:      "summary_error",
+						SessionID: sessID,
+						Error:     err.Error(),
+					})
+					return
+				}
+
+				// Сохраняем summary в сессию
+				sessionMgr.SetSessionSummary(sessID, summary)
+
+				conn.WriteJSON(Message{
+					Type:      "summary_completed",
+					SessionID: sessID,
+					Summary:   summary,
+				})
+			}(sess.ID, transcriptText.String(), ollamaModel, ollamaUrl)
 		}
 	}
 
@@ -1172,4 +1448,250 @@ func resample(samples []float32, fromRate, toRate int) []float32 {
 	}
 
 	return result
+}
+
+// generateSummaryWithLLM генерирует краткое содержание транскрипции с помощью LLM
+// Поддерживает: Ollama API (настраиваемая модель и URL)
+func generateSummaryWithLLM(transcriptText string, ollamaModel string, ollamaUrl string) (string, error) {
+	// Пробуем Ollama с указанными настройками
+	summary, err := generateSummaryWithOllama(transcriptText, ollamaModel, ollamaUrl)
+	if err == nil && summary != "" {
+		return summary, nil
+	}
+	log.Printf("Ollama not available: %v, using fallback...", err)
+
+	// Fallback: простая статистика
+	return generateSummaryFallback(transcriptText)
+}
+
+// generateSummaryWithOllama использует Ollama API для генерации summary
+func generateSummaryWithOllama(transcriptText string, model string, baseUrl string) (string, error) {
+	// Проверяем доступность Ollama
+	resp, err := http.Get(baseUrl + "/api/tags")
+	if err != nil {
+		return "", fmt.Errorf("Ollama не запущен по адресу %s. Запустите: ollama serve", baseUrl)
+	}
+	resp.Body.Close()
+
+	// Ограничиваем текст для контекста (примерно 4000 токенов ~ 16000 символов)
+	maxChars := 16000
+	text := transcriptText
+	if len(text) > maxChars {
+		text = text[:maxChars] + "\n...[текст обрезан]..."
+	}
+
+	// Системный промпт с чёткими инструкциями
+	systemPrompt := `Ты — ассистент для создания кратких резюме деловых разговоров и встреч.
+
+ТВОЯ ЗАДАЧА: Проанализировать транскрипцию и создать структурированное резюме.
+
+ФОРМАТ ОТВЕТА (строго в Markdown):
+
+## 📋 Тема встречи
+[1-2 предложения: о чём был разговор]
+
+## 🎯 Ключевые моменты
+- [пункт 1]
+- [пункт 2]
+- [пункт 3]
+
+## ✅ Решения и договорённости
+- [что решили / согласовали]
+
+## 📌 Следующие шаги
+- [действие 1]
+- [действие 2]
+
+ПРАВИЛА:
+1. Пиши ТОЛЬКО резюме, без вступлений и объяснений
+2. Используй Markdown форматирование
+3. Если раздел пустой (нет информации) — пропусти его
+4. Будь краток: максимум 5 пунктов в каждом разделе
+5. Отвечай на русском языке
+6. НЕ цитируй транскрипцию дословно, а обобщай смысл
+7. Игнорируй технические фразы ("проверка записи", "алло" и т.п.)`
+
+	userPrompt := fmt.Sprintf("Вот транскрипция разговора:\n\n%s", text)
+
+	// Используем /api/chat для поддержки system prompt
+	// num_predict увеличен до 4096 для полных ответов от больших моделей (Gemini, GPT и др.)
+	reqBody := map[string]interface{}{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt},
+		},
+		"stream": false,
+		"options": map[string]interface{}{
+			"temperature": 0.3,
+			"num_predict": 4096, // Увеличено для полных ответов
+		},
+	}
+
+	log.Printf("Generating summary with Ollama model=%s url=%s, transcript length=%d chars", model, baseUrl, len(text))
+	jsonBody, _ := json.Marshal(reqBody)
+
+	// Создаём HTTP клиент с увеличенным таймаутом (3 минуты для больших моделей)
+	client := &http.Client{
+		Timeout: 180 * time.Second,
+	}
+
+	resp, err = client.Post(baseUrl+"/api/chat", "application/json", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return "", fmt.Errorf("Ошибка запроса к Ollama: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Читаем полный ответ для диагностики
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("Ошибка чтения ответа Ollama: %v", err)
+	}
+
+	log.Printf("Ollama response status=%d, body length=%d bytes", resp.StatusCode, len(bodyBytes))
+
+	var result struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+		Error      string `json:"error"`
+		Done       bool   `json:"done"`
+		DoneReason string `json:"done_reason"`
+	}
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		log.Printf("Failed to parse Ollama response: %s", string(bodyBytes[:min(500, len(bodyBytes))]))
+		return "", fmt.Errorf("Ошибка парсинга ответа Ollama: %v", err)
+	}
+
+	// Логируем статус завершения
+	log.Printf("Ollama done=%v, done_reason=%s, content length=%d chars", result.Done, result.DoneReason, len(result.Message.Content))
+
+	if result.Error != "" {
+		// Более понятные сообщения об ошибках
+		if strings.Contains(result.Error, "model runner has unexpectedly stopped") {
+			return "", fmt.Errorf("Модель '%s' упала. Попробуйте:\n1. Переустановить: ollama rm %s && ollama pull %s\n2. Использовать другую модель", model, model, model)
+		}
+		if strings.Contains(result.Error, "not found") {
+			return "", fmt.Errorf("Модель '%s' не найдена. Установите: ollama pull %s", model, model)
+		}
+		return "", fmt.Errorf("Ошибка Ollama: %s", result.Error)
+	}
+
+	response := strings.TrimSpace(result.Message.Content)
+	if response == "" {
+		return "", fmt.Errorf("Ollama вернул пустой ответ. Попробуйте другую модель.")
+	}
+
+	return response, nil
+}
+
+// generateSummaryFallback создаёт базовое summary без LLM
+func generateSummaryFallback(transcriptText string) (string, error) {
+	lines := strings.Split(transcriptText, "\n")
+	if len(lines) == 0 {
+		return "", fmt.Errorf("empty transcript")
+	}
+
+	// Подсчитываем статистику
+	var youLines, otherLines int
+	var totalWords int
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		words := strings.Fields(line)
+		totalWords += len(words)
+		if strings.HasPrefix(line, "Вы:") {
+			youLines++
+		} else if strings.HasPrefix(line, "Собеседник:") {
+			otherLines++
+		}
+	}
+
+	// Генерируем простое summary
+	summary := fmt.Sprintf(`📊 Статистика записи:
+• Реплик "Вы": %d
+• Реплик "Собеседник": %d  
+• Всего слов: %d
+
+📝 Краткое содержание:
+Диалог между двумя участниками. `, youLines, otherLines, totalWords)
+
+	if youLines > otherLines*2 {
+		summary += "Вы говорили значительно больше собеседника."
+	} else if otherLines > youLines*2 {
+		summary += "Собеседник говорил значительно больше вас."
+	} else {
+		summary += "Диалог был примерно равномерным."
+	}
+
+	summary += `
+
+💡 Для полноценного AI-анализа:
+   1. Установите Ollama: brew install ollama
+   2. Скачайте модель: ollama pull deepseek-r1:8b
+   3. Запустите: ollama serve
+   4. Укажите модель в настройках AIWisper`
+
+	return summary, nil
+}
+
+// getOllamaModels получает список доступных моделей из Ollama API
+func getOllamaModels(baseUrl string) ([]OllamaModel, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	resp, err := client.Get(baseUrl + "/api/tags")
+	if err != nil {
+		return nil, fmt.Errorf("Ollama не запущен. Запустите: ollama serve")
+	}
+	defer resp.Body.Close()
+
+	var tagsResp struct {
+		Models []struct {
+			Name        string `json:"name"`
+			Size        int64  `json:"size"`
+			RemoteModel string `json:"remote_model"` // Если есть - это cloud модель
+			Details     struct {
+				Family        string `json:"family"`
+				ParameterSize string `json:"parameter_size"`
+			} `json:"details"`
+		} `json:"models"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&tagsResp); err != nil {
+		return nil, fmt.Errorf("Ошибка парсинга ответа Ollama: %v", err)
+	}
+
+	var models []OllamaModel
+
+	// Сначала добавляем cloud модели (они быстрее)
+	for _, m := range tagsResp.Models {
+		isCloud := m.RemoteModel != "" || strings.HasSuffix(m.Name, "-cloud") || strings.Contains(m.Name, ":cloud")
+		if isCloud {
+			models = append(models, OllamaModel{
+				Name:       m.Name,
+				Size:       m.Size,
+				IsCloud:    true,
+				Family:     m.Details.Family,
+				Parameters: m.Details.ParameterSize,
+			})
+		}
+	}
+
+	// Затем локальные модели
+	for _, m := range tagsResp.Models {
+		isCloud := m.RemoteModel != "" || strings.HasSuffix(m.Name, "-cloud") || strings.Contains(m.Name, ":cloud")
+		if !isCloud {
+			models = append(models, OllamaModel{
+				Name:       m.Name,
+				Size:       m.Size,
+				IsCloud:    false,
+				Family:     m.Details.Family,
+				Parameters: m.Details.ParameterSize,
+			})
+		}
+	}
+
+	return models, nil
 }

@@ -1,6 +1,6 @@
 {
   "name": "aiwisper",
-  "version": "1.0.6",
+  "version": "1.0.11",
   "description": "AIWisper - Speech to Text Application",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -102,7 +102,9 @@
     }
   },
   "dependencies": {
-    "electron-updater": "^6.3.9"
+    "electron-store": "^11.0.2",
+    "electron-updater": "^6.3.9",
+    "react-markdown": "^10.1.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",

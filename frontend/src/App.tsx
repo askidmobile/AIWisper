@@ -1,4 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import ModelManager from './components/ModelManager';
+import SessionTabs, { TabType } from './components/SessionTabs';
+import SummaryView from './components/SummaryView';
+import { ModelState, AppSettings, OllamaModel } from './types/models';
+
+// Electron IPC
+const electron = typeof window !== 'undefined' && (window as any).require ? (window as any).require('electron') : null;
+const ipcRenderer = electron?.ipcRenderer;
 
 interface AudioDevice {
     id: string;
@@ -44,6 +52,7 @@ interface Session {
     model: string;
     totalDuration: number;
     chunks: Chunk[];
+    summary?: string;  // AI-generated summary
 }
 
 interface SessionInfo {
@@ -113,7 +122,6 @@ function App() {
     const [logs, setLogs] = useState<string[]>([]);
     const [status, setStatus] = useState('Disconnected');
     const [language, setLanguage] = useState<'ru' | 'en' | 'auto'>('ru');
-    const [model, setModel] = useState<string>('backend/ggml-large-v3-turbo.bin');
     const wsRef = useRef<WebSocket | null>(null);
     
     // Audio levels
@@ -153,12 +161,80 @@ function App() {
     // Track if new chunk was added (for auto-scroll during recording only)
     const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
 
+    // Model Manager
+    const [showModelManager, setShowModelManager] = useState(false);
+    const [models, setModels] = useState<ModelState[]>([]);
+    const [activeModelId, setActiveModelId] = useState<string | null>(null);
+    const [settingsLoaded, setSettingsLoaded] = useState(false);
+
+    // Session Tabs & Summary
+    const [activeTab, setActiveTab] = useState<TabType>('dialogue');
+    const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+    const [summaryError, setSummaryError] = useState<string | null>(null);
+
+    // Ollama settings
+    const [ollamaModel, setOllamaModel] = useState('llama3.2');
+    const [ollamaUrl, setOllamaUrl] = useState('http://localhost:11434');
+    const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
+    const [ollamaModelsLoading, setOllamaModelsLoading] = useState(false);
+    const [ollamaError, setOllamaError] = useState<string | null>(null);
+
+    // UI state
+    const [isStopping, setIsStopping] = useState(false); // Индикатор остановки записи
+    const [consoleExpanded, setConsoleExpanded] = useState(false); // Сворачиваемая консоль
+
     const transcriptionRef = useRef<HTMLDivElement | null>(null);
 
     const addLog = useCallback((msg: string) => {
         const time = new Date().toLocaleTimeString();
         setLogs(prev => [`[${time}] ${msg}`, ...prev].slice(0, 100));
     }, []);
+
+    // Загрузка настроек при старте
+    useEffect(() => {
+        const loadSettings = async () => {
+            if (!ipcRenderer) return;
+            try {
+                const settings: AppSettings | null = await ipcRenderer.invoke('load-settings');
+                if (settings) {
+                    setLanguage(settings.language || 'ru');
+                    setActiveModelId(settings.modelId || 'ggml-large-v3-turbo');
+                    setEchoCancel(settings.echoCancel ?? 0.4);
+                    setUseVoiceIsolation(settings.useVoiceIsolation ?? true);
+                    setCaptureSystem(settings.captureSystem ?? true);
+                    setOllamaModel(settings.ollamaModel || 'llama3.2');
+                    setOllamaUrl(settings.ollamaUrl || 'http://localhost:11434');
+                    addLog('Settings loaded');
+                }
+                setSettingsLoaded(true);
+            } catch (err) {
+                console.error('Failed to load settings:', err);
+                setSettingsLoaded(true);
+            }
+        };
+        loadSettings();
+    }, [addLog]);
+
+    // Сохранение настроек при изменении
+    useEffect(() => {
+        if (!settingsLoaded || !ipcRenderer) return;
+        const saveSettings = async () => {
+            try {
+                await ipcRenderer.invoke('save-settings', {
+                    language,
+                    modelId: activeModelId,
+                    echoCancel,
+                    useVoiceIsolation,
+                    captureSystem,
+                    ollamaModel,
+                    ollamaUrl
+                });
+            } catch (err) {
+                console.error('Failed to save settings:', err);
+            }
+        };
+        saveSettings();
+    }, [language, activeModelId, echoCancel, useVoiceIsolation, captureSystem, ollamaModel, ollamaUrl, settingsLoaded]);
 
     // Таймер записи
     useEffect(() => {
@@ -193,6 +269,7 @@ function App() {
                 addLog('Connected to backend');
                 socket.send(JSON.stringify({ type: 'get_devices' }));
                 socket.send(JSON.stringify({ type: 'get_sessions' }));
+                socket.send(JSON.stringify({ type: 'get_models' }));
             };
 
             socket.onmessage = (event) => {
@@ -221,10 +298,15 @@ function App() {
 
                         case 'session_stopped':
                             setIsRecording(false);
+                            setIsStopping(false); // Сбрасываем индикатор остановки
                             setCurrentSession(null);
                             addLog('Session stopped');
-                            // Обновляем список сессий
+                            // Обновляем список сессий и открываем последнюю
                             socket.send(JSON.stringify({ type: 'get_sessions' }));
+                            // Открываем только что записанную сессию
+                            if (msg.session) {
+                                setSelectedSession(msg.session);
+                            }
                             break;
 
                         case 'chunk_created':
@@ -247,6 +329,11 @@ function App() {
                                 const chunks = prev.chunks.map(c => c.id === msg.chunk.id ? msg.chunk : c);
                                 return { ...prev, chunks };
                             });
+                            
+                            // Автоскролл при получении транскрипции во время записи
+                            if (isRecording) {
+                                setShouldAutoScroll(true);
+                            }
                             
                             // Обновляем выбранную сессию и подсвечиваем чанк
                             setSelectedSession(prev => {
@@ -271,6 +358,90 @@ function App() {
 
                         case 'error':
                             addLog(`Error: ${msg.data}`);
+                            break;
+
+                        case 'status':
+                            // Статус операций (например, установка faster-whisper)
+                            addLog(`Status: ${msg.data}`);
+                            break;
+
+                        // === Model Management ===
+                        case 'models_list':
+                            setModels(msg.models || []);
+                            // Найти активную модель
+                            const active = (msg.models || []).find((m: ModelState) => m.status === 'active');
+                            if (active) {
+                                setActiveModelId(active.id);
+                            }
+                            break;
+
+                        case 'model_progress':
+                            setModels(prev => prev.map(m => 
+                                m.id === msg.modelId 
+                                    ? { ...m, status: msg.data as any, progress: msg.progress, error: msg.error }
+                                    : m
+                            ));
+                            break;
+
+                        case 'download_started':
+                            addLog(`Downloading model: ${msg.modelId}`);
+                            break;
+
+                        case 'download_cancelled':
+                            addLog(`Download cancelled: ${msg.modelId}`);
+                            // Обновляем список моделей
+                            socket.send(JSON.stringify({ type: 'get_models' }));
+                            break;
+
+                        case 'model_deleted':
+                            addLog(`Model deleted: ${msg.modelId}`);
+                            break;
+
+                        case 'active_model_changed':
+                            setActiveModelId(msg.modelId);
+                            addLog(`Active model: ${msg.modelId}`);
+                            break;
+
+                        // === Summary Generation ===
+                        case 'summary_started':
+                            setIsGeneratingSummary(true);
+                            setSummaryError(null);
+                            addLog('Generating summary...');
+                            break;
+
+                        case 'summary_completed':
+                            setIsGeneratingSummary(false);
+                            setSummaryError(null);
+                            // Обновляем summary в выбранной сессии
+                            setSelectedSession(prev => {
+                                if (!prev || prev.id !== msg.sessionId) return prev;
+                                return { ...prev, summary: msg.summary };
+                            });
+                            addLog('Summary generated');
+                            break;
+
+                        case 'summary_error':
+                            setIsGeneratingSummary(false);
+                            setSummaryError(msg.error || 'Unknown error');
+                            addLog(`Summary error: ${msg.error}`);
+                            break;
+
+                        // === Ollama Models ===
+                        case 'ollama_models':
+                            setOllamaModelsLoading(false);
+                            if (msg.error) {
+                                setOllamaError(msg.error);
+                                setOllamaModels([]);
+                            } else {
+                                setOllamaError(null);
+                                setOllamaModels(msg.ollamaModels || []);
+                                // Если текущая модель не в списке, выбираем первую cloud или первую доступную
+                                const modelNames = (msg.ollamaModels || []).map((m: OllamaModel) => m.name);
+                                if (modelNames.length > 0 && !modelNames.includes(ollamaModel)) {
+                                    const cloudModel = (msg.ollamaModels || []).find((m: OllamaModel) => m.isCloud);
+                                    setOllamaModel(cloudModel?.name || modelNames[0]);
+                                }
+                            }
                             break;
                     }
                 } catch {
@@ -311,16 +482,28 @@ function App() {
         }
 
         if (isRecording) {
+            setIsStopping(true); // Показываем индикатор остановки
             ws.send(JSON.stringify({ type: 'stop_session' }));
         } else {
             // Очищаем выбранную сессию и закрываем share menu при начале новой записи
             setSelectedSession(null);
             setShowShareMenu(false);
+            setActiveTab('dialogue'); // Сбрасываем на вкладку диалога
+            
+            // Получаем путь к активной модели
+            const activeModel = models.find(m => m.id === activeModelId);
+            const modelPath = activeModel?.path || '';
+            
+            if (!modelPath && activeModelId) {
+                addLog('Модель не скачана. Откройте менеджер моделей для скачивания.');
+                setShowModelManager(true);
+                return;
+            }
             
             ws.send(JSON.stringify({
                 type: 'start_session',
                 language,
-                model,
+                model: modelPath,
                 micDevice,
                 captureSystem,
                 useNativeCapture: screenCaptureKitAvailable && captureSystem,
@@ -346,15 +529,44 @@ function App() {
 
     const handleRetranscribe = (chunkId: string) => {
         if (!selectedSession) return;
+        
+        // Получаем путь к активной модели
+        const activeModel = models.find(m => m.id === activeModelId);
+        const modelPath = activeModel?.path || '';
+        
         wsRef.current?.send(JSON.stringify({
             type: 'retranscribe_chunk',
             sessionId: selectedSession.id,
             data: chunkId,
-            model: model,      // Текущая выбранная модель
-            language: language // Текущий выбранный язык
+            model: modelPath,
+            language: language
         }));
-        addLog(`Retranscribing chunk with model: ${model}, language: ${language}`);
+        addLog(`Retranscribing chunk with model: ${activeModel?.name || 'default'}, language: ${language}`);
     };
+
+    // Загрузка списка моделей Ollama
+    const loadOllamaModels = useCallback(() => {
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        
+        setOllamaModelsLoading(true);
+        setOllamaError(null);
+        wsRef.current.send(JSON.stringify({
+            type: 'get_ollama_models',
+            ollamaUrl: ollamaUrl
+        }));
+    }, [ollamaUrl]);
+
+    // Генерация summary
+    const handleGenerateSummary = useCallback(() => {
+        if (!selectedSession) return;
+        
+        wsRef.current?.send(JSON.stringify({
+            type: 'generate_summary',
+            sessionId: selectedSession.id,
+            ollamaModel: ollamaModel,
+            ollamaUrl: ollamaUrl
+        }));
+    }, [selectedSession, ollamaModel, ollamaUrl]);
 
     // Воспроизведение аудио
     const playAudio = (url: string) => {
@@ -538,21 +750,6 @@ function App() {
             return [];
         });
 
-    // Fallback: старый формат без сегментов
-    const fullTranscription = allDialogue.length === 0 ? chunks
-        .filter(c => c.status === 'completed' && (c.transcription || c.micText || c.sysText))
-        .sort((a, b) => a.index - b.index)
-        .map(c => {
-            if (c.micText || c.sysText) {
-                const parts = [];
-                if (c.micText) parts.push(`Вы: ${c.micText}`);
-                if (c.sysText) parts.push(`Собеседник: ${c.sysText}`);
-                return parts.join('\n');
-            }
-            return c.transcription;
-        })
-        .join('\n\n') : '';
-
     return (
         <div style={{ display: 'flex', height: '100vh', backgroundColor: '#0d0d1a', color: '#fff' }}>
             {/* Hidden audio element */}
@@ -661,15 +858,18 @@ function App() {
 
             {/* Main Content */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                {/* Header */}
+                {/* Header - draggable для перемещения окна */}
                 <header style={{ 
                     padding: '0.75rem 1.5rem', 
+                    paddingLeft: '80px', // Отступ для кнопок управления окном macOS
                     borderBottom: '1px solid #333',
                     display: 'flex',
                     alignItems: 'center',
-                    gap: '1rem'
-                }}>
-                    <h1 style={{ margin: 0, fontSize: '1.2rem' }}>AIWisper</h1>
+                    gap: '1rem',
+                    WebkitAppRegion: 'drag', // Позволяет перетаскивать окно
+                    userSelect: 'none'
+                } as React.CSSProperties}>
+                    <h1 style={{ margin: 0, fontSize: '1.2rem', background: 'linear-gradient(135deg, #6c5ce7, #a29bfe)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>AIWisper</h1>
                     
                     <div style={{ 
                         padding: '0.2rem 0.6rem', 
@@ -706,7 +906,7 @@ function App() {
                     
                     <div style={{ flex: 1 }}></div>
                     
-                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
                         <select 
                             value={language} 
                             onChange={e => setLanguage(e.target.value as any)} 
@@ -726,19 +926,21 @@ function App() {
                         
                         <button
                             onClick={handleStartStop}
-                            disabled={status !== 'Connected'}
+                            disabled={status !== 'Connected' || isStopping}
                             style={{
                                 padding: '0.5rem 1.5rem',
-                                backgroundColor: isRecording ? '#f44336' : '#4caf50',
+                                backgroundColor: isStopping ? '#ff9800' : isRecording ? '#f44336' : '#6c5ce7',
                                 color: 'white',
                                 border: 'none',
-                                borderRadius: '4px',
+                                borderRadius: '8px',
                                 fontWeight: 'bold',
-                                cursor: status === 'Connected' ? 'pointer' : 'not-allowed',
-                                opacity: status === 'Connected' ? 1 : 0.5
+                                cursor: (status === 'Connected' && !isStopping) ? 'pointer' : 'not-allowed',
+                                opacity: status === 'Connected' ? 1 : 0.5,
+                                boxShadow: isRecording ? '0 0 20px rgba(244, 67, 54, 0.4)' : '0 4px 15px rgba(108, 92, 231, 0.3)',
+                                transition: 'all 0.3s ease'
                             }}
                         >
-                            {isRecording ? '⏹ Стоп' : '● Запись'}
+                            {isStopping ? '⏳ Сохранение...' : isRecording ? '⏹ Стоп' : '● Запись'}
                         </button>
                     </div>
                 </header>
@@ -797,18 +999,25 @@ function App() {
                                 </div>
                             )}
                             
-                            <select 
-                                value={model} 
-                                onChange={e => setModel(e.target.value)} 
-                                style={{ padding: '0.3rem', backgroundColor: '#12121f', color: '#fff', border: '1px solid #333', borderRadius: '4px' }}
+                            {/* Кнопка выбора модели */}
+                            <button
+                                onClick={() => setShowModelManager(true)}
+                                style={{
+                                    padding: '0.3rem 0.6rem',
+                                    backgroundColor: '#12121f',
+                                    color: '#fff',
+                                    border: '1px solid #333',
+                                    borderRadius: '4px',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.3rem'
+                                }}
                             >
-                                <option value="backend/ggml-tiny.bin">tiny (74MB) ~10x</option>
-                                <option value="backend/ggml-base.bin">base (141MB) ~7x</option>
-                                <option value="backend/ggml-small.bin">small (465MB) ~4x</option>
-                                <option value="backend/ggml-medium.bin">medium (1.4GB) ~2x</option>
-                                <option value="backend/ggml-large-v3-turbo.bin">turbo (1.5GB) ~8x ⭐</option>
-                                <option value="backend/ggml-large-v3.bin">large-v3 (2.9GB) 1x</option>
-                            </select>
+                                <span>🤖</span>
+                                <span>{models.find(m => m.id === activeModelId)?.name || 'Выбрать модель'}</span>
+                                <span style={{ color: '#888', fontSize: '0.8rem' }}>▼</span>
+                            </button>
 
                             {/* Эхоподавление (только если Voice Isolation выключен) */}
                             {captureSystem && !useVoiceIsolation && (
@@ -828,6 +1037,98 @@ function App() {
                                     </span>
                                 </div>
                             )}
+                        </div>
+                        
+                        {/* Ollama Settings for Summary */}
+                        <div style={{ 
+                            marginTop: '0.75rem', 
+                            paddingTop: '0.75rem', 
+                            borderTop: '1px solid #333',
+                            display: 'flex', 
+                            gap: '1rem', 
+                            alignItems: 'center', 
+                            flexWrap: 'wrap' 
+                        }}>
+                            <span style={{ fontSize: '0.85rem', color: '#888' }}>📋 Summary (Ollama):</span>
+                            
+                            {/* Выбор модели из списка */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <span style={{ fontSize: '0.8rem', color: '#666' }}>Модель:</span>
+                                <select
+                                    value={ollamaModel}
+                                    onChange={e => setOllamaModel(e.target.value)}
+                                    onFocus={loadOllamaModels}
+                                    style={{ 
+                                        padding: '0.3rem 0.5rem', 
+                                        backgroundColor: '#12121f', 
+                                        color: '#fff', 
+                                        border: '1px solid #333', 
+                                        borderRadius: '4px',
+                                        minWidth: '180px',
+                                        fontSize: '0.85rem',
+                                        cursor: 'pointer'
+                                    }}
+                                    title="Выберите модель Ollama для генерации summary"
+                                >
+                                    {ollamaModelsLoading ? (
+                                        <option value="">Загрузка...</option>
+                                    ) : ollamaModels.length === 0 ? (
+                                        <option value={ollamaModel}>{ollamaModel}</option>
+                                    ) : (
+                                        <>
+                                            {ollamaModels.map(m => (
+                                                <option key={m.name} value={m.name}>
+                                                    {m.isCloud ? '☁️ ' : '💻 '}
+                                                    {m.name}
+                                                    {m.parameters ? ` (${m.parameters})` : ''}
+                                                </option>
+                                            ))}
+                                        </>
+                                    )}
+                                </select>
+                                <button
+                                    onClick={loadOllamaModels}
+                                    disabled={ollamaModelsLoading}
+                                    style={{
+                                        padding: '0.3rem 0.5rem',
+                                        backgroundColor: '#333',
+                                        color: '#888',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        cursor: ollamaModelsLoading ? 'wait' : 'pointer',
+                                        fontSize: '0.8rem'
+                                    }}
+                                    title="Обновить список моделей"
+                                >
+                                    {ollamaModelsLoading ? '⏳' : '🔄'}
+                                </button>
+                            </div>
+                            
+                            {/* Ошибка Ollama */}
+                            {ollamaError && (
+                                <span style={{ 
+                                    fontSize: '0.75rem', 
+                                    color: '#f44336',
+                                    backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                                    padding: '2px 6px',
+                                    borderRadius: '3px'
+                                }}>
+                                    ⚠️ {ollamaError}
+                                </span>
+                            )}
+                            
+                            <a 
+                                href="https://ollama.ai" 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                style={{ 
+                                    fontSize: '0.75rem', 
+                                    color: '#2196f3', 
+                                    textDecoration: 'none' 
+                                }}
+                            >
+                                Установить Ollama →
+                            </a>
                         </div>
                     </div>
                 )}
@@ -851,7 +1152,15 @@ function App() {
                 </div>
 
                 {/* Transcription Area */}
-                <main ref={transcriptionRef} style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto' }}>
+                <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                    {/* Sticky Header: Session info + Tabs */}
+                    {(selectedSession || isRecording) && (
+                        <div style={{ 
+                            flexShrink: 0,
+                            backgroundColor: '#0d0d1a',
+                            borderBottom: '1px solid #333',
+                            padding: '0 1.5rem'
+                        }}>
                     {selectedSession && !isRecording && (
                         <div style={{ 
                             marginBottom: '1rem', 
@@ -976,7 +1285,7 @@ function App() {
                             <div style={{ flex: 1 }}></div>
                             
                             <button 
-                                onClick={() => { setSelectedSession(null); setShowShareMenu(false); }} 
+                                onClick={() => { setSelectedSession(null); setShowShareMenu(false); setActiveTab('dialogue'); }} 
                                 style={{ padding: '0.3rem 0.6rem', backgroundColor: '#333', border: 'none', borderRadius: '4px', color: '#888', cursor: 'pointer' }}
                             >
                                 ✕
@@ -984,6 +1293,21 @@ function App() {
                         </div>
                     )}
 
+                    {/* Session Tabs - показываем только если есть сессия */}
+                    {displaySession && chunks.length > 0 && (
+                        <SessionTabs
+                            activeTab={activeTab}
+                            onTabChange={setActiveTab}
+                            hasSummary={!!displaySession.summary}
+                            isGeneratingSummary={isGeneratingSummary}
+                            isRecording={isRecording}
+                        />
+                    )}
+                        </div>
+                    )}
+
+                    {/* Scrollable Content Area */}
+                    <div ref={transcriptionRef} style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto' }}>
                     {chunks.length === 0 && !isRecording && !selectedSession ? (
                         <div style={{ color: '#666', textAlign: 'center', marginTop: '3rem' }}>
                             <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎙</div>
@@ -996,8 +1320,11 @@ function App() {
                         </div>
                     ) : (
                         <>
-                            {/* Full dialogue with timestamps */}
-                            {allDialogue.length > 0 ? (
+                            {/* Tab: Dialogue */}
+                            {activeTab === 'dialogue' && (
+                                <>
+                                    {/* Full dialogue with timestamps */}
+                                    {allDialogue.length > 0 ? (
                                 <div style={{ 
                                     marginBottom: '1.5rem', 
                                     padding: '1rem', 
@@ -1048,29 +1375,80 @@ function App() {
                                         );
                                     })}
                                 </div>
-                            ) : fullTranscription && (
-                                // Fallback: старый формат
+                            ) : (
+                                // Fallback: показываем чанки по отдельности
                                 <div style={{ 
                                     marginBottom: '1.5rem', 
                                     padding: '1rem', 
                                     backgroundColor: '#1a1a2e', 
                                     borderRadius: '8px', 
-                                    lineHeight: '1.7',
-                                    fontSize: '1rem',
-                                    whiteSpace: 'pre-wrap'
+                                    lineHeight: '1.8',
+                                    fontSize: '0.95rem'
                                 }}>
-                                    {fullTranscription.split('\n').map((line, i) => {
-                                        if (line.startsWith('Вы:')) {
-                                            return <div key={i} style={{ color: '#4caf50' }}>{line}</div>;
-                                        } else if (line.startsWith('Собеседник:')) {
-                                            return <div key={i} style={{ color: '#2196f3' }}>{line}</div>;
-                                        }
-                                        return <span key={i}>{line}</span>;
-                                    })}
+                                    {chunks
+                                        .filter(c => c.status === 'completed')
+                                        .sort((a, b) => a.index - b.index)
+                                        .map((chunk) => {
+                                            // Если есть разделение на mic/sys
+                                            if (chunk.micText || chunk.sysText) {
+                                                return (
+                                                    <div key={chunk.id} style={{ marginBottom: '1rem' }}>
+                                                        {chunk.micText && (
+                                                            <div style={{ 
+                                                                marginBottom: '0.5rem',
+                                                                borderLeft: '3px solid #4caf50',
+                                                                paddingLeft: '0.75rem',
+                                                                backgroundColor: 'rgba(76, 175, 80, 0.05)',
+                                                                padding: '0.4rem 0.75rem',
+                                                                borderRadius: '0 4px 4px 0'
+                                                            }}>
+                                                                <span style={{ color: '#4caf50', fontWeight: 'bold', fontSize: '0.85rem' }}>Вы: </span>
+                                                                <span style={{ color: '#ddd' }}>{chunk.micText}</span>
+                                                            </div>
+                                                        )}
+                                                        {chunk.sysText && (
+                                                            <div style={{ 
+                                                                borderLeft: '3px solid #2196f3',
+                                                                paddingLeft: '0.75rem',
+                                                                backgroundColor: 'rgba(33, 150, 243, 0.05)',
+                                                                padding: '0.4rem 0.75rem',
+                                                                borderRadius: '0 4px 4px 0'
+                                                            }}>
+                                                                <span style={{ color: '#2196f3', fontWeight: 'bold', fontSize: '0.85rem' }}>Собеседник: </span>
+                                                                <span style={{ color: '#ddd' }}>{chunk.sysText}</span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            }
+                                            // Моно режим - просто текст
+                                            if (chunk.transcription) {
+                                                return (
+                                                    <div key={chunk.id} style={{ 
+                                                        marginBottom: '0.8rem',
+                                                        padding: '0.5rem 0.75rem',
+                                                        backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                                                        borderRadius: '4px',
+                                                        color: '#ccc'
+                                                    }}>
+                                                        {chunk.transcription}
+                                                    </div>
+                                                );
+                                            }
+                                            return null;
+                                        })}
+                                    {chunks.filter(c => c.status === 'completed').length === 0 && (
+                                        <div style={{ color: '#666', textAlign: 'center', padding: '2rem' }}>
+                                            Транскрипция обрабатывается...
+                                        </div>
+                                    )}
                                 </div>
                             )}
+                                </>
+                            )}
 
-                            {/* Chunks list */}
+                            {/* Tab: Chunks */}
+                            {activeTab === 'chunks' && (
                             <div style={{ fontSize: '0.85rem' }}>
                                 <h4 style={{ margin: '0 0 0.75rem 0', color: '#888' }}>Чанки ({chunks.length})</h4>
                                 {chunks.map(chunk => {
@@ -1193,16 +1571,61 @@ function App() {
                                     );
                                 })}
                             </div>
+                            )}
+
+                            {/* Tab: Summary */}
+                            {activeTab === 'summary' && displaySession && (
+                                <SummaryView
+                                    summary={displaySession.summary || null}
+                                    isGenerating={isGeneratingSummary}
+                                    error={summaryError}
+                                    onGenerate={handleGenerateSummary}
+                                    hasTranscription={chunks.some(c => c.status === 'completed' && (c.transcription || c.micText || c.sysText || c.dialogue?.length))}
+                                    sessionDate={displaySession.startTime}
+                                />
+                            )}
                         </>
                     )}
+                    </div>
                 </main>
 
-                {/* Console */}
-                <footer style={{ height: '100px', borderTop: '1px solid #333', backgroundColor: '#0a0a14' }}>
-                    <div style={{ padding: '0.3rem 1rem', backgroundColor: '#12121f', fontSize: '0.75rem', color: '#666' }}>Console</div>
-                    <div style={{ padding: '0.5rem 1rem', overflowY: 'auto', height: 'calc(100% - 28px)', fontSize: '0.7rem', fontFamily: 'monospace' }}>
-                        {logs.map((log, i) => <div key={i} style={{ color: '#555' }}>{log}</div>)}
+                {/* Console - сворачиваемая */}
+                <footer style={{ 
+                    height: consoleExpanded ? '150px' : '32px', 
+                    borderTop: '1px solid #333', 
+                    backgroundColor: '#0a0a14',
+                    transition: 'height 0.2s ease-out',
+                    overflow: 'hidden'
+                }}>
+                    <div 
+                        onClick={() => setConsoleExpanded(!consoleExpanded)}
+                        style={{ 
+                            padding: '0.3rem 1rem', 
+                            backgroundColor: '#12121f', 
+                            fontSize: '0.75rem', 
+                            color: '#666',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            userSelect: 'none'
+                        }}
+                    >
+                        <span>
+                            {consoleExpanded ? '▼' : '▶'} Console
+                            {!consoleExpanded && logs.length > 0 && (
+                                <span style={{ marginLeft: '0.5rem', color: '#444' }}>
+                                    — {logs[0]?.substring(0, 50)}{logs[0]?.length > 50 ? '...' : ''}
+                                </span>
+                            )}
+                        </span>
+                        <span style={{ fontSize: '0.65rem', color: '#444' }}>{logs.length} записей</span>
                     </div>
+                    {consoleExpanded && (
+                        <div style={{ padding: '0.5rem 1rem', overflowY: 'auto', height: 'calc(100% - 28px)', fontSize: '0.7rem', fontFamily: 'monospace' }}>
+                            {logs.map((log, i) => <div key={i} style={{ color: '#555' }}>{log}</div>)}
+                        </div>
+                    )}
                 </footer>
             </div>
 
@@ -1218,6 +1641,29 @@ function App() {
                     100% { background-color: #1a3a2a; }
                 }
             `}</style>
+
+            {/* Model Manager Modal */}
+            {showModelManager && (
+                <ModelManager
+                    models={models}
+                    activeModelId={activeModelId}
+                    onDownload={(modelId) => {
+                        wsRef.current?.send(JSON.stringify({ type: 'download_model', modelId }));
+                    }}
+                    onCancelDownload={(modelId) => {
+                        wsRef.current?.send(JSON.stringify({ type: 'cancel_download', modelId }));
+                    }}
+                    onDelete={(modelId) => {
+                        if (confirm('Удалить эту модель?')) {
+                            wsRef.current?.send(JSON.stringify({ type: 'delete_model', modelId }));
+                        }
+                    }}
+                    onSetActive={(modelId) => {
+                        wsRef.current?.send(JSON.stringify({ type: 'set_active_model', modelId }));
+                    }}
+                    onClose={() => setShowModelManager(false)}
+                />
+            )}
         </div>
     );
 }

@@ -360,6 +360,21 @@ func (c *Capture) Data() <-chan ChannelData {
 	return c.dataChan
 }
 
+// ClearBuffers очищает все накопленные аудио данные в буфере
+// Вызывается перед началом новой записи чтобы не захватить старые данные
+func (c *Capture) ClearBuffers() {
+	// Очищаем канал данных
+	for {
+		select {
+		case <-c.dataChan:
+			// Выбрасываем старые данные
+		default:
+			// Канал пуст
+			return
+		}
+	}
+}
+
 // IsSystemCaptureEnabled возвращает true если захват системного звука включен
 func (c *Capture) IsSystemCaptureEnabled() bool {
 	return c.captureSystem && c.systemDeviceID != nil

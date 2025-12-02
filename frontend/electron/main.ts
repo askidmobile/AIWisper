@@ -3,13 +3,40 @@ import path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
 import { autoUpdater } from 'electron-updater';
+import Store from 'electron-store';
 
 // Устанавливаем имя приложения для отображения в меню macOS
 app.setName('AIWisper');
 
+// Настройки приложения
+interface AppSettings {
+    language: 'ru' | 'en' | 'auto';
+    modelId: string;
+    echoCancel: number;
+    useVoiceIsolation: boolean;
+    captureSystem: boolean;
+}
+
+interface StoreSchema {
+    settings: AppSettings;
+}
+
+const store: any = new Store({
+    defaults: {
+        settings: {
+            language: 'ru',
+            modelId: 'ggml-large-v3-turbo',
+            echoCancel: 0.4,
+            useVoiceIsolation: true,
+            captureSystem: true
+        }
+    }
+});
+
 let mainWindow: BrowserWindow | null;
 let goProcess: ChildProcess | null = null;
 let sessionsDataDir: string = ''; // Путь к папке с записями
+let modelsDir: string = ''; // Путь к папке с моделями
 
 const isDev = !app.isPackaged;
 
@@ -84,6 +111,7 @@ function startGoBackend() {
     let backendPath: string;
     let modelPath: string;
     let dataDir: string;
+    let modelsDirPath: string;
     let cwd: string;
 
     if (isDev) {
@@ -92,6 +120,7 @@ function startGoBackend() {
         backendPath = path.join(projectRoot, 'backend_bin');
         modelPath = path.join(projectRoot, 'backend', 'ggml-base.bin');
         dataDir = path.join(projectRoot, 'data', 'sessions');
+        modelsDirPath = path.join(projectRoot, 'data', 'models');
         cwd = projectRoot;
         
         // Fallback на build/resources если backend_bin не найден
@@ -104,15 +133,20 @@ function startGoBackend() {
         modelPath = path.join(resourcesPath, 'ggml-base.bin');
         // Данные сохраняем в Application Support
         dataDir = path.join(app.getPath('userData'), 'sessions');
+        modelsDirPath = path.join(app.getPath('userData'), 'models');
         cwd = resourcesPath;
     }
 
-    // Сохраняем путь к данным глобально для IPC
+    // Сохраняем пути глобально для IPC
     sessionsDataDir = dataDir;
+    modelsDir = modelsDirPath;
 
-    // Создаём директорию для данных
+    // Создаём директории
     if (!fs.existsSync(dataDir)) {
         fs.mkdirSync(dataDir, { recursive: true });
+    }
+    if (!fs.existsSync(modelsDirPath)) {
+        fs.mkdirSync(modelsDirPath, { recursive: true });
     }
 
     // Проверяем существование файлов
@@ -126,17 +160,14 @@ function startGoBackend() {
     }
 
     if (!fs.existsSync(modelPath)) {
-        const errorMsg = `Whisper model not found: ${modelPath}`;
-        logError(errorMsg);
-        if (!isDev) {
-            dialog.showErrorBox('Startup Error', errorMsg);
-        }
-        return;
+        log(`Default model not found: ${modelPath}, will use downloaded models`);
+        // Не выходим - модель может быть скачана позже
     }
 
     log(`Starting Go backend: ${backendPath}`);
     log(`Model path: ${modelPath}`);
     log(`Data directory: ${dataDir}`);
+    log(`Models directory: ${modelsDirPath}`);
     log(`Working directory: ${cwd}`);
 
     // Устанавливаем переменные окружения для dylib
@@ -147,7 +178,7 @@ function startGoBackend() {
         env.DYLD_FALLBACK_LIBRARY_PATH = resourcesPath;
     }
 
-    goProcess = spawn(backendPath, ['-model', modelPath, '-data', dataDir], {
+    goProcess = spawn(backendPath, ['-model', modelPath, '-data', dataDir, '-models', modelsDirPath], {
         cwd: cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: env,
@@ -282,6 +313,37 @@ ipcMain.handle('open-data-folder', async () => {
 // IPC: получить путь к папке с записями
 ipcMain.handle('get-data-folder-path', () => {
     return sessionsDataDir;
+});
+
+// IPC: получить путь к папке с моделями
+ipcMain.handle('get-models-folder-path', () => {
+    return modelsDir;
+});
+
+// IPC: сохранить настройки
+ipcMain.handle('save-settings', (_, settings: Partial<AppSettings>) => {
+    try {
+        const currentSettings = store.get('settings');
+        const newSettings = { ...currentSettings, ...settings };
+        store.set('settings', newSettings);
+        log(`Settings saved: ${JSON.stringify(newSettings)}`);
+        return { success: true };
+    } catch (error) {
+        logError(`Failed to save settings: ${error}`);
+        return { success: false, error: String(error) };
+    }
+});
+
+// IPC: загрузить настройки
+ipcMain.handle('load-settings', () => {
+    try {
+        const settings = store.get('settings');
+        log(`Settings loaded: ${JSON.stringify(settings)}`);
+        return settings;
+    } catch (error) {
+        logError(`Failed to load settings: ${error}`);
+        return null;
+    }
 });
 
 app.on('window-all-closed', () => {
