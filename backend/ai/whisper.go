@@ -120,13 +120,14 @@ func (e *Engine) TranscribeWithSegments(samples []float32) ([]TranscriptSegment,
 		ctx.SetTranslate(false)
 	}
 
-	// Настройки для качественной транскрипции
+	// Настройки для качественной транскрипции (оптимизация для turbo)
 	ctx.SetBeamSize(5)
-	ctx.SetTemperature(0.1) // Небольшая температура для лучшего качества
-	ctx.SetTemperatureFallback(0.3)
+	ctx.SetTemperature(0.0)         // Детерминированный вывод - меньше галлюцинаций
+	ctx.SetTemperatureFallback(0.2) // Меньше вариативности при fallback
 	ctx.SetMaxTokensPerSegment(128)
 	ctx.SetSplitOnWord(true)
 	ctx.SetEntropyThold(2.4)
+	ctx.SetMaxContext(-1) // Не использовать контекст предыдущих сегментов (аналог condition_on_previous_text=False)
 
 	log.Printf("TranscribeWithSegments: samples=%d duration=%.1fs lang=%s", len(samples), float64(len(samples))/16000, e.language)
 
