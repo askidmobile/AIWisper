@@ -53,20 +53,8 @@ func (m *Manager) GetModelPath(modelID string) string {
 		return ""
 	}
 
-	// Для моделей с RequiresPython возвращаем HuggingFace ID
-	// faster-whisper сам скачает и конвертирует модель
-	if info.RequiresPython && info.HuggingFaceRepo != "" {
-		return info.HuggingFaceRepo
-	}
-
-	switch info.Type {
-	case ModelTypeGGML:
-		return filepath.Join(m.modelsDir, modelID+".bin")
-	case ModelTypeFasterWhisper:
-		return filepath.Join(m.modelsDir, modelID)
-	default:
-		return ""
-	}
+	// Все модели теперь GGML формата
+	return filepath.Join(m.modelsDir, modelID+".bin")
 }
 
 // IsModelDownloaded проверяет, скачана ли модель
@@ -76,33 +64,18 @@ func (m *Manager) IsModelDownloaded(modelID string) bool {
 		return false
 	}
 
-	// Модели с RequiresPython всегда "доступны" - faster-whisper скачает сам
-	if info.RequiresPython {
-		return true
-	}
-
 	modelPath := m.GetModelPath(modelID)
 	if modelPath == "" {
 		return false
 	}
 
-	switch info.Type {
-	case ModelTypeGGML:
-		// Проверяем существование .bin файла
-		stat, err := os.Stat(modelPath)
-		if err != nil {
-			return false
-		}
-		// Проверяем что файл не пустой и примерно соответствует размеру
-		return stat.Size() > 1000000 // > 1MB
-	case ModelTypeFasterWhisper:
-		// Проверяем существование директории с config.json
-		configPath := filepath.Join(modelPath, "config.json")
-		_, err := os.Stat(configPath)
-		return err == nil
-	default:
+	// Все модели GGML - проверяем существование .bin файла
+	stat, err := os.Stat(modelPath)
+	if err != nil {
 		return false
 	}
+	// Проверяем что файл не пустой и примерно соответствует размеру
+	return stat.Size() > 1000000 // > 1MB
 }
 
 // GetActiveModel возвращает ID активной модели
@@ -168,14 +141,6 @@ func (m *Manager) DownloadModel(modelID string) error {
 		return fmt.Errorf("unknown model: %s", modelID)
 	}
 
-	// Модели с RequiresPython не скачиваются через менеджер
-	// faster-whisper скачает и конвертирует их автоматически при первом использовании
-	if info.RequiresPython {
-		log.Printf("Model %s requires Python - will be downloaded by faster-whisper on first use", modelID)
-		m.notifyProgress(modelID, 100, ModelStatusDownloaded, nil)
-		return nil
-	}
-
 	// Проверяем, не скачивается ли уже
 	m.mu.Lock()
 	if _, exists := m.downloads[modelID]; exists {
@@ -196,19 +161,13 @@ func (m *Manager) DownloadModel(modelID string) error {
 			m.mu.Unlock()
 		}()
 
-		var err error
 		progressCb := func(progress float64) {
 			m.notifyProgress(modelID, progress, ModelStatusDownloading, nil)
 		}
 
-		switch info.Type {
-		case ModelTypeGGML:
-			destPath := m.GetModelPath(modelID)
-			err = DownloadFile(ctx, info.DownloadURL, destPath, info.SizeBytes, progressCb)
-		case ModelTypeFasterWhisper:
-			destDir := filepath.Join(m.modelsDir, modelID)
-			err = DownloadHuggingFaceModel(ctx, info.HuggingFaceRepo, destDir, progressCb)
-		}
+		// Все модели GGML - скачиваем напрямую
+		destPath := m.GetModelPath(modelID)
+		err := DownloadFile(ctx, info.DownloadURL, destPath, info.SizeBytes, progressCb)
 
 		if err != nil {
 			if ctx.Err() == context.Canceled {
@@ -259,16 +218,9 @@ func (m *Manager) DeleteModel(modelID string) error {
 	m.mu.RUnlock()
 
 	modelPath := m.GetModelPath(modelID)
-	info := GetModelByID(modelID)
 
-	var err error
-	switch info.Type {
-	case ModelTypeGGML:
-		err = os.Remove(modelPath)
-	case ModelTypeFasterWhisper:
-		err = os.RemoveAll(modelPath)
-	}
-
+	// Все модели GGML - удаляем .bin файл
+	err := os.Remove(modelPath)
 	if err != nil {
 		return fmt.Errorf("failed to delete model: %w", err)
 	}
@@ -291,18 +243,13 @@ func (m *Manager) notifyProgress(modelID string, progress float64, status ModelS
 // cleanupPartialDownload удаляет частично скачанный файл
 func (m *Manager) cleanupPartialDownload(modelID string) {
 	modelPath := m.GetModelPath(modelID)
-	info := GetModelByID(modelID)
-	if info == nil {
+	if modelPath == "" {
 		return
 	}
 
-	switch info.Type {
-	case ModelTypeGGML:
-		os.Remove(modelPath)
-		os.Remove(modelPath + ".tmp")
-	case ModelTypeFasterWhisper:
-		os.RemoveAll(modelPath)
-	}
+	// Все модели GGML - удаляем .bin и .tmp файлы
+	os.Remove(modelPath)
+	os.Remove(modelPath + ".tmp")
 }
 
 // GetDownloadingModels возвращает список скачиваемых моделей

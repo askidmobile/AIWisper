@@ -197,6 +197,7 @@ elif [ -f "$BACKEND_DIR/ai/binding/ggml-metal.metal" ]; then
     cp "$BACKEND_DIR/ai/binding/ggml-metal.metal" "$RESOURCES_DIR/"
     log_success "Copied Metal shader"
 fi
+
 echo ""
 
 # =============================================================================

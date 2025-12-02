@@ -42,12 +42,22 @@ type Session struct {
 	mu sync.RWMutex `json:"-"`
 }
 
+// TranscriptWord слово с точными таймстемпами
+type TranscriptWord struct {
+	Start   int64   `json:"start"`   // Начало в миллисекундах
+	End     int64   `json:"end"`     // Конец в миллисекундах
+	Text    string  `json:"text"`    // Текст слова
+	P       float32 `json:"p"`       // Вероятность (confidence)
+	Speaker string  `json:"speaker"` // "mic" или "sys"
+}
+
 // TranscriptSegment сегмент транскрипции с таймстемпами
 type TranscriptSegment struct {
-	Start   int64  `json:"start"`   // Начало в миллисекундах относительно начала чанка
-	End     int64  `json:"end"`     // Конец в миллисекундах
-	Text    string `json:"text"`    // Текст сегмента
-	Speaker string `json:"speaker"` // "mic" или "sys"
+	Start   int64            `json:"start"`           // Начало в миллисекундах относительно начала чанка
+	End     int64            `json:"end"`             // Конец в миллисекундах
+	Text    string           `json:"text"`            // Текст сегмента
+	Speaker string           `json:"speaker"`         // "mic" или "sys"
+	Words   []TranscriptWord `json:"words,omitempty"` // Слова с точными timestamps (word-level)
 }
 
 // Chunk представляет фрагмент аудио для распознавания

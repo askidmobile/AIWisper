@@ -5,26 +5,22 @@ package models
 type ModelType string
 
 const (
-	ModelTypeGGML          ModelType = "ggml"
-	ModelTypeFasterWhisper ModelType = "faster-whisper"
+	ModelTypeGGML ModelType = "ggml"
 )
 
 // ModelInfo информация о модели
 type ModelInfo struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	Type            ModelType `json:"type"`
-	Size            string    `json:"size"`
-	SizeBytes       int64     `json:"sizeBytes"`
-	Description     string    `json:"description"`
-	Languages       []string  `json:"languages"`
-	WER             string    `json:"wer,omitempty"`
-	Speed           string    `json:"speed"`
-	Recommended     bool      `json:"recommended,omitempty"`
-	DownloadURL     string    `json:"downloadUrl,omitempty"`
-	HuggingFaceRepo string    `json:"huggingfaceRepo,omitempty"`
-	// RequiresPython - модель требует Python для конвертации (transformers формат)
-	RequiresPython bool `json:"requiresPython,omitempty"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Type        ModelType `json:"type"`
+	Size        string    `json:"size"`
+	SizeBytes   int64     `json:"sizeBytes"`
+	Description string    `json:"description"`
+	Languages   []string  `json:"languages"`
+	WER         string    `json:"wer,omitempty"`
+	Speed       string    `json:"speed"`
+	Recommended bool      `json:"recommended,omitempty"`
+	DownloadURL string    `json:"downloadUrl,omitempty"`
 }
 
 // ModelStatus статус модели на устройстве
@@ -112,46 +108,11 @@ var Registry = []ModelInfo{
 		Type:        ModelTypeGGML,
 		Size:        "2.9 GB",
 		SizeBytes:   3_094_623_691,
-		Description: "Максимальное качество, медленная",
+		Description: "Максимальное качество распознавания",
 		Languages:   []string{"multi"},
 		Speed:       "~1x",
+		Recommended: true,
 		DownloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
-	},
-
-	// ===== Faster-Whisper модели (CTranslate2) =====
-	{
-		ID:              "faster-large-v3-turbo",
-		Name:            "Large V3 Turbo (Faster)",
-		Type:            ModelTypeFasterWhisper,
-		Size:            "1.5 GB",
-		SizeBytes:       1_550_000_000,
-		Description:     "Быстрая мультиязычная модель Faster-Whisper",
-		Languages:       []string{"multi"},
-		Speed:           "~8x",
-		HuggingFaceRepo: "Systran/faster-whisper-large-v3-turbo",
-	},
-	{
-		ID:              "faster-large-v3-russian",
-		Name:            "Large V3 Russian",
-		Type:            ModelTypeFasterWhisper,
-		Size:            "3.0 GB",
-		SizeBytes:       3_100_000_000,
-		Description:     "Лучшее качество для русского языка (CTranslate2)",
-		Languages:       []string{"ru"},
-		Speed:           "~2x",
-		Recommended:     true,
-		HuggingFaceRepo: "bzikst/faster-whisper-large-v3-russian",
-	},
-	{
-		ID:              "faster-large-v3-turbo-russian",
-		Name:            "Large V3 Turbo Russian",
-		Type:            ModelTypeFasterWhisper,
-		Size:            "1.6 GB",
-		SizeBytes:       1_600_000_000,
-		Description:     "Быстрая модель для русского языка",
-		Languages:       []string{"ru"},
-		Speed:           "~6x",
-		HuggingFaceRepo: "dvislobokov/faster-whisper-large-v3-turbo-russian",
 	},
 }
 

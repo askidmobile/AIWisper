@@ -32,6 +32,42 @@ func convertSegments(aiSegs []ai.TranscriptSegment, speaker string) []session.Tr
 			End:     seg.End,
 			Text:    seg.Text,
 			Speaker: speaker,
+			Words:   convertWords(seg.Words, speaker, 0),
+		}
+	}
+	return result
+}
+
+// convertSegmentsWithGlobalOffset конвертирует сегменты из ai в session с добавлением глобального offset чанка
+// chunkStartMs - время начала чанка относительно начала всей записи (в миллисекундах)
+// Это критически важно для правильного отображения временных меток в диалоге
+func convertSegmentsWithGlobalOffset(aiSegs []ai.TranscriptSegment, speaker string, chunkStartMs int64) []session.TranscriptSegment {
+	result := make([]session.TranscriptSegment, len(aiSegs))
+	for i, seg := range aiSegs {
+		result[i] = session.TranscriptSegment{
+			Start:   seg.Start + chunkStartMs, // Добавляем глобальный offset
+			End:     seg.End + chunkStartMs,   // Добавляем глобальный offset
+			Text:    seg.Text,
+			Speaker: speaker,
+			Words:   convertWords(seg.Words, speaker, chunkStartMs),
+		}
+	}
+	return result
+}
+
+// convertWords конвертирует слова из ai в session с добавлением глобального offset
+func convertWords(aiWords []ai.TranscriptWord, speaker string, chunkStartMs int64) []session.TranscriptWord {
+	if len(aiWords) == 0 {
+		return nil
+	}
+	result := make([]session.TranscriptWord, len(aiWords))
+	for i, word := range aiWords {
+		result[i] = session.TranscriptWord{
+			Start:   word.Start + chunkStartMs,
+			End:     word.End + chunkStartMs,
+			Text:    word.Text,
+			P:       word.P,
+			Speaker: speaker,
 		}
 	}
 	return result
@@ -320,6 +356,10 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 	var stopChan chan struct{}
 	var sessionUseVoiceIsolation bool // Флаг режима Voice Isolation для текущей сессии
 
+	// Семафор для ограничения параллельных транскрипций (только 1 одновременно)
+	// Это предотвращает перегрузку GPU/CPU при использовании тяжёлых моделей
+	transcriptionSem := make(chan struct{}, 1)
+
 	// Callback для прогресса скачивания моделей
 	modelMgr.SetProgressCallback(func(modelID string, progress float64, status models.ModelStatus, err error) {
 		errStr := ""
@@ -332,15 +372,6 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 			Progress: progress,
 			Data:     string(status),
 			Error:    errStr,
-		})
-	})
-
-	// Callback для статуса установки faster-whisper
-	ai.SetGlobalStatusCallback(func(status, message string) {
-		log.Printf("Status callback: %s - %s", status, message)
-		conn.WriteJSON(Message{
-			Type: "status",
-			Data: status + ": " + message,
 		})
 	})
 
@@ -391,15 +422,17 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					sysErr = err2
 				}
 
-				// Определяем offset начала речи для каждого канала
-				var micOffsetMs, sysOffsetMs int64
+				// Определяем ВСЕ участки речи для каждого канала с помощью VAD
+				// Это нужно для правильного маппинга таймстемпов Whisper на реальное время
+				// Whisper "сжимает" паузы и возвращает таймстемпы относительно речи, а не аудио
+				var micRegions, sysRegions []session.SpeechRegion
 				if micErr == nil && len(micSamples) > 0 {
-					micOffsetMs = session.DetectSpeechStart(micSamples, session.SampleRate)
-					log.Printf("Mic speech starts at: %d ms", micOffsetMs)
+					micRegions = session.DetectSpeechRegions(micSamples, session.WhisperSampleRate)
+					log.Printf("VAD: Mic has %d speech regions", len(micRegions))
 				}
 				if sysErr == nil && len(sysSamples) > 0 {
-					sysOffsetMs = session.DetectSpeechStart(sysSamples, session.SampleRate)
-					log.Printf("Sys speech starts at: %d ms", sysOffsetMs)
+					sysRegions = session.DetectSpeechRegions(sysSamples, session.WhisperSampleRate)
+					log.Printf("VAD: Sys has %d speech regions", len(sysRegions))
 				}
 
 				// Транскрипция микрофона
@@ -408,15 +441,37 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					if micErr != nil {
 						return
 					}
-					log.Printf("Transcribing mic channel: %d samples", len(micSamples))
+					log.Printf("Transcribing mic channel: %d samples (%.1f sec)", len(micSamples), float64(len(micSamples))/16000)
 					micSegments, micErr = engine.TranscribeWithSegments(micSamples)
 					if micErr != nil {
 						log.Printf("Mic transcription error: %v", micErr)
 					} else {
-						// Применяем offset к таймстемпам
-						for i := range micSegments {
-							micSegments[i].Start += micOffsetMs
-							micSegments[i].End += micOffsetMs
+						// Логируем оригинальные таймстемпы от Whisper
+						for i, seg := range micSegments {
+							log.Printf("Mic segment %d from Whisper: start=%dms end=%dms text=%q",
+								i, seg.Start, seg.End, seg.Text)
+						}
+
+						// Маппим таймстемпы Whisper на реальное время с учётом пауз
+						if len(micSegments) > 0 && len(micRegions) > 0 {
+							whisperStarts := make([]int64, len(micSegments))
+							for i, seg := range micSegments {
+								whisperStarts[i] = seg.Start
+							}
+							realStarts := session.MapWhisperSegmentsToRealTime(whisperStarts, micRegions)
+							for i := range micSegments {
+								// Вычисляем длительность сегмента и применяем к новому началу
+								duration := micSegments[i].End - micSegments[i].Start
+								micSegments[i].Start = realStarts[i]
+								micSegments[i].End = realStarts[i] + duration
+
+								// Маппим также слова внутри сегмента
+								for j := range micSegments[i].Words {
+									wordDuration := micSegments[i].Words[j].End - micSegments[i].Words[j].Start
+									micSegments[i].Words[j].Start = session.MapWhisperTimeToRealTime(micSegments[i].Words[j].Start, micRegions)
+									micSegments[i].Words[j].End = micSegments[i].Words[j].Start + wordDuration
+								}
+							}
 						}
 
 						var texts []string
@@ -424,7 +479,7 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 							texts = append(texts, seg.Text)
 						}
 						micText = strings.Join(texts, " ")
-						log.Printf("Mic transcription: %d chars, %d segments (offset: %dms)", len(micText), len(micSegments), micOffsetMs)
+						log.Printf("Mic transcription: %d chars, %d segments", len(micText), len(micSegments))
 					}
 				}()
 
@@ -434,15 +489,36 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					if sysErr != nil {
 						return
 					}
-					log.Printf("Transcribing sys channel: %d samples", len(sysSamples))
+					log.Printf("Transcribing sys channel: %d samples (%.1f sec)", len(sysSamples), float64(len(sysSamples))/16000)
 					sysSegments, sysErr = engine.TranscribeWithSegments(sysSamples)
 					if sysErr != nil {
 						log.Printf("Sys transcription error: %v", sysErr)
 					} else {
-						// Применяем offset к таймстемпам
-						for i := range sysSegments {
-							sysSegments[i].Start += sysOffsetMs
-							sysSegments[i].End += sysOffsetMs
+						// Логируем оригинальные таймстемпы от Whisper
+						for i, seg := range sysSegments {
+							log.Printf("Sys segment %d from Whisper: start=%dms end=%dms text=%q",
+								i, seg.Start, seg.End, seg.Text)
+						}
+
+						// Маппим таймстемпы Whisper на реальное время с учётом пауз
+						if len(sysSegments) > 0 && len(sysRegions) > 0 {
+							whisperStarts := make([]int64, len(sysSegments))
+							for i, seg := range sysSegments {
+								whisperStarts[i] = seg.Start
+							}
+							realStarts := session.MapWhisperSegmentsToRealTime(whisperStarts, sysRegions)
+							for i := range sysSegments {
+								duration := sysSegments[i].End - sysSegments[i].Start
+								sysSegments[i].Start = realStarts[i]
+								sysSegments[i].End = realStarts[i] + duration
+
+								// Маппим также слова внутри сегмента
+								for j := range sysSegments[i].Words {
+									wordDuration := sysSegments[i].Words[j].End - sysSegments[i].Words[j].Start
+									sysSegments[i].Words[j].Start = session.MapWhisperTimeToRealTime(sysSegments[i].Words[j].Start, sysRegions)
+									sysSegments[i].Words[j].End = sysSegments[i].Words[j].Start + wordDuration
+								}
+							}
 						}
 
 						var texts []string
@@ -450,7 +526,7 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 							texts = append(texts, seg.Text)
 						}
 						sysText = strings.Join(texts, " ")
-						log.Printf("Sys transcription: %d chars, %d segments (offset: %dms)", len(sysText), len(sysSegments), sysOffsetMs)
+						log.Printf("Sys transcription: %d chars, %d segments", len(sysText), len(sysSegments))
 					}
 				}()
 
@@ -462,9 +538,12 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					finalErr = fmt.Errorf("mic: %v, sys: %v", micErr, sysErr)
 				}
 
-				// Конвертируем сегменты ai -> session
-				sessionMicSegs := convertSegments(micSegments, "mic")
-				sessionSysSegs := convertSegments(sysSegments, "sys")
+				// Конвертируем сегменты ai -> session С ДОБАВЛЕНИЕМ ГЛОБАЛЬНОГО OFFSET ЧАНКА
+				// chunk.StartMs - это время начала чанка относительно начала всей записи
+				// Это критически важно для правильного отображения временных меток в диалоге
+				log.Printf("Applying global chunk offset: %d ms to all segments", chunk.StartMs)
+				sessionMicSegs := convertSegmentsWithGlobalOffset(micSegments, "mic", chunk.StartMs)
+				sessionSysSegs := convertSegmentsWithGlobalOffset(sysSegments, "sys", chunk.StartMs)
 
 				sessionMgr.UpdateChunkStereoWithSegments(sessID, chunkID, micText, sysText, sessionMicSegs, sessionSysSegs, finalErr)
 
@@ -516,10 +595,12 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 						return
 					}
 
-					// Определяем offset начала речи для каждого канала
-					micOffsetMs := session.DetectSpeechStart(micSamples, session.WhisperSampleRate)
-					sysOffsetMs := session.DetectSpeechStart(sysSamples, session.WhisperSampleRate)
-					log.Printf("MP3 extract: Mic offset=%dms, Sys offset=%dms", micOffsetMs, sysOffsetMs)
+					log.Printf("MP3 extract: mic samples=%d, sys samples=%d", len(micSamples), len(sysSamples))
+
+					// Определяем ВСЕ участки речи с помощью VAD
+					micRegions := session.DetectSpeechRegions(micSamples, session.WhisperSampleRate)
+					sysRegions := session.DetectSpeechRegions(sysSamples, session.WhisperSampleRate)
+					log.Printf("MP3 VAD: mic has %d regions, sys has %d regions", len(micRegions), len(sysRegions))
 
 					var micText, sysText string
 					var micSegments, sysSegments []ai.TranscriptSegment
@@ -531,12 +612,29 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 						defer wg.Done()
 						micSegments, micErr = engine.TranscribeWithSegments(micSamples)
 						if micErr == nil {
-							// Применяем offset
-							for i := range micSegments {
-								micSegments[i].Start += micOffsetMs
-								micSegments[i].End += micOffsetMs
+							for i, seg := range micSegments {
+								log.Printf("MP3 Mic segment %d: start=%dms end=%dms text=%q", i, seg.Start, seg.End, seg.Text)
 							}
+							// Маппим таймстемпы на реальное время
+							if len(micSegments) > 0 && len(micRegions) > 0 {
+								whisperStarts := make([]int64, len(micSegments))
+								for i, seg := range micSegments {
+									whisperStarts[i] = seg.Start
+								}
+								realStarts := session.MapWhisperSegmentsToRealTime(whisperStarts, micRegions)
+								for i := range micSegments {
+									duration := micSegments[i].End - micSegments[i].Start
+									micSegments[i].Start = realStarts[i]
+									micSegments[i].End = realStarts[i] + duration
 
+									// Маппим также слова внутри сегмента
+									for j := range micSegments[i].Words {
+										wordDuration := micSegments[i].Words[j].End - micSegments[i].Words[j].Start
+										micSegments[i].Words[j].Start = session.MapWhisperTimeToRealTime(micSegments[i].Words[j].Start, micRegions)
+										micSegments[i].Words[j].End = micSegments[i].Words[j].Start + wordDuration
+									}
+								}
+							}
 							var texts []string
 							for _, seg := range micSegments {
 								texts = append(texts, seg.Text)
@@ -548,12 +646,29 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 						defer wg.Done()
 						sysSegments, sysErr = engine.TranscribeWithSegments(sysSamples)
 						if sysErr == nil {
-							// Применяем offset
-							for i := range sysSegments {
-								sysSegments[i].Start += sysOffsetMs
-								sysSegments[i].End += sysOffsetMs
+							for i, seg := range sysSegments {
+								log.Printf("MP3 Sys segment %d: start=%dms end=%dms text=%q", i, seg.Start, seg.End, seg.Text)
 							}
+							// Маппим таймстемпы на реальное время
+							if len(sysSegments) > 0 && len(sysRegions) > 0 {
+								whisperStarts := make([]int64, len(sysSegments))
+								for i, seg := range sysSegments {
+									whisperStarts[i] = seg.Start
+								}
+								realStarts := session.MapWhisperSegmentsToRealTime(whisperStarts, sysRegions)
+								for i := range sysSegments {
+									duration := sysSegments[i].End - sysSegments[i].Start
+									sysSegments[i].Start = realStarts[i]
+									sysSegments[i].End = realStarts[i] + duration
 
+									// Маппим также слова внутри сегмента
+									for j := range sysSegments[i].Words {
+										wordDuration := sysSegments[i].Words[j].End - sysSegments[i].Words[j].Start
+										sysSegments[i].Words[j].Start = session.MapWhisperTimeToRealTime(sysSegments[i].Words[j].Start, sysRegions)
+										sysSegments[i].Words[j].End = sysSegments[i].Words[j].Start + wordDuration
+									}
+								}
+							}
 							var texts []string
 							for _, seg := range sysSegments {
 								texts = append(texts, seg.Text)
@@ -567,8 +682,10 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					if micErr != nil && sysErr != nil {
 						finalErr = fmt.Errorf("mic: %v, sys: %v", micErr, sysErr)
 					}
-					sessionMicSegs := convertSegments(micSegments, "mic")
-					sessionSysSegs := convertSegments(sysSegments, "sys")
+					// Добавляем глобальный offset чанка к временным меткам
+					log.Printf("MP3 fallback: Applying global chunk offset: %d ms", chunk.StartMs)
+					sessionMicSegs := convertSegmentsWithGlobalOffset(micSegments, "mic", chunk.StartMs)
+					sessionSysSegs := convertSegmentsWithGlobalOffset(sysSegments, "sys", chunk.StartMs)
 					sessionMgr.UpdateChunkStereoWithSegments(sessID, chunkID, micText, sysText, sessionMicSegs, sessionSysSegs, finalErr)
 				} else {
 					samples, err := session.ExtractSegment(mp3Path, chunk.StartMs, chunk.EndMs, session.WhisperSampleRate)
@@ -1020,14 +1137,20 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 				Chunk:     targetChunk,
 			})
 
-			// Перетранскрибируем
+			// Перетранскрибируем (с очередью - только 1 транскрипция одновременно)
 			go func(chunk *session.Chunk, sessID string, dataDir string, isStereo bool) {
-				log.Printf("Retranscribing chunk %d with current model settings, stereo=%v", chunk.Index, isStereo)
+				// Захватываем семафор (ждём если уже идёт транскрипция)
+				log.Printf("Chunk %d: waiting for transcription slot...", chunk.Index)
+				transcriptionSem <- struct{}{}
+				defer func() { <-transcriptionSem }()
+
+				log.Printf("Chunk %d: starting retranscription, stereo=%v", chunk.Index, isStereo)
 
 				mp3Path := filepath.Join(dataDir, "full.mp3")
 
 				if isStereo {
-					// Стерео: извлекаем раздельные каналы и транскрибируем отдельно
+					// Стерео: извлекаем раздельные каналы и транскрибируем ПОСЛЕДОВАТЕЛЬНО
+					// (не параллельно, чтобы не перегружать GPU)
 					micSamples, sysSamples, err := session.ExtractSegmentStereo(mp3Path, chunk.StartMs, chunk.EndMs, session.WhisperSampleRate)
 					if err != nil {
 						log.Printf("Failed to extract stereo segment for retranscription: %v", err)
@@ -1035,26 +1158,77 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 						return
 					}
 
-					// Транскрибируем оба канала параллельно
+					// Определяем ВСЕ участки речи с помощью VAD для каждого канала
+					micRegions := session.DetectSpeechRegions(micSamples, session.WhisperSampleRate)
+					sysRegions := session.DetectSpeechRegions(sysSamples, session.WhisperSampleRate)
+					log.Printf("Retranscription VAD: mic has %d speech regions, sys has %d speech regions", len(micRegions), len(sysRegions))
+
+					// Транскрибируем каналы последовательно
 					var micSegments, sysSegments []ai.TranscriptSegment
-					var wg sync.WaitGroup
 					var micErr, sysErr error
 
-					wg.Add(2)
-					go func() {
-						defer wg.Done()
-						micSegments, micErr = engine.TranscribeWithSegments(micSamples)
-					}()
-					go func() {
-						defer wg.Done()
-						sysSegments, sysErr = engine.TranscribeWithSegments(sysSamples)
-					}()
-					wg.Wait()
+					log.Printf("Chunk %d: transcribing mic channel (%d samples)...", chunk.Index, len(micSamples))
+					micSegments, micErr = engine.TranscribeWithSegments(micSamples)
+
+					log.Printf("Chunk %d: transcribing sys channel (%d samples)...", chunk.Index, len(sysSamples))
+					sysSegments, sysErr = engine.TranscribeWithSegments(sysSamples)
 
 					if micErr != nil && sysErr != nil {
 						log.Printf("Retranscription failed for both channels: mic=%v, sys=%v", micErr, sysErr)
 						sessionMgr.UpdateChunkTranscription(sessID, chunk.ID, "", micErr)
 						return
+					}
+
+					// Логируем оригинальные таймстемпы от Whisper для mic
+					for i, seg := range micSegments {
+						log.Printf("Retrans Mic segment %d from Whisper: start=%dms end=%dms text=%q", i, seg.Start, seg.End, seg.Text)
+					}
+
+					// Маппим таймстемпы Whisper на реальное время с учётом пауз для mic
+					if len(micSegments) > 0 && len(micRegions) > 0 {
+						whisperStarts := make([]int64, len(micSegments))
+						for i, seg := range micSegments {
+							whisperStarts[i] = seg.Start
+						}
+						realStarts := session.MapWhisperSegmentsToRealTime(whisperStarts, micRegions)
+						for i := range micSegments {
+							duration := micSegments[i].End - micSegments[i].Start
+							micSegments[i].Start = realStarts[i]
+							micSegments[i].End = realStarts[i] + duration
+
+							// Маппим также слова внутри сегмента
+							for j := range micSegments[i].Words {
+								wordDuration := micSegments[i].Words[j].End - micSegments[i].Words[j].Start
+								micSegments[i].Words[j].Start = session.MapWhisperTimeToRealTime(micSegments[i].Words[j].Start, micRegions)
+								micSegments[i].Words[j].End = micSegments[i].Words[j].Start + wordDuration
+							}
+						}
+					}
+
+					// Логируем оригинальные таймстемпы от Whisper для sys
+					for i, seg := range sysSegments {
+						log.Printf("Retrans Sys segment %d from Whisper: start=%dms end=%dms text=%q", i, seg.Start, seg.End, seg.Text)
+					}
+
+					// Маппим таймстемпы Whisper на реальное время с учётом пауз для sys
+					if len(sysSegments) > 0 && len(sysRegions) > 0 {
+						whisperStarts := make([]int64, len(sysSegments))
+						for i, seg := range sysSegments {
+							whisperStarts[i] = seg.Start
+						}
+						realStarts := session.MapWhisperSegmentsToRealTime(whisperStarts, sysRegions)
+						for i := range sysSegments {
+							duration := sysSegments[i].End - sysSegments[i].Start
+							sysSegments[i].Start = realStarts[i]
+							sysSegments[i].End = realStarts[i] + duration
+
+							// Маппим также слова внутри сегмента
+							for j := range sysSegments[i].Words {
+								wordDuration := sysSegments[i].Words[j].End - sysSegments[i].Words[j].Start
+								sysSegments[i].Words[j].Start = session.MapWhisperTimeToRealTime(sysSegments[i].Words[j].Start, sysRegions)
+								sysSegments[i].Words[j].End = sysSegments[i].Words[j].Start + wordDuration
+							}
+						}
 					}
 
 					// Собираем текст из сегментов
@@ -1067,8 +1241,11 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					}
 
 					log.Printf("Retranscription complete: mic=%d chars, sys=%d chars", len(micText), len(sysText))
+					// Добавляем глобальный offset чанка к временным меткам при ретранскрипции
+					log.Printf("Retranscription: Applying global chunk offset: %d ms", chunk.StartMs)
 					sessionMgr.UpdateChunkStereoWithSegments(sessID, chunk.ID, micText, sysText,
-						convertSegments(micSegments, "mic"), convertSegments(sysSegments, "sys"), nil)
+						convertSegmentsWithGlobalOffset(micSegments, "mic", chunk.StartMs),
+						convertSegmentsWithGlobalOffset(sysSegments, "sys", chunk.StartMs), nil)
 				} else {
 					// Моно: простая транскрипция
 					samples, err := session.ExtractSegment(mp3Path, chunk.StartMs, chunk.EndMs, session.WhisperSampleRate)

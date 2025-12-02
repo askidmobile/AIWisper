@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -230,9 +231,17 @@ func (m *Manager) UpdateChunkTranscription(sessionID, chunkID, text string, err 
 			if err != nil {
 				chunk.Status = ChunkStatusFailed
 				chunk.Error = err.Error()
+				// Очищаем старые данные при ошибке
+				chunk.Transcription = ""
+				chunk.MicText = ""
+				chunk.SysText = ""
+				chunk.MicSegments = nil
+				chunk.SysSegments = nil
+				chunk.Dialogue = nil
 			} else {
 				chunk.Status = ChunkStatusCompleted
 				chunk.Transcription = text
+				chunk.Error = "" // Очищаем ошибку при успехе
 			}
 
 			// Сохраняем метаданные чанка
@@ -277,8 +286,16 @@ func (m *Manager) UpdateChunkStereoWithSegments(sessionID, chunkID, micText, sys
 			if err != nil {
 				chunk.Status = ChunkStatusFailed
 				chunk.Error = err.Error()
+				// Очищаем старые данные при ошибке
+				chunk.MicText = ""
+				chunk.SysText = ""
+				chunk.Transcription = ""
+				chunk.MicSegments = nil
+				chunk.SysSegments = nil
+				chunk.Dialogue = nil
 			} else {
 				chunk.Status = ChunkStatusCompleted
+				chunk.Error = "" // Очищаем ошибку при успехе
 				chunk.MicText = micText
 				chunk.SysText = sysText
 				chunk.MicSegments = micSegments
@@ -309,11 +326,38 @@ func (m *Manager) UpdateChunkStereoWithSegments(sessionID, chunkID, micText, sys
 }
 
 // mergeSegmentsToDialogue объединяет сегменты mic и sys в хронологическом порядке
+// Использует word-level timestamps для более точной хронологии, если доступны
 func mergeSegmentsToDialogue(micSegments, sysSegments []TranscriptSegment) []TranscriptSegment {
+	log.Printf("mergeSegmentsToDialogue: mic=%d segments, sys=%d segments", len(micSegments), len(sysSegments))
+
+	// Проверяем есть ли word-level данные
+	hasWords := false
+	for _, seg := range micSegments {
+		if len(seg.Words) > 0 {
+			hasWords = true
+			break
+		}
+	}
+	if !hasWords {
+		for _, seg := range sysSegments {
+			if len(seg.Words) > 0 {
+				hasWords = true
+				break
+			}
+		}
+	}
+
+	// Если есть word-level данные, используем их для более точного диалога
+	if hasWords {
+		return mergeWordsToDialogue(micSegments, sysSegments)
+	}
+
+	// Fallback: используем сегменты как раньше
 	var dialogue []TranscriptSegment
 
 	// Добавляем сегменты микрофона
-	for _, seg := range micSegments {
+	for i, seg := range micSegments {
+		log.Printf("  mic[%d]: start=%dms end=%dms text=%q", i, seg.Start, seg.End, seg.Text)
 		dialogue = append(dialogue, TranscriptSegment{
 			Start:   seg.Start,
 			End:     seg.End,
@@ -323,7 +367,8 @@ func mergeSegmentsToDialogue(micSegments, sysSegments []TranscriptSegment) []Tra
 	}
 
 	// Добавляем сегменты системы
-	for _, seg := range sysSegments {
+	for i, seg := range sysSegments {
+		log.Printf("  sys[%d]: start=%dms end=%dms text=%q", i, seg.Start, seg.End, seg.Text)
 		dialogue = append(dialogue, TranscriptSegment{
 			Start:   seg.Start,
 			End:     seg.End,
@@ -336,6 +381,113 @@ func mergeSegmentsToDialogue(micSegments, sysSegments []TranscriptSegment) []Tra
 	sort.Slice(dialogue, func(i, j int) bool {
 		return dialogue[i].Start < dialogue[j].Start
 	})
+
+	log.Printf("mergeSegmentsToDialogue: result=%d segments (segment-level)", len(dialogue))
+	for i, seg := range dialogue {
+		log.Printf("  dialogue[%d]: start=%dms speaker=%s text=%q", i, seg.Start, seg.Speaker, seg.Text)
+	}
+
+	return dialogue
+}
+
+// mergeWordsToDialogue создаёт диалог на основе word-level timestamps
+// Группирует последовательные слова одного спикера в фразы
+func mergeWordsToDialogue(micSegments, sysSegments []TranscriptSegment) []TranscriptSegment {
+	// Собираем все слова из всех сегментов
+	var allWords []TranscriptWord
+
+	for _, seg := range micSegments {
+		for _, word := range seg.Words {
+			w := word
+			w.Speaker = "mic"
+			allWords = append(allWords, w)
+		}
+	}
+
+	for _, seg := range sysSegments {
+		for _, word := range seg.Words {
+			w := word
+			w.Speaker = "sys"
+			allWords = append(allWords, w)
+		}
+	}
+
+	log.Printf("mergeWordsToDialogue: total %d words from both channels", len(allWords))
+
+	if len(allWords) == 0 {
+		return nil
+	}
+
+	// Сортируем все слова по времени начала
+	sort.Slice(allWords, func(i, j int) bool {
+		return allWords[i].Start < allWords[j].Start
+	})
+
+	// Группируем последовательные слова одного спикера в фразы
+	// Также разбиваем на фразы при паузе > 1 секунды
+	const maxPauseMs = 1000 // Максимальная пауза внутри фразы
+
+	var dialogue []TranscriptSegment
+	var currentPhrase TranscriptSegment
+	var currentWords []TranscriptWord
+	var phraseTexts []string
+
+	for i, word := range allWords {
+		// Первое слово - начинаем новую фразу
+		if i == 0 {
+			currentPhrase = TranscriptSegment{
+				Start:   word.Start,
+				End:     word.End,
+				Speaker: word.Speaker,
+			}
+			phraseTexts = []string{word.Text}
+			currentWords = []TranscriptWord{word}
+			continue
+		}
+
+		// Проверяем нужно ли начать новую фразу:
+		// 1. Сменился спикер
+		// 2. Пауза больше maxPauseMs
+		prevWord := allWords[i-1]
+		pauseMs := word.Start - prevWord.End
+		speakerChanged := word.Speaker != currentPhrase.Speaker
+		longPause := pauseMs > maxPauseMs
+
+		if speakerChanged || longPause {
+			// Сохраняем текущую фразу
+			currentPhrase.End = prevWord.End
+			currentPhrase.Text = strings.Join(phraseTexts, " ")
+			currentPhrase.Words = currentWords
+			dialogue = append(dialogue, currentPhrase)
+
+			// Начинаем новую фразу
+			currentPhrase = TranscriptSegment{
+				Start:   word.Start,
+				End:     word.End,
+				Speaker: word.Speaker,
+			}
+			phraseTexts = []string{word.Text}
+			currentWords = []TranscriptWord{word}
+		} else {
+			// Продолжаем текущую фразу
+			currentPhrase.End = word.End
+			phraseTexts = append(phraseTexts, word.Text)
+			currentWords = append(currentWords, word)
+		}
+	}
+
+	// Добавляем последнюю фразу
+	if len(phraseTexts) > 0 {
+		currentPhrase.Text = strings.Join(phraseTexts, " ")
+		currentPhrase.Words = currentWords
+		dialogue = append(dialogue, currentPhrase)
+	}
+
+	log.Printf("mergeWordsToDialogue: result=%d phrases (word-level)", len(dialogue))
+	for i, seg := range dialogue {
+		log.Printf("  dialogue[%d]: start=%dms end=%dms speaker=%s words=%d text=%q",
+			i, seg.Start, seg.End, seg.Speaker, len(seg.Words), seg.Text)
+	}
 
 	return dialogue
 }

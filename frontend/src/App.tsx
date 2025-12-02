@@ -155,8 +155,9 @@ function App() {
     const [showShareMenu, setShowShareMenu] = useState(false);
     const [copySuccess, setCopySuccess] = useState(false);
 
-    // Highlight chunk after retranscription
+    // Highlight chunk during and after retranscription
     const [highlightedChunkId, setHighlightedChunkId] = useState<string | null>(null);
+    const [transcribingChunkId, setTranscribingChunkId] = useState<string | null>(null);
     
     // Track if new chunk was added (for auto-scroll during recording only)
     const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
@@ -341,6 +342,9 @@ function App() {
                                 const chunks = prev.chunks.map(c => c.id === msg.chunk.id ? msg.chunk : c);
                                 return { ...prev, chunks };
                             });
+                            
+                            // Сбрасываем индикатор транскрипции
+                            setTranscribingChunkId(prev => prev === msg.chunk.id ? null : prev);
                             
                             // Подсвечиваем перетранскрибированный чанк (мигание)
                             setHighlightedChunkId(msg.chunk.id);
@@ -533,6 +537,20 @@ function App() {
         // Получаем путь к активной модели
         const activeModel = models.find(m => m.id === activeModelId);
         const modelPath = activeModel?.path || '';
+        
+        // Сразу обновляем UI: очищаем ошибку и ставим статус transcribing
+        setSelectedSession(prev => {
+            if (!prev) return prev;
+            const chunks = prev.chunks.map(c => 
+                c.id === chunkId 
+                    ? { ...c, status: 'transcribing' as const, error: undefined, transcription: '', micText: '', sysText: '', dialogue: [] }
+                    : c
+            );
+            return { ...prev, chunks };
+        });
+        
+        // Подсвечиваем чанк во время транскрипции
+        setTranscribingChunkId(chunkId);
         
         wsRef.current?.send(JSON.stringify({
             type: 'retranscribe_chunk',
@@ -1457,16 +1475,17 @@ function App() {
                                         `http://localhost:8080/api/sessions/${displaySession.id}/chunk/${chunk.index}.mp3` : '';
                                     const isPlaying = playingAudio === chunkAudioUrl;
                                     const isHighlighted = highlightedChunkId === chunk.id;
+                                    const isTranscribing = transcribingChunkId === chunk.id || chunk.status === 'transcribing';
                                     
                                     return (
                                         <div key={chunk.id} style={{ 
                                             padding: '0.6rem 0.8rem', 
                                             marginBottom: '0.4rem', 
-                                            backgroundColor: isHighlighted ? '#1a3a2a' : '#12121f', 
+                                            backgroundColor: isTranscribing ? '#2a2a1a' : isHighlighted ? '#1a3a2a' : '#12121f', 
                                             borderRadius: '4px',
                                             borderLeft: `3px solid ${chunk.status === 'completed' ? '#4caf50' : chunk.status === 'failed' ? '#f44336' : '#ff9800'}`,
                                             transition: 'background-color 0.3s ease',
-                                            animation: isHighlighted ? 'highlight-pulse 0.5s ease-in-out 2' : 'none'
+                                            animation: isTranscribing ? 'transcribing-pulse 1s ease-in-out infinite' : isHighlighted ? 'highlight-pulse 0.5s ease-in-out 2' : 'none'
                                         }}>
                                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
                                                 <span style={{ color: '#888' }}>
@@ -1564,6 +1583,11 @@ function App() {
                                             ) : chunk.transcription && (
                                                 <div style={{ marginTop: '0.4rem', color: '#ccc', lineHeight: '1.5' }}>{chunk.transcription}</div>
                                             )}
+                                            {isTranscribing && (
+                                                <div style={{ marginTop: '0.4rem', color: '#ff9800', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                    <span style={{ animation: 'pulse 1s infinite' }}>⏳</span> Распознаётся...
+                                                </div>
+                                            )}
                                             {chunk.error && (
                                                 <div style={{ marginTop: '0.4rem', color: '#f44336', fontSize: '0.8rem' }}>Ошибка: {chunk.error}</div>
                                             )}
@@ -1639,6 +1663,10 @@ function App() {
                     0% { background-color: #12121f; }
                     50% { background-color: #2a4a3a; }
                     100% { background-color: #1a3a2a; }
+                }
+                @keyframes transcribing-pulse {
+                    0%, 100% { background-color: #2a2a1a; }
+                    50% { background-color: #3a3a2a; }
                 }
             `}</style>
 
