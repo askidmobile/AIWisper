@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2025-12-03
+
+### Fixed
+- **Chunk Preservation During Retranscription**: Fixed critical bug where chunks were merged into one after full retranscription
+  - Root cause: Chunks were not loaded into memory when session was retrieved
+  - Solution: Added automatic chunk loading from disk in both `UpdateFullTranscription` and `retranscribe_full` handler
+  - Now properly preserves original chunk structure (e.g., 27 chunks stay as 27 chunks)
+
+### Added
+- **Cancel Button for Full Retranscription**: Added ability to cancel ongoing full retranscription
+  - Cancel button appears in the progress bar during retranscription
+  - Properly stops the transcription goroutine with cleanup
+  - Uses WaitGroup for safe goroutine synchronization
+
+### Technical
+- `backend/session/manager.go`:
+  - `UpdateFullTranscription()` now loads chunks from disk if not in memory
+  - Added detailed logging for chunk loading and distribution
+- `backend/main.go`:
+  - `retranscribe_full` goroutine loads chunks from disk before processing
+  - Added `sort` import for chunk ordering
+  - Added `fullTranscriptionCancel` channel and `fullTranscriptionWg` WaitGroup
+  - Added `cancel_full_transcription` WebSocket handler
+- `frontend/src/App.tsx`:
+  - Added cancel button UI with spinner animation
+  - Added `isCancellingTranscription` state for debounce
+  - Handles `full_transcription_cancelled` message
+
 ## [1.5.6] - 2024-12-03
 
 ### Changed

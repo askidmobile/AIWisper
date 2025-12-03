@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1312,6 +1313,10 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engineMgr *a
 				conn.WriteJSON(Message{Type: "error", Data: err.Error()})
 				continue
 			}
+			log.Printf("retranscribe_full: session %s has %d chunks in memory", sess.ID, len(sess.Chunks))
+			for i, c := range sess.Chunks {
+				log.Printf("  chunk[%d]: ID=%s, StartMs=%d, EndMs=%d", i, c.ID, c.StartMs, c.EndMs)
+			}
 
 			// Отменяем предыдущую транскрипцию если она идёт
 			fullTranscriptionMu.Lock()
@@ -1388,10 +1393,38 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engineMgr *a
 					return
 				}
 
+				// Если чанки не загружены в память, загружаем их с диска
+				if len(sess.Chunks) == 0 {
+					chunksDir := filepath.Join(sess.DataDir, "chunks")
+					chunkFiles, _ := filepath.Glob(filepath.Join(chunksDir, "*.json"))
+					log.Printf("retranscribe_full goroutine: no chunks in memory, found %d chunk files on disk", len(chunkFiles))
+
+					for _, chunkFile := range chunkFiles {
+						chunkData, err := os.ReadFile(chunkFile)
+						if err != nil {
+							log.Printf("retranscribe_full: failed to read chunk file %s: %v", chunkFile, err)
+							continue
+						}
+						var chunk session.Chunk
+						if err := json.Unmarshal(chunkData, &chunk); err != nil {
+							log.Printf("retranscribe_full: failed to unmarshal chunk %s: %v", chunkFile, err)
+							continue
+						}
+						sess.Chunks = append(sess.Chunks, &chunk)
+					}
+
+					// Сортируем чанки по индексу
+					sort.Slice(sess.Chunks, func(i, j int) bool {
+						return sess.Chunks[i].Index < sess.Chunks[j].Index
+					})
+
+					log.Printf("retranscribe_full: loaded %d chunks from disk", len(sess.Chunks))
+				}
+
 				// Определяем режим (стерео или моно)
 				isStereo := len(sess.Chunks) > 0 && sess.Chunks[0].IsStereo
 
-				log.Printf("Starting full file transcription for session %s, stereo=%v", sess.ID, isStereo)
+				log.Printf("Starting full file transcription for session %s, stereo=%v, chunks=%d", sess.ID, isStereo, len(sess.Chunks))
 
 				// Константа: максимальная длина сегмента для транскрипции (20 минут) - используется как fallback
 				const maxSegmentDurationMs int64 = 20 * 60 * 1000 // 20 минут в миллисекундах

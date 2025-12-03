@@ -586,13 +586,16 @@ func (m *Manager) LoadSessions() error {
 		// Загружаем чанки
 		chunksDir := filepath.Join(m.dataDir, entry.Name(), "chunks")
 		chunkFiles, _ := filepath.Glob(filepath.Join(chunksDir, "*.json"))
+		log.Printf("LoadSessions: session %s found %d chunk files in %s", session.ID, len(chunkFiles), chunksDir)
 		for _, chunkFile := range chunkFiles {
 			chunkData, err := os.ReadFile(chunkFile)
 			if err != nil {
+				log.Printf("LoadSessions: failed to read chunk file %s: %v", chunkFile, err)
 				continue
 			}
 			var chunk Chunk
 			if err := json.Unmarshal(chunkData, &chunk); err != nil {
+				log.Printf("LoadSessions: failed to unmarshal chunk %s: %v", chunkFile, err)
 				continue
 			}
 			session.Chunks = append(session.Chunks, &chunk)
@@ -603,6 +606,7 @@ func (m *Manager) LoadSessions() error {
 			return session.Chunks[i].Index < session.Chunks[j].Index
 		})
 
+		log.Printf("LoadSessions: session %s loaded with %d chunks", session.ID, len(session.Chunks))
 		m.sessions[session.ID] = &session
 	}
 
@@ -703,11 +707,45 @@ func (m *Manager) UpdateFullTranscription(sessionID string, micSegments, sysSegm
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	log.Printf("UpdateFullTranscription: session %s has %d chunks, mic=%d segments, sys=%d segments",
+	log.Printf("UpdateFullTranscription: session %s has %d chunks in memory, mic=%d segments, sys=%d segments",
 		sessionID, len(session.Chunks), len(micSegments), len(sysSegments))
 
-	// Если нет существующих чанков, создаём один с полной транскрипцией
+	// Если чанки не загружены в память, попробуем загрузить их с диска
 	if len(session.Chunks) == 0 {
+		chunksDir := filepath.Join(session.DataDir, "chunks")
+		chunkFiles, _ := filepath.Glob(filepath.Join(chunksDir, "*.json"))
+		log.Printf("UpdateFullTranscription: no chunks in memory, found %d chunk files on disk", len(chunkFiles))
+
+		for _, chunkFile := range chunkFiles {
+			chunkData, err := os.ReadFile(chunkFile)
+			if err != nil {
+				log.Printf("UpdateFullTranscription: failed to read chunk file %s: %v", chunkFile, err)
+				continue
+			}
+			var chunk Chunk
+			if err := json.Unmarshal(chunkData, &chunk); err != nil {
+				log.Printf("UpdateFullTranscription: failed to unmarshal chunk %s: %v", chunkFile, err)
+				continue
+			}
+			session.Chunks = append(session.Chunks, &chunk)
+		}
+
+		// Сортируем чанки по индексу
+		sort.Slice(session.Chunks, func(i, j int) bool {
+			return session.Chunks[i].Index < session.Chunks[j].Index
+		})
+
+		log.Printf("UpdateFullTranscription: loaded %d chunks from disk", len(session.Chunks))
+	}
+
+	// Логируем границы существующих чанков
+	for i, c := range session.Chunks {
+		log.Printf("UpdateFullTranscription: existing chunk[%d]: ID=%s, StartMs=%d, EndMs=%d", i, c.ID, c.StartMs, c.EndMs)
+	}
+
+	// Если всё ещё нет чанков, создаём один с полной транскрипцией
+	if len(session.Chunks) == 0 {
+		log.Printf("UpdateFullTranscription: NO CHUNKS FOUND even on disk, creating single chunk")
 		// Объединяем сегменты в диалог
 		dialogue := mergeSegmentsToDialogue(micSegments, sysSegments)
 
