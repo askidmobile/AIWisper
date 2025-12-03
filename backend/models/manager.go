@@ -53,8 +53,22 @@ func (m *Manager) GetModelPath(modelID string) string {
 		return ""
 	}
 
-	// Все модели теперь GGML формата
-	return filepath.Join(m.modelsDir, modelID+".bin")
+	// Расширение зависит от типа модели
+	switch info.Type {
+	case ModelTypeONNX:
+		return filepath.Join(m.modelsDir, modelID+".onnx")
+	default:
+		return filepath.Join(m.modelsDir, modelID+".bin")
+	}
+}
+
+// GetVocabPath возвращает путь к словарю (для ONNX моделей)
+func (m *Manager) GetVocabPath(modelID string) string {
+	info := GetModelByID(modelID)
+	if info == nil || info.VocabURL == "" {
+		return ""
+	}
+	return filepath.Join(m.modelsDir, modelID+"_vocab.txt")
 }
 
 // IsModelDownloaded проверяет, скачана ли модель
@@ -69,13 +83,25 @@ func (m *Manager) IsModelDownloaded(modelID string) bool {
 		return false
 	}
 
-	// Все модели GGML - проверяем существование .bin файла
+	// Проверяем существование основного файла модели
 	stat, err := os.Stat(modelPath)
 	if err != nil {
 		return false
 	}
 	// Проверяем что файл не пустой и примерно соответствует размеру
-	return stat.Size() > 1000000 // > 1MB
+	if stat.Size() < 1000000 { // < 1MB
+		return false
+	}
+
+	// Для ONNX моделей проверяем также наличие словаря
+	if info.Type == ModelTypeONNX && info.VocabURL != "" {
+		vocabPath := m.GetVocabPath(modelID)
+		if _, err := os.Stat(vocabPath); err != nil {
+			return false
+		}
+	}
+
+	return true
 }
 
 // GetActiveModel возвращает ID активной модели
@@ -161,11 +187,27 @@ func (m *Manager) DownloadModel(modelID string) error {
 			m.mu.Unlock()
 		}()
 
-		progressCb := func(progress float64) {
-			m.notifyProgress(modelID, progress, ModelStatusDownloading, nil)
+		// Для ONNX моделей с vocab - скачиваем оба файла
+		hasVocab := info.Type == ModelTypeONNX && info.VocabURL != ""
+		totalSize := info.SizeBytes
+		if hasVocab {
+			totalSize += 1000 // ~1KB для vocab файла
 		}
 
-		// Все модели GGML - скачиваем напрямую
+		var downloadedSize int64
+
+		progressCb := func(progress float64) {
+			// Пересчитываем общий прогресс
+			if hasVocab {
+				// Модель составляет ~99.9% от общего размера
+				modelProgress := progress * 0.999
+				m.notifyProgress(modelID, modelProgress, ModelStatusDownloading, nil)
+			} else {
+				m.notifyProgress(modelID, progress, ModelStatusDownloading, nil)
+			}
+		}
+
+		// Скачиваем основной файл модели
 		destPath := m.GetModelPath(modelID)
 		err := DownloadFile(ctx, info.DownloadURL, destPath, info.SizeBytes, progressCb)
 
@@ -173,7 +215,6 @@ func (m *Manager) DownloadModel(modelID string) error {
 			if ctx.Err() == context.Canceled {
 				log.Printf("Download cancelled for model: %s", modelID)
 				m.notifyProgress(modelID, 0, ModelStatusNotDownloaded, nil)
-				// Удаляем частично скачанный файл
 				m.cleanupPartialDownload(modelID)
 			} else {
 				log.Printf("Download failed for model %s: %v", modelID, err)
@@ -181,6 +222,33 @@ func (m *Manager) DownloadModel(modelID string) error {
 			}
 			return
 		}
+
+		downloadedSize = info.SizeBytes
+
+		// Скачиваем vocab если нужно
+		if hasVocab {
+			vocabPath := m.GetVocabPath(modelID)
+			vocabProgressCb := func(progress float64) {
+				// vocab - последние 0.1%
+				totalProgress := 99.9 + progress*0.1
+				m.notifyProgress(modelID, totalProgress, ModelStatusDownloading, nil)
+			}
+
+			err = DownloadFile(ctx, info.VocabURL, vocabPath, 1000, vocabProgressCb)
+			if err != nil {
+				if ctx.Err() == context.Canceled {
+					log.Printf("Vocab download cancelled for model: %s", modelID)
+					m.notifyProgress(modelID, 0, ModelStatusNotDownloaded, nil)
+					m.cleanupPartialDownload(modelID)
+				} else {
+					log.Printf("Vocab download failed for model %s: %v", modelID, err)
+					m.notifyProgress(modelID, 0, ModelStatusError, err)
+				}
+				return
+			}
+		}
+
+		_ = downloadedSize // используется для расчёта прогресса
 
 		log.Printf("Download completed for model: %s", modelID)
 		m.notifyProgress(modelID, 100, ModelStatusDownloaded, nil)
@@ -217,12 +285,19 @@ func (m *Manager) DeleteModel(modelID string) error {
 	}
 	m.mu.RUnlock()
 
+	info := GetModelByID(modelID)
 	modelPath := m.GetModelPath(modelID)
 
-	// Все модели GGML - удаляем .bin файл
+	// Удаляем основной файл модели
 	err := os.Remove(modelPath)
 	if err != nil {
 		return fmt.Errorf("failed to delete model: %w", err)
+	}
+
+	// Для ONNX моделей удаляем также vocab
+	if info != nil && info.Type == ModelTypeONNX && info.VocabURL != "" {
+		vocabPath := m.GetVocabPath(modelID)
+		os.Remove(vocabPath) // игнорируем ошибку
 	}
 
 	log.Printf("Model deleted: %s", modelID)
@@ -242,14 +317,22 @@ func (m *Manager) notifyProgress(modelID string, progress float64, status ModelS
 
 // cleanupPartialDownload удаляет частично скачанный файл
 func (m *Manager) cleanupPartialDownload(modelID string) {
+	info := GetModelByID(modelID)
 	modelPath := m.GetModelPath(modelID)
 	if modelPath == "" {
 		return
 	}
 
-	// Все модели GGML - удаляем .bin и .tmp файлы
+	// Удаляем основной файл и временные файлы
 	os.Remove(modelPath)
 	os.Remove(modelPath + ".tmp")
+
+	// Для ONNX моделей удаляем также vocab
+	if info != nil && info.Type == ModelTypeONNX && info.VocabURL != "" {
+		vocabPath := m.GetVocabPath(modelID)
+		os.Remove(vocabPath)
+		os.Remove(vocabPath + ".tmp")
+	}
 }
 
 // GetDownloadingModels возвращает список скачиваемых моделей

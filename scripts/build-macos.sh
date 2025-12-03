@@ -198,6 +198,19 @@ elif [ -f "$BACKEND_DIR/ai/binding/ggml-metal.metal" ]; then
     log_success "Copied Metal shader"
 fi
 
+# ONNX Runtime для GigaAM
+ONNX_LIB_DIR="$BACKEND_DIR/cmd/spike_gigaam/onnxruntime-osx-arm64-1.22.0/lib"
+if [ -f "$ONNX_LIB_DIR/libonnxruntime.1.22.0.dylib" ]; then
+    cp "$ONNX_LIB_DIR/libonnxruntime.1.22.0.dylib" "$RESOURCES_DIR/"
+    # Создаём симлинк для совместимости
+    cd "$RESOURCES_DIR"
+    ln -sf libonnxruntime.1.22.0.dylib libonnxruntime.dylib
+    cd "$PROJECT_ROOT"
+    log_success "Copied ONNX Runtime for GigaAM"
+else
+    log_warn "ONNX Runtime not found - GigaAM will not work"
+fi
+
 echo ""
 
 # =============================================================================
@@ -357,6 +370,11 @@ fi
 # Подписываем ffmpeg
 if [ -f "ffmpeg" ]; then
     codesign --force --sign - "ffmpeg" 2>/dev/null || log_warn "Failed to sign ffmpeg"
+fi
+
+# Подписываем ONNX Runtime
+if [ -f "libonnxruntime.1.22.0.dylib" ]; then
+    codesign --force --sign - "libonnxruntime.1.22.0.dylib" 2>/dev/null || log_warn "Failed to sign libonnxruntime"
 fi
 
 log_success "Binaries signed"

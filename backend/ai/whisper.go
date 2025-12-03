@@ -9,16 +9,24 @@ import (
 	"sync"
 )
 
-// Engine движок распознавания речи на основе whisper.cpp
-type Engine struct {
+// WhisperEngine движок распознавания речи на основе whisper.cpp
+// Реализует интерфейс TranscriptionEngine
+type WhisperEngine struct {
 	model     whisper.Model
 	modelPath string
 	language  string
 	mu        sync.Mutex
 }
 
-// NewEngine создаёт новый движок с указанной моделью
-func NewEngine(modelPath string) (*Engine, error) {
+// Engine алиас для обратной совместимости
+// Deprecated: используйте WhisperEngine
+type Engine = WhisperEngine
+
+// Проверяем что WhisperEngine реализует TranscriptionEngine
+var _ TranscriptionEngine = (*WhisperEngine)(nil)
+
+// NewWhisperEngine создаёт новый движок с указанной моделью
+func NewWhisperEngine(modelPath string) (*WhisperEngine, error) {
 	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
 		return nil, err
 	}
@@ -35,31 +43,41 @@ func NewEngine(modelPath string) (*Engine, error) {
 
 	log.Printf("Whisper init: language=%s model=%s", lang, modelPath)
 
-	return &Engine{
+	return &WhisperEngine{
 		model:     model,
 		modelPath: modelPath,
 		language:  lang,
 	}, nil
 }
 
-// TranscriptSegment сегмент с таймстемпами
-type TranscriptSegment struct {
-	Start int64            // миллисекунды
-	End   int64            // миллисекунды
-	Text  string           // полный текст сегмента
-	Words []TranscriptWord // слова с точными timestamps (word-level)
+// NewEngine алиас для обратной совместимости
+// Deprecated: используйте NewWhisperEngine
+func NewEngine(modelPath string) (*WhisperEngine, error) {
+	return NewWhisperEngine(modelPath)
 }
 
-// TranscriptWord слово с точными таймстемпами
-type TranscriptWord struct {
-	Start int64   // миллисекунды
-	End   int64   // миллисекунды
-	Text  string  // текст слова
-	P     float32 // вероятность (confidence)
+// Name возвращает имя движка
+func (e *WhisperEngine) Name() string {
+	return "whisper"
+}
+
+// SupportedLanguages возвращает список поддерживаемых языков
+func (e *WhisperEngine) SupportedLanguages() []string {
+	return []string{
+		"auto", "en", "zh", "de", "es", "ru", "ko", "fr", "ja", "pt", "tr",
+		"pl", "ca", "nl", "ar", "sv", "it", "id", "hi", "fi", "vi", "he",
+		"uk", "el", "ms", "cs", "ro", "da", "hu", "ta", "no", "th", "ur",
+		"hr", "bg", "lt", "la", "mi", "ml", "cy", "sk", "te", "fa", "lv",
+		"bn", "sr", "az", "sl", "kn", "et", "mk", "br", "eu", "is", "hy",
+		"ne", "mn", "bs", "kk", "sq", "sw", "gl", "mr", "pa", "si", "km",
+		"sn", "yo", "so", "af", "oc", "ka", "be", "tg", "sd", "gu", "am",
+		"yi", "lo", "uz", "fo", "ht", "ps", "tk", "nn", "mt", "sa", "lb",
+		"my", "bo", "tl", "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su",
+	}
 }
 
 // Transcribe транскрибирует аудио и возвращает текст
-func (e *Engine) Transcribe(samples []float32, useContext bool) (string, error) {
+func (e *WhisperEngine) Transcribe(samples []float32, useContext bool) (string, error) {
 	segments, err := e.TranscribeWithSegments(samples)
 	if err != nil {
 		return "", err
@@ -75,7 +93,7 @@ func (e *Engine) Transcribe(samples []float32, useContext bool) (string, error) 
 }
 
 // TranscribeWithSegments возвращает сегменты с таймстемпами
-func (e *Engine) TranscribeWithSegments(samples []float32) ([]TranscriptSegment, error) {
+func (e *WhisperEngine) TranscribeWithSegments(samples []float32) ([]TranscriptSegment, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -352,15 +370,140 @@ func hasSignificantAudio(samples []float32) bool {
 	return true
 }
 
+// TranscribeHighQuality выполняет высококачественную транскрипцию для полных файлов
+// Использует более агрессивные параметры для максимальной точности
+func (e *WhisperEngine) TranscribeHighQuality(samples []float32) ([]TranscriptSegment, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Для полной транскрипции используем менее строгую проверку
+	// Проверяем только минимальную длину
+	if len(samples) < 1600 { // ~0.1 секунды при 16kHz
+		log.Printf("TranscribeHighQuality: audio too short (%d samples)", len(samples))
+		return nil, nil
+	}
+
+	// Логируем характеристики аудио для диагностики
+	var sum float64
+	var maxAbs float32
+	for _, s := range samples {
+		sum += float64(s * s)
+		if s > maxAbs {
+			maxAbs = s
+		} else if -s > maxAbs {
+			maxAbs = -s
+		}
+	}
+	rms := math.Sqrt(sum / float64(len(samples)))
+	log.Printf("TranscribeHighQuality: samples=%d, RMS=%.4f, maxAmp=%.4f", len(samples), rms, maxAbs)
+
+	norm := normalize(samples)
+
+	ctx, err := e.model.NewContext()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := ctx.SetLanguage(e.language); err != nil {
+		log.Printf("Failed to set language %q, falling back to auto: %v", e.language, err)
+		_ = ctx.SetLanguage("auto")
+	} else {
+		ctx.SetTranslate(false)
+	}
+
+	// ВЫСОКОКАЧЕСТВЕННЫЕ НАСТРОЙКИ для полной транскрипции
+	// Основано на исследовании лучших практик Whisper
+
+	// Beam search с большим размером для лучшего качества
+	ctx.SetBeamSize(5)
+
+	// Температура 0 для детерминистичного вывода (beam search)
+	ctx.SetTemperature(0.0)
+	// Fallback температура при низкой уверенности
+	ctx.SetTemperatureFallback(0.2)
+
+	// Порог энтропии для определения галлюцинаций
+	// Более низкое значение = более строгая фильтрация
+	ctx.SetEntropyThold(2.4)
+
+	// Максимум токенов на сегмент (для длинных предложений)
+	ctx.SetMaxTokensPerSegment(256) // Увеличено с 128
+
+	// Разделение по словам для точных timestamps
+	ctx.SetSplitOnWord(true)
+
+	// Отключаем контекст для предотвращения зацикливания
+	// -1 означает использование всего доступного контекста
+	// 0 означает отключение контекста
+	ctx.SetMaxContext(0) // Полностью отключаем для предотвращения галлюцинаций
+
+	// Включаем таймстемпы токенов для точных временных меток
+	ctx.SetTokenTimestamps(true)
+
+	// Пустой промпт для чистого старта
+	ctx.SetInitialPrompt("")
+
+	log.Printf("TranscribeHighQuality: samples=%d duration=%.1fs lang=%s beam=5 temp=0.0",
+		len(samples), float64(len(samples))/16000, e.language)
+
+	log.Printf("TranscribeHighQuality: calling ctx.Process...")
+	if err := ctx.Process(norm, nil, nil, nil); err != nil {
+		log.Printf("TranscribeHighQuality: ctx.Process error: %v", err)
+		return nil, err
+	}
+	log.Printf("TranscribeHighQuality: ctx.Process completed, collecting segments...")
+
+	// Собираем сегменты с таймстемпами и словами
+	var segments []TranscriptSegment
+	segmentCount := 0
+	emptyCount := 0
+	hallucinationCount := 0
+	for {
+		segment, err := ctx.NextSegment()
+		if err != nil {
+			log.Printf("TranscribeHighQuality: NextSegment ended with: %v", err)
+			break
+		}
+		segmentCount++
+
+		text := strings.TrimSpace(segment.Text)
+		if text == "" {
+			emptyCount++
+			continue
+		}
+
+		// Фильтруем типичные галлюцинации whisper
+		if isHallucination(text) {
+			hallucinationCount++
+			log.Printf("Filtered hallucination: %q", text)
+			continue
+		}
+
+		// Извлекаем слова из токенов
+		words := extractWordsFromTokens(segment.Tokens)
+
+		segments = append(segments, TranscriptSegment{
+			Start: segment.Start.Milliseconds(),
+			End:   segment.End.Milliseconds(),
+			Text:  text,
+			Words: words,
+		})
+	}
+
+	log.Printf("TranscribeHighQuality: raw=%d, empty=%d, hallucinations=%d, final=%d segments",
+		segmentCount, emptyCount, hallucinationCount, len(segments))
+	return segments, nil
+}
+
 // Close закрывает движок
-func (e *Engine) Close() {
+func (e *WhisperEngine) Close() {
 	if e.model != nil {
 		e.model.Close()
 	}
 }
 
 // SetLanguage устанавливает язык распознавания
-func (e *Engine) SetLanguage(lang string) {
+func (e *WhisperEngine) SetLanguage(lang string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	lang = strings.TrimSpace(lang)
@@ -371,7 +514,7 @@ func (e *Engine) SetLanguage(lang string) {
 }
 
 // SetModel переключает модель
-func (e *Engine) SetModel(path string) error {
+func (e *WhisperEngine) SetModel(path string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 

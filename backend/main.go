@@ -180,14 +180,46 @@ func main() {
 	}
 	log.Println("Model manager initialized")
 
-	// Initialize AI
-	log.Println("Loading Whisper model...")
-	whisperEngine, err := ai.NewEngine(*modelPath)
-	if err != nil {
-		log.Printf("Warning: Failed to load Whisper model: %v", err)
+	// Initialize Engine Manager
+	log.Println("Initializing engine manager...")
+	engineMgr := ai.NewEngineManager(modelMgr)
+	defer engineMgr.Close()
+
+	// Пытаемся загрузить модель по умолчанию
+	log.Println("Loading default model...")
+	if _, err := os.Stat(*modelPath); err == nil {
+		// Если указанный путь существует - это legacy режим с прямым путём к модели
+		whisperEngine, err := ai.NewWhisperEngine(*modelPath)
+		if err != nil {
+			log.Printf("Warning: Failed to load Whisper model from path: %v", err)
+		} else {
+			log.Println("Whisper model loaded successfully (legacy mode)")
+			// В legacy режиме используем прямой движок
+			// TODO: интегрировать в EngineManager
+			_ = whisperEngine
+		}
+	}
+
+	// Пробуем загрузить рекомендуемую модель из менеджера
+	activeModelID := modelMgr.GetActiveModel()
+	if activeModelID == "" {
+		// Ищем первую скачанную модель
+		for _, state := range modelMgr.GetAllModelsState() {
+			if state.Status == models.ModelStatusDownloaded || state.Status == models.ModelStatusActive {
+				activeModelID = state.ID
+				break
+			}
+		}
+	}
+
+	if activeModelID != "" {
+		if err := engineMgr.SetActiveModel(activeModelID); err != nil {
+			log.Printf("Warning: Failed to activate model %s: %v", activeModelID, err)
+		} else {
+			log.Printf("Model %s activated successfully", activeModelID)
+		}
 	} else {
-		log.Println("Whisper model loaded successfully")
-		defer whisperEngine.Close()
+		log.Println("No downloaded models found. Please download a model first.")
 	}
 
 	// HTTP handlers
@@ -198,7 +230,7 @@ func main() {
 			return
 		}
 		defer conn.Close()
-		handleConnection(conn, capture, whisperEngine, sessionMgr, modelMgr)
+		handleConnection(conn, capture, engineMgr, sessionMgr, modelMgr)
 	})
 
 	// Static file serving for audio files
@@ -348,7 +380,7 @@ func handleSessionsList(w http.ResponseWriter, r *http.Request, mgr *session.Man
 	json.NewEncoder(w).Encode(infos)
 }
 
-func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.Engine, sessionMgr *session.Manager, modelMgr *models.Manager) {
+func handleConnection(conn *websocket.Conn, capture *audio.Capture, engineMgr *ai.EngineManager, sessionMgr *session.Manager, modelMgr *models.Manager) {
 	var mu sync.Mutex
 	var currentSession *session.Session
 	var mp3Writer *session.MP3Writer // MP3 вместо WAV для экономии места
@@ -359,6 +391,11 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 	// Семафор для ограничения параллельных транскрипций (только 1 одновременно)
 	// Это предотвращает перегрузку GPU/CPU при использовании тяжёлых моделей
 	transcriptionSem := make(chan struct{}, 1)
+
+	// Канал для отмены полной ретранскрипции и WaitGroup для ожидания завершения
+	var fullTranscriptionCancel chan struct{}
+	var fullTranscriptionMu sync.Mutex
+	var fullTranscriptionWg sync.WaitGroup
 
 	// Callback для прогресса скачивания моделей
 	modelMgr.SetProgressCallback(func(modelID string, progress float64, status models.ModelStatus, err error) {
@@ -377,7 +414,7 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 
 	// Callback для готовых чанков - транскрибируем
 	sessionMgr.SetOnChunkReady(func(chunk *session.Chunk) {
-		if engine == nil {
+		if engineMgr == nil {
 			log.Printf("Engine is nil, skipping transcription for chunk %s", chunk.ID)
 			return
 		}
@@ -442,7 +479,7 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 						return
 					}
 					log.Printf("Transcribing mic channel: %d samples (%.1f sec)", len(micSamples), float64(len(micSamples))/16000)
-					micSegments, micErr = engine.TranscribeWithSegments(micSamples)
+					micSegments, micErr = engineMgr.TranscribeWithSegments(micSamples)
 					if micErr != nil {
 						log.Printf("Mic transcription error: %v", micErr)
 					} else {
@@ -490,7 +527,7 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 						return
 					}
 					log.Printf("Transcribing sys channel: %d samples (%.1f sec)", len(sysSamples), float64(len(sysSamples))/16000)
-					sysSegments, sysErr = engine.TranscribeWithSegments(sysSamples)
+					sysSegments, sysErr = engineMgr.TranscribeWithSegments(sysSamples)
 					if sysErr != nil {
 						log.Printf("Sys transcription error: %v", sysErr)
 					} else {
@@ -563,7 +600,7 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 
 				log.Printf("Transcribing chunk %d: %d samples (%.1f sec)", chunk.Index, len(samples), float64(len(samples))/16000)
 
-				text, err := engine.Transcribe(samples, false)
+				text, err := engineMgr.Transcribe(samples, false)
 				if err != nil {
 					log.Printf("Transcription error for chunk %d: %v", chunk.Index, err)
 					sessionMgr.UpdateChunkTranscription(sessID, chunkID, "", err)
@@ -610,7 +647,7 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					wg.Add(2)
 					go func() {
 						defer wg.Done()
-						micSegments, micErr = engine.TranscribeWithSegments(micSamples)
+						micSegments, micErr = engineMgr.TranscribeWithSegments(micSamples)
 						if micErr == nil {
 							for i, seg := range micSegments {
 								log.Printf("MP3 Mic segment %d: start=%dms end=%dms text=%q", i, seg.Start, seg.End, seg.Text)
@@ -644,7 +681,7 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					}()
 					go func() {
 						defer wg.Done()
-						sysSegments, sysErr = engine.TranscribeWithSegments(sysSamples)
+						sysSegments, sysErr = engineMgr.TranscribeWithSegments(sysSamples)
 						if sysErr == nil {
 							for i, seg := range sysSegments {
 								log.Printf("MP3 Sys segment %d: start=%dms end=%dms text=%q", i, seg.Start, seg.End, seg.Text)
@@ -694,7 +731,7 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 						sessionMgr.UpdateChunkTranscription(sessID, chunkID, "", err)
 						return
 					}
-					text, err := engine.Transcribe(samples, false)
+					text, err := engineMgr.Transcribe(samples, false)
 					sessionMgr.UpdateChunkTranscription(sessID, chunkID, text, err)
 				}
 			}
@@ -806,8 +843,8 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 			}
 
 			// Получаем путь к модели
-			modelPath := modelMgr.GetModelPath(modelID)
-			if modelPath == "" {
+			// Проверяем что модель существует
+			if models.GetModelByID(modelID) == nil {
 				conn.WriteJSON(Message{Type: "error", Data: "unknown model"})
 				continue
 			}
@@ -818,15 +855,9 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 				continue
 			}
 
-			// Устанавливаем активную модель в менеджере
-			if err := modelMgr.SetActiveModel(modelID); err != nil {
-				conn.WriteJSON(Message{Type: "error", Data: err.Error()})
-				continue
-			}
-
-			// Загружаем модель в движок
-			if engine != nil {
-				if err := engine.SetModel(modelPath); err != nil {
+			// Активируем модель через EngineManager (он сам обновит modelMgr)
+			if engineMgr != nil {
+				if err := engineMgr.SetActiveModel(modelID); err != nil {
 					conn.WriteJSON(Message{Type: "error", Data: fmt.Sprintf("failed to load model: %v", err)})
 					continue
 				}
@@ -914,16 +945,22 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 			mu.Unlock()
 
 			// Настраиваем язык и модель
-			if engine != nil {
+			if engineMgr != nil {
 				if msg.Language != "" {
-					engine.SetLanguage(msg.Language)
+					engineMgr.SetLanguage(msg.Language)
 					log.Printf("Language set to: %s", msg.Language)
 				}
 				if msg.Model != "" {
-					if err := engine.SetModel(msg.Model); err != nil {
-						log.Printf("Failed to set model %s: %v", msg.Model, err)
+					// msg.Model может быть ID модели или путём к файлу
+					// Пробуем сначала как ID модели
+					if models.GetModelByID(msg.Model) != nil {
+						if err := engineMgr.SetActiveModel(msg.Model); err != nil {
+							log.Printf("Failed to set model %s: %v", msg.Model, err)
+						} else {
+							log.Printf("Model set to: %s", msg.Model)
+						}
 					} else {
-						log.Printf("Model set to: %s", msg.Model)
+						log.Printf("Unknown model ID: %s, ignoring", msg.Model)
 					}
 				}
 			}
@@ -1087,45 +1124,20 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 
 			// Применяем модель и язык из запроса (если указаны)
 			if msg.Model != "" {
-				// Пробуем загрузить модель, если путь не существует - используем текущую
-				modelPath := msg.Model
-				if _, err := os.Stat(modelPath); os.IsNotExist(err) {
-					// Пробуем найти модель в текущей директории по имени файла
-					modelName := filepath.Base(modelPath)
-					alternativePaths := []string{
-						modelName,
-						filepath.Join("backend", modelName),
-						filepath.Join("..", "backend", modelName),
-					}
-
-					found := false
-					for _, altPath := range alternativePaths {
-						if _, err := os.Stat(altPath); err == nil {
-							modelPath = altPath
-							found = true
-							log.Printf("Model found at alternative path: %s", altPath)
-							break
-						}
-					}
-
-					if !found {
-						log.Printf("Model %s not found, using current model", msg.Model)
-						// Не меняем модель, используем текущую
-						modelPath = ""
-					}
-				}
-
-				if modelPath != "" {
-					if err := engine.SetModel(modelPath); err != nil {
-						log.Printf("Failed to set model %s: %v", modelPath, err)
+				// msg.Model теперь должен быть ID модели из реестра
+				if models.GetModelByID(msg.Model) != nil && modelMgr.IsModelDownloaded(msg.Model) {
+					if err := engineMgr.SetActiveModel(msg.Model); err != nil {
+						log.Printf("Failed to set model %s: %v", msg.Model, err)
 						conn.WriteJSON(Message{Type: "error", Data: fmt.Sprintf("Failed to load model: %v", err)})
 						continue
 					}
-					log.Printf("Model switched to: %s", modelPath)
+					log.Printf("Model switched to: %s", msg.Model)
+				} else {
+					log.Printf("Model %s not found or not downloaded, using current model", msg.Model)
 				}
 			}
 			if msg.Language != "" {
-				engine.SetLanguage(msg.Language)
+				engineMgr.SetLanguage(msg.Language)
 				log.Printf("Language set to: %s", msg.Language)
 			}
 
@@ -1168,10 +1180,10 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					var micErr, sysErr error
 
 					log.Printf("Chunk %d: transcribing mic channel (%d samples)...", chunk.Index, len(micSamples))
-					micSegments, micErr = engine.TranscribeWithSegments(micSamples)
+					micSegments, micErr = engineMgr.TranscribeWithSegments(micSamples)
 
 					log.Printf("Chunk %d: transcribing sys channel (%d samples)...", chunk.Index, len(sysSamples))
-					sysSegments, sysErr = engine.TranscribeWithSegments(sysSamples)
+					sysSegments, sysErr = engineMgr.TranscribeWithSegments(sysSamples)
 
 					if micErr != nil && sysErr != nil {
 						log.Printf("Retranscription failed for both channels: mic=%v, sys=%v", micErr, sysErr)
@@ -1255,7 +1267,7 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 						return
 					}
 
-					text, err := engine.Transcribe(samples, false)
+					text, err := engineMgr.Transcribe(samples, false)
 					if err != nil {
 						log.Printf("Retranscription failed: %v", err)
 					} else {
@@ -1264,6 +1276,527 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					sessionMgr.UpdateChunkTranscription(sessID, chunk.ID, text, err)
 				}
 			}(targetChunk, sess.ID, sess.DataDir, targetChunk.IsStereo)
+
+		case "cancel_full_transcription":
+			// Отмена полной ретранскрипции
+			fullTranscriptionMu.Lock()
+			if fullTranscriptionCancel != nil {
+				close(fullTranscriptionCancel)
+				fullTranscriptionCancel = nil
+			}
+			fullTranscriptionMu.Unlock()
+
+			// Ждём завершения горутины (с таймаутом)
+			done := make(chan struct{})
+			go func() {
+				fullTranscriptionWg.Wait()
+				close(done)
+			}()
+
+			select {
+			case <-done:
+				log.Printf("Full transcription cancelled and stopped for session %s", msg.SessionID)
+			case <-time.After(30 * time.Second):
+				log.Printf("Warning: transcription goroutine did not stop in time for session %s", msg.SessionID)
+			}
+
+			conn.WriteJSON(Message{
+				Type:      "full_transcription_cancelled",
+				SessionID: msg.SessionID,
+			})
+
+		case "retranscribe_full":
+			// Полная ретранскрипция всего файла (без чанков)
+			sess, err := sessionMgr.GetSession(msg.SessionID)
+			if err != nil {
+				conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+				continue
+			}
+
+			// Отменяем предыдущую транскрипцию если она идёт
+			fullTranscriptionMu.Lock()
+			if fullTranscriptionCancel != nil {
+				close(fullTranscriptionCancel)
+				fullTranscriptionCancel = nil
+			}
+			fullTranscriptionMu.Unlock()
+
+			// Ждём завершения предыдущей горутины
+			fullTranscriptionWg.Wait()
+
+			// Создаём новый канал отмены
+			fullTranscriptionMu.Lock()
+			fullTranscriptionCancel = make(chan struct{})
+			cancelChan := fullTranscriptionCancel
+			fullTranscriptionMu.Unlock()
+
+			// Применяем модель и язык из запроса
+			if msg.Model != "" {
+				// msg.Model теперь должен быть ID модели из реестра
+				if models.GetModelByID(msg.Model) != nil && modelMgr.IsModelDownloaded(msg.Model) {
+					if err := engineMgr.SetActiveModel(msg.Model); err != nil {
+						conn.WriteJSON(Message{Type: "error", Data: fmt.Sprintf("Failed to load model: %v", err)})
+						continue
+					}
+				} else {
+					log.Printf("Model %s not found or not downloaded, using current model", msg.Model)
+				}
+			}
+			if msg.Language != "" {
+				engineMgr.SetLanguage(msg.Language)
+			}
+
+			// Отправляем уведомление о начале полной транскрипции
+			conn.WriteJSON(Message{
+				Type:      "full_transcription_started",
+				SessionID: sess.ID,
+			})
+
+			// Запускаем полную транскрипцию асинхронно
+			fullTranscriptionWg.Add(1)
+			go func(sess *session.Session, cancelChan chan struct{}) {
+				defer fullTranscriptionWg.Done()
+
+				// Вспомогательная функция для проверки отмены
+				isCancelled := func() bool {
+					select {
+					case <-cancelChan:
+						return true
+					default:
+						return false
+					}
+				}
+
+				// Очистка при завершении
+				defer func() {
+					fullTranscriptionMu.Lock()
+					if fullTranscriptionCancel == cancelChan {
+						fullTranscriptionCancel = nil
+					}
+					fullTranscriptionMu.Unlock()
+				}()
+
+				mp3Path := filepath.Join(sess.DataDir, "full.mp3")
+
+				// Проверяем наличие файла
+				if _, err := os.Stat(mp3Path); os.IsNotExist(err) {
+					conn.WriteJSON(Message{
+						Type:      "full_transcription_error",
+						SessionID: sess.ID,
+						Error:     "Audio file not found",
+					})
+					return
+				}
+
+				// Определяем режим (стерео или моно)
+				isStereo := len(sess.Chunks) > 0 && sess.Chunks[0].IsStereo
+
+				log.Printf("Starting full file transcription for session %s, stereo=%v", sess.ID, isStereo)
+
+				// Константа: максимальная длина сегмента для транскрипции (20 минут) - используется как fallback
+				const maxSegmentDurationMs int64 = 20 * 60 * 1000 // 20 минут в миллисекундах
+
+				if isStereo {
+					// Получаем длительность файла
+					totalDurationMs := sess.TotalDuration.Milliseconds()
+					if totalDurationMs == 0 {
+						// Fallback: используем SampleCount
+						totalDurationMs = int64(sess.SampleCount) * 1000 / int64(session.SampleRate)
+					}
+
+					log.Printf("Full file duration: %d ms (%.1f min)", totalDurationMs, float64(totalDurationMs)/60000)
+
+					// Проверяем наличие существующих чанков с валидными границами
+					// Чанки уже нарезаны по естественным паузам речи - используем их
+					hasValidChunks := false
+					for _, chunk := range sess.Chunks {
+						if chunk.StartMs > 0 || chunk.EndMs > 0 {
+							hasValidChunks = true
+							break
+						}
+					}
+
+					// Структура для хранения информации о сегменте (чанк или 20-мин сегмент)
+					type ProcessingSegment struct {
+						Index   int
+						StartMs int64
+						EndMs   int64
+						ChunkID string // Пустой для fallback-сегментов
+					}
+
+					var segments []ProcessingSegment
+
+					if hasValidChunks && len(sess.Chunks) > 0 {
+						// Используем существующие чанки - они уже нарезаны по естественным границам речи
+						log.Printf("Using %d existing chunks (natural speech boundaries)", len(sess.Chunks))
+						for i, chunk := range sess.Chunks {
+							segments = append(segments, ProcessingSegment{
+								Index:   i,
+								StartMs: chunk.StartMs,
+								EndMs:   chunk.EndMs,
+								ChunkID: chunk.ID,
+							})
+							log.Printf("  chunk[%d] %s: %d-%d ms (%.1f sec)",
+								i, chunk.ID, chunk.StartMs, chunk.EndMs, float64(chunk.EndMs-chunk.StartMs)/1000)
+						}
+					} else {
+						// Fallback: нарезаем на 20-минутные сегменты (для старых сессий без чанков)
+						log.Printf("No valid chunks found, falling back to %d-minute segments", maxSegmentDurationMs/60000)
+						numSegments := int((totalDurationMs + maxSegmentDurationMs - 1) / maxSegmentDurationMs)
+						if numSegments < 1 {
+							numSegments = 1
+						}
+						for i := 0; i < numSegments; i++ {
+							startMs := int64(i) * maxSegmentDurationMs
+							endMs := startMs + maxSegmentDurationMs
+							if endMs > totalDurationMs {
+								endMs = totalDurationMs
+							}
+							segments = append(segments, ProcessingSegment{
+								Index:   i,
+								StartMs: startMs,
+								EndMs:   endMs,
+								ChunkID: "",
+							})
+						}
+					}
+
+					log.Printf("Will process %d segment(s)", len(segments))
+
+					var allMicSegments, allSysSegments []ai.TranscriptSegment
+
+					// Обрабатываем каждый сегмент (чанк или 20-мин сегмент)
+					for segIdx, seg := range segments {
+						// Проверяем отмену перед каждым сегментом
+						if isCancelled() {
+							log.Printf("Full transcription cancelled at segment %d/%d", segIdx+1, len(segments))
+							conn.WriteJSON(Message{
+								Type:      "full_transcription_cancelled",
+								SessionID: sess.ID,
+							})
+							return
+						}
+
+						segStartMs := seg.StartMs
+						segEndMs := seg.EndMs
+						segDurationMs := segEndMs - segStartMs
+
+						segLabel := fmt.Sprintf("сегмент %d/%d", segIdx+1, len(segments))
+						if seg.ChunkID != "" {
+							segLabel = fmt.Sprintf("чанк %d/%d", segIdx+1, len(segments))
+						}
+
+						log.Printf("Processing %s: %d-%d ms (%.1f sec)",
+							segLabel, segStartMs, segEndMs, float64(segDurationMs)/1000)
+
+						// Прогресс: извлечение аудио для этого сегмента
+						baseProgress := float64(segIdx) / float64(len(segments))
+						segmentProgress := 1.0 / float64(len(segments))
+
+						conn.WriteJSON(Message{
+							Type:      "full_transcription_progress",
+							SessionID: sess.ID,
+							Progress:  baseProgress + segmentProgress*0.1,
+							Data:      fmt.Sprintf("Извлечение аудио (%s)...", segLabel),
+						})
+
+						// Извлекаем сегмент аудио
+						micSamples, sysSamples, err := session.ExtractSegmentStereo(mp3Path, segStartMs, segEndMs, session.WhisperSampleRate)
+						if err != nil {
+							log.Printf("Failed to extract %s: %v", segLabel, err)
+							conn.WriteJSON(Message{
+								Type:      "full_transcription_error",
+								SessionID: sess.ID,
+								Error:     fmt.Sprintf("Failed to extract audio %s: %v", segLabel, err),
+							})
+							return
+						}
+
+						log.Printf("%s: extracted mic=%d samples (%.1f sec), sys=%d samples (%.1f sec)",
+							segLabel,
+							len(micSamples), float64(len(micSamples))/float64(session.WhisperSampleRate),
+							len(sysSamples), float64(len(sysSamples))/float64(session.WhisperSampleRate))
+
+						// VAD: используем унифицированные регионы для синхронизации каналов
+						conn.WriteJSON(Message{
+							Type:      "full_transcription_progress",
+							SessionID: sess.ID,
+							Progress:  baseProgress + segmentProgress*0.2,
+							Data:      fmt.Sprintf("Анализ речи (%s)...", segLabel),
+						})
+
+						// Создаём единую карту речевых регионов для обоих каналов
+						// Это решает проблему рассинхронизации timestamps между mic и sys
+						unifiedRegions := session.CreateUnifiedSpeechRegions(micSamples, sysSamples, session.WhisperSampleRate)
+						log.Printf("%s VAD: unified=%d regions", segLabel, len(unifiedRegions))
+
+						// Транскрипция микрофона
+						conn.WriteJSON(Message{
+							Type:      "full_transcription_progress",
+							SessionID: sess.ID,
+							Progress:  baseProgress + segmentProgress*0.4,
+							Data:      fmt.Sprintf("Распознавание микрофона (%s)...", segLabel),
+						})
+
+						log.Printf("%s: transcribing mic channel (%d samples)", segLabel, len(micSamples))
+						micSegments, micErr := engineMgr.TranscribeHighQuality(micSamples)
+						log.Printf("%s mic result: segments=%d, err=%v", segLabel, len(micSegments), micErr)
+						if micErr != nil {
+							log.Printf("%s mic transcription error: %v", segLabel, micErr)
+						} else {
+							// Маппим таймстемпы на реальное время используя унифицированные регионы
+							if len(micSegments) > 0 && len(unifiedRegions) > 0 {
+								whisperStarts := make([]int64, len(micSegments))
+								for i, s := range micSegments {
+									whisperStarts[i] = s.Start
+								}
+								realStarts := session.MapWhisperSegmentsToRealTime(whisperStarts, unifiedRegions)
+								for i := range micSegments {
+									duration := micSegments[i].End - micSegments[i].Start
+									// Добавляем offset сегмента/чанка к реальному времени
+									micSegments[i].Start = realStarts[i] + segStartMs
+									micSegments[i].End = realStarts[i] + segStartMs + duration
+									// Маппим слова
+									for j := range micSegments[i].Words {
+										wordDuration := micSegments[i].Words[j].End - micSegments[i].Words[j].Start
+										mappedStart := session.MapWhisperTimeToRealTime(micSegments[i].Words[j].Start, unifiedRegions)
+										micSegments[i].Words[j].Start = mappedStart + segStartMs
+										micSegments[i].Words[j].End = mappedStart + segStartMs + wordDuration
+									}
+								}
+							} else {
+								// Если нет VAD регионов, просто добавляем offset сегмента
+								for i := range micSegments {
+									micSegments[i].Start += segStartMs
+									micSegments[i].End += segStartMs
+									for j := range micSegments[i].Words {
+										micSegments[i].Words[j].Start += segStartMs
+										micSegments[i].Words[j].End += segStartMs
+									}
+								}
+							}
+							log.Printf("%s mic: %d segments", segLabel, len(micSegments))
+							allMicSegments = append(allMicSegments, micSegments...)
+						}
+
+						// Транскрипция системного звука
+						conn.WriteJSON(Message{
+							Type:      "full_transcription_progress",
+							SessionID: sess.ID,
+							Progress:  baseProgress + segmentProgress*0.7,
+							Data:      fmt.Sprintf("Распознавание собеседника (%s)...", segLabel),
+						})
+
+						log.Printf("%s: transcribing sys channel (%d samples)", segLabel, len(sysSamples))
+						sysSegments, sysErr := engineMgr.TranscribeHighQuality(sysSamples)
+						log.Printf("%s sys result: segments=%d, err=%v", segLabel, len(sysSegments), sysErr)
+						if sysErr != nil {
+							log.Printf("%s sys transcription error: %v", segLabel, sysErr)
+						} else {
+							// Маппим таймстемпы на реальное время используя те же унифицированные регионы
+							if len(sysSegments) > 0 && len(unifiedRegions) > 0 {
+								whisperStarts := make([]int64, len(sysSegments))
+								for i, s := range sysSegments {
+									whisperStarts[i] = s.Start
+								}
+								realStarts := session.MapWhisperSegmentsToRealTime(whisperStarts, unifiedRegions)
+								for i := range sysSegments {
+									duration := sysSegments[i].End - sysSegments[i].Start
+									// Добавляем offset сегмента/чанка к реальному времени
+									sysSegments[i].Start = realStarts[i] + segStartMs
+									sysSegments[i].End = realStarts[i] + segStartMs + duration
+									// Маппим слова
+									for j := range sysSegments[i].Words {
+										wordDuration := sysSegments[i].Words[j].End - sysSegments[i].Words[j].Start
+										mappedStart := session.MapWhisperTimeToRealTime(sysSegments[i].Words[j].Start, unifiedRegions)
+										sysSegments[i].Words[j].Start = mappedStart + segStartMs
+										sysSegments[i].Words[j].End = mappedStart + segStartMs + wordDuration
+									}
+								}
+							} else {
+								// Если нет VAD регионов, просто добавляем offset сегмента
+								for i := range sysSegments {
+									sysSegments[i].Start += segStartMs
+									sysSegments[i].End += segStartMs
+									for j := range sysSegments[i].Words {
+										sysSegments[i].Words[j].Start += segStartMs
+										sysSegments[i].Words[j].End += segStartMs
+									}
+								}
+							}
+							log.Printf("%s sys: %d segments", segLabel, len(sysSegments))
+							allSysSegments = append(allSysSegments, sysSegments...)
+						}
+					}
+
+					// Используем собранные сегменты
+					micSegments := allMicSegments
+					sysSegments := allSysSegments
+
+					log.Printf("Total transcription result: mic=%d segments, sys=%d segments", len(micSegments), len(sysSegments))
+
+					if len(micSegments) == 0 && len(sysSegments) == 0 {
+						log.Printf("ERROR: No segments produced from %d segment(s). Check audio file and logs above.", len(segments))
+						conn.WriteJSON(Message{
+							Type:      "full_transcription_error",
+							SessionID: sess.ID,
+							Error:     fmt.Sprintf("Транскрипция не дала результатов. Проверьте, что аудиофайл содержит речь. Обработано сегментов: %d", len(segments)),
+						})
+						return
+					}
+
+					// Формируем диалог
+					conn.WriteJSON(Message{
+						Type:      "full_transcription_progress",
+						SessionID: sess.ID,
+						Progress:  0.9,
+						Data:      "Формирование диалога...",
+					})
+
+					// Конвертируем сегменты
+					sessionMicSegs := convertSegments(micSegments, "mic")
+					sessionSysSegs := convertSegments(sysSegments, "sys")
+
+					log.Printf("Converted segments: mic=%d, sys=%d", len(sessionMicSegs), len(sessionSysSegs))
+					for i, seg := range sessionMicSegs {
+						log.Printf("  mic[%d]: start=%dms text=%q words=%d", i, seg.Start, seg.Text, len(seg.Words))
+					}
+					for i, seg := range sessionSysSegs {
+						log.Printf("  sys[%d]: start=%dms text=%q words=%d", i, seg.Start, seg.Text, len(seg.Words))
+					}
+
+					// Обновляем сессию с полной транскрипцией
+					// Создаём один "виртуальный" чанк с полной транскрипцией
+					if err := sessionMgr.UpdateFullTranscription(sess.ID, sessionMicSegs, sessionSysSegs); err != nil {
+						log.Printf("UpdateFullTranscription error: %v", err)
+						conn.WriteJSON(Message{
+							Type:      "full_transcription_error",
+							SessionID: sess.ID,
+							Error:     fmt.Sprintf("Failed to update transcription: %v", err),
+						})
+						return
+					}
+
+					// Получаем обновлённую сессию
+					updatedSess, err := sessionMgr.GetSession(sess.ID)
+					if err != nil {
+						log.Printf("GetSession error after update: %v", err)
+						conn.WriteJSON(Message{
+							Type:      "full_transcription_error",
+							SessionID: sess.ID,
+							Error:     fmt.Sprintf("Failed to get updated session: %v", err),
+						})
+						return
+					}
+
+					// Логируем что отправляем
+					log.Printf("Sending full_transcription_completed: session=%s chunks=%d", updatedSess.ID, len(updatedSess.Chunks))
+					if len(updatedSess.Chunks) > 0 {
+						chunk := updatedSess.Chunks[0]
+						log.Printf("  chunk[0]: dialogue=%d micSegs=%d sysSegs=%d micText=%d sysText=%d",
+							len(chunk.Dialogue), len(chunk.MicSegments), len(chunk.SysSegments),
+							len(chunk.MicText), len(chunk.SysText))
+					}
+
+					conn.WriteJSON(Message{
+						Type:      "full_transcription_completed",
+						SessionID: sess.ID,
+						Session:   updatedSess,
+					})
+
+					log.Printf("Full transcription completed for session %s", sess.ID)
+
+				} else {
+					// Моно режим с сегментацией для длинных файлов
+					totalDurationMs := sess.TotalDuration.Milliseconds()
+					if totalDurationMs == 0 {
+						totalDurationMs = int64(sess.SampleCount) * 1000 / int64(session.SampleRate)
+					}
+
+					log.Printf("Mono mode: total duration %d ms (%.1f min)", totalDurationMs, float64(totalDurationMs)/60000)
+
+					// Определяем количество сегментов
+					numSegments := int((totalDurationMs + maxSegmentDurationMs - 1) / maxSegmentDurationMs)
+					if numSegments < 1 {
+						numSegments = 1
+					}
+					log.Printf("Mono: will process in %d segment(s)", numSegments)
+
+					var allTexts []string
+
+					for segIdx := 0; segIdx < numSegments; segIdx++ {
+						// Проверяем отмену перед каждым сегментом
+						if isCancelled() {
+							log.Printf("Mono transcription cancelled at segment %d/%d", segIdx+1, numSegments)
+							conn.WriteJSON(Message{
+								Type:      "full_transcription_cancelled",
+								SessionID: sess.ID,
+							})
+							return
+						}
+
+						segStartMs := int64(segIdx) * maxSegmentDurationMs
+						segEndMs := segStartMs + maxSegmentDurationMs
+						if segEndMs > totalDurationMs {
+							segEndMs = totalDurationMs
+						}
+
+						baseProgress := float64(segIdx) / float64(numSegments)
+						segmentProgress := 1.0 / float64(numSegments)
+
+						conn.WriteJSON(Message{
+							Type:      "full_transcription_progress",
+							SessionID: sess.ID,
+							Progress:  baseProgress + segmentProgress*0.3,
+							Data:      fmt.Sprintf("Извлечение аудио (сегмент %d/%d)...", segIdx+1, numSegments),
+						})
+
+						samples, err := session.ExtractSegment(mp3Path, segStartMs, segEndMs, session.WhisperSampleRate)
+						if err != nil {
+							conn.WriteJSON(Message{
+								Type:      "full_transcription_error",
+								SessionID: sess.ID,
+								Error:     fmt.Sprintf("Failed to extract audio segment %d: %v", segIdx+1, err),
+							})
+							return
+						}
+
+						conn.WriteJSON(Message{
+							Type:      "full_transcription_progress",
+							SessionID: sess.ID,
+							Progress:  baseProgress + segmentProgress*0.7,
+							Data:      fmt.Sprintf("Распознавание речи (сегмент %d/%d)...", segIdx+1, numSegments),
+						})
+
+						segments, err := engineMgr.TranscribeHighQuality(samples)
+						if err != nil {
+							log.Printf("Mono segment %d transcription error: %v", segIdx+1, err)
+							continue
+						}
+
+						for _, seg := range segments {
+							if seg.Text != "" {
+								allTexts = append(allTexts, seg.Text)
+							}
+						}
+						log.Printf("Mono segment %d: %d text pieces", segIdx+1, len(segments))
+					}
+
+					text := strings.Join(allTexts, " ")
+					log.Printf("Mono total: %d chars", len(text))
+
+					// Обновляем транскрипцию в сессии
+					sessionMgr.UpdateFullTranscriptionMono(sess.ID, text)
+
+					updatedSess, _ := sessionMgr.GetSession(sess.ID)
+
+					conn.WriteJSON(Message{
+						Type:      "full_transcription_completed",
+						SessionID: sess.ID,
+						Session:   updatedSess,
+					})
+				}
+			}(sess, cancelChan)
 
 		case "get_ollama_models":
 			// Получить список моделей Ollama
@@ -1363,6 +1896,77 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engine *ai.E
 					Summary:   summary,
 				})
 			}(sess.ID, transcriptText.String(), ollamaModel, ollamaUrl)
+
+		case "improve_transcription":
+			// Улучшение транскрипции с помощью LLM
+			sess, err := sessionMgr.GetSession(msg.SessionID)
+			if err != nil {
+				conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+				continue
+			}
+
+			// Собираем диалог из всех чанков
+			var dialogue []session.TranscriptSegment
+			for _, chunk := range sess.Chunks {
+				if chunk.Status == session.ChunkStatusCompleted && len(chunk.Dialogue) > 0 {
+					dialogue = append(dialogue, chunk.Dialogue...)
+				}
+			}
+
+			if len(dialogue) == 0 {
+				conn.WriteJSON(Message{Type: "error", Data: "No dialogue to improve"})
+				continue
+			}
+
+			// Отправляем уведомление о начале улучшения
+			conn.WriteJSON(Message{
+				Type:      "improve_started",
+				SessionID: sess.ID,
+			})
+
+			// Получаем настройки Ollama
+			ollamaModel := msg.OllamaModel
+			ollamaUrl := msg.OllamaUrl
+			if ollamaModel == "" {
+				ollamaModel = "llama3.2"
+			}
+			if ollamaUrl == "" {
+				ollamaUrl = "http://localhost:11434"
+			}
+
+			// Улучшаем транскрипцию асинхронно
+			go func(sessID string, dialogue []session.TranscriptSegment, model string, url string) {
+				improved, err := improveTranscriptionWithLLM(dialogue, model, url)
+				if err != nil {
+					log.Printf("Transcription improvement error: %v", err)
+					conn.WriteJSON(Message{
+						Type:      "improve_error",
+						SessionID: sessID,
+						Error:     err.Error(),
+					})
+					return
+				}
+
+				// Обновляем диалог в сессии
+				if err := sessionMgr.UpdateImprovedDialogue(sessID, improved); err != nil {
+					log.Printf("Failed to update improved dialogue: %v", err)
+					conn.WriteJSON(Message{
+						Type:      "improve_error",
+						SessionID: sessID,
+						Error:     err.Error(),
+					})
+					return
+				}
+
+				// Получаем обновлённую сессию
+				updatedSess, _ := sessionMgr.GetSession(sessID)
+
+				conn.WriteJSON(Message{
+					Type:      "improve_completed",
+					SessionID: sessID,
+					Session:   updatedSess,
+				})
+			}(sess.ID, dialogue, ollamaModel, ollamaUrl)
 		}
 	}
 
@@ -1760,6 +2364,174 @@ func generateSummaryWithOllama(transcriptText string, model string, baseUrl stri
 	}
 
 	return response, nil
+}
+
+// improveTranscriptionWithLLM улучшает транскрипцию с помощью LLM
+// Исправляет ошибки распознавания, пунктуацию и форматирование
+func improveTranscriptionWithLLM(dialogue []session.TranscriptSegment, ollamaModel string, ollamaUrl string) ([]session.TranscriptSegment, error) {
+	// Проверяем доступность Ollama
+	resp, err := http.Get(ollamaUrl + "/api/tags")
+	if err != nil {
+		return nil, fmt.Errorf("Ollama не запущен по адресу %s", ollamaUrl)
+	}
+	resp.Body.Close()
+
+	// Формируем текст для улучшения
+	var dialogueText strings.Builder
+	for _, seg := range dialogue {
+		speaker := "Вы"
+		if seg.Speaker == "sys" {
+			speaker = "Собеседник"
+		}
+		dialogueText.WriteString(fmt.Sprintf("[%s] %s\n", speaker, seg.Text))
+	}
+
+	text := dialogueText.String()
+	// Ограничиваем текст
+	maxChars := 12000
+	if len(text) > maxChars {
+		text = text[:maxChars] + "\n...[текст обрезан]..."
+	}
+
+	systemPrompt := `Ты — эксперт по редактированию транскрипций речи.
+
+ТВОЯ ЗАДАЧА: Улучшить качество транскрипции, исправив ошибки распознавания.
+
+ПРАВИЛА:
+1. Исправляй очевидные ошибки распознавания (например: "привет" вместо "привед")
+2. Добавляй правильную пунктуацию (точки, запятые, вопросительные знаки)
+3. Исправляй регистр букв (начало предложений с заглавной)
+4. НЕ меняй смысл сказанного
+5. НЕ добавляй слова, которых не было
+6. НЕ удаляй слова
+7. Сохраняй формат: [Спикер] Текст
+8. Отвечай ТОЛЬКО исправленным текстом, без комментариев
+
+ФОРМАТ ОТВЕТА:
+[Вы] Исправленный текст реплики
+[Собеседник] Исправленный текст реплики
+...`
+
+	userPrompt := fmt.Sprintf("Улучши эту транскрипцию:\n\n%s", text)
+
+	reqBody := map[string]interface{}{
+		"model": ollamaModel,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt},
+		},
+		"stream": false,
+		"options": map[string]interface{}{
+			"temperature": 0.1, // Низкая температура для точности
+			"num_predict": 8192,
+		},
+	}
+
+	log.Printf("Improving transcription with Ollama model=%s, dialogue length=%d chars", ollamaModel, len(text))
+	jsonBody, _ := json.Marshal(reqBody)
+
+	client := &http.Client{
+		Timeout: 300 * time.Second, // 5 минут для длинных текстов
+	}
+
+	resp, err = client.Post(ollamaUrl+"/api/chat", "application/json", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("Ошибка запроса к Ollama: %v", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("Ошибка чтения ответа Ollama: %v", err)
+	}
+
+	var result struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+		return nil, fmt.Errorf("Ошибка парсинга ответа Ollama: %v", err)
+	}
+
+	if result.Error != "" {
+		return nil, fmt.Errorf("Ошибка Ollama: %s", result.Error)
+	}
+
+	improvedText := strings.TrimSpace(result.Message.Content)
+	if improvedText == "" {
+		return nil, fmt.Errorf("Ollama вернул пустой ответ")
+	}
+
+	// Парсим улучшенный текст обратно в сегменты
+	improvedDialogue := parseImprovedDialogue(improvedText, dialogue)
+
+	log.Printf("Transcription improved: %d segments", len(improvedDialogue))
+	return improvedDialogue, nil
+}
+
+// parseImprovedDialogue парсит улучшенный текст и сопоставляет с оригинальными сегментами
+func parseImprovedDialogue(improvedText string, originalDialogue []session.TranscriptSegment) []session.TranscriptSegment {
+	lines := strings.Split(improvedText, "\n")
+	var improved []session.TranscriptSegment
+
+	// Регулярное выражение для парсинга формата [Спикер] Текст
+	lineIdx := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		var speaker, text string
+
+		// Парсим формат [Вы] или [Собеседник]
+		if strings.HasPrefix(line, "[Вы]") {
+			speaker = "mic"
+			text = strings.TrimSpace(strings.TrimPrefix(line, "[Вы]"))
+		} else if strings.HasPrefix(line, "[Собеседник]") {
+			speaker = "sys"
+			text = strings.TrimSpace(strings.TrimPrefix(line, "[Собеседник]"))
+		} else {
+			// Пробуем альтернативные форматы
+			if strings.HasPrefix(line, "Вы:") {
+				speaker = "mic"
+				text = strings.TrimSpace(strings.TrimPrefix(line, "Вы:"))
+			} else if strings.HasPrefix(line, "Собеседник:") {
+				speaker = "sys"
+				text = strings.TrimSpace(strings.TrimPrefix(line, "Собеседник:"))
+			} else {
+				continue // Пропускаем неизвестные строки
+			}
+		}
+
+		if text == "" {
+			continue
+		}
+
+		// Берём timestamps из оригинального сегмента, если он есть
+		var start, end int64
+		if lineIdx < len(originalDialogue) {
+			start = originalDialogue[lineIdx].Start
+			end = originalDialogue[lineIdx].End
+		}
+
+		improved = append(improved, session.TranscriptSegment{
+			Start:   start,
+			End:     end,
+			Text:    text,
+			Speaker: speaker,
+		})
+		lineIdx++
+	}
+
+	// Если не удалось распарсить, возвращаем оригинал
+	if len(improved) == 0 {
+		return originalDialogue
+	}
+
+	return improved
 }
 
 // generateSummaryFallback создаёт базовое summary без LLM

@@ -1,26 +1,37 @@
-// Package models предоставляет управление моделями Whisper
+// Package models предоставляет управление моделями транскрипции
 package models
 
 // ModelType тип модели
 type ModelType string
 
 const (
-	ModelTypeGGML ModelType = "ggml"
+	ModelTypeGGML ModelType = "ggml" // whisper.cpp GGML модели
+	ModelTypeONNX ModelType = "onnx" // ONNX модели (GigaAM и др.)
+)
+
+// EngineType тип движка транскрипции
+type EngineType string
+
+const (
+	EngineTypeWhisper EngineType = "whisper" // whisper.cpp
+	EngineTypeGigaAM  EngineType = "gigaam"  // GigaAM ONNX
 )
 
 // ModelInfo информация о модели
 type ModelInfo struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Type        ModelType `json:"type"`
-	Size        string    `json:"size"`
-	SizeBytes   int64     `json:"sizeBytes"`
-	Description string    `json:"description"`
-	Languages   []string  `json:"languages"`
-	WER         string    `json:"wer,omitempty"`
-	Speed       string    `json:"speed"`
-	Recommended bool      `json:"recommended,omitempty"`
-	DownloadURL string    `json:"downloadUrl,omitempty"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Type        ModelType  `json:"type"`
+	Engine      EngineType `json:"engine"`
+	Size        string     `json:"size"`
+	SizeBytes   int64      `json:"sizeBytes"`
+	Description string     `json:"description"`
+	Languages   []string   `json:"languages"`
+	WER         string     `json:"wer,omitempty"`
+	Speed       string     `json:"speed"`
+	Recommended bool       `json:"recommended,omitempty"`
+	DownloadURL string     `json:"downloadUrl,omitempty"`
+	VocabURL    string     `json:"vocabUrl,omitempty"` // URL словаря (для ONNX моделей)
 }
 
 // ModelStatus статус модели на устройстве
@@ -50,6 +61,7 @@ var Registry = []ModelInfo{
 		ID:          "ggml-tiny",
 		Name:        "Tiny",
 		Type:        ModelTypeGGML,
+		Engine:      EngineTypeWhisper,
 		Size:        "74 MB",
 		SizeBytes:   77_691_713,
 		Description: "Самая быстрая модель, базовое качество",
@@ -61,6 +73,7 @@ var Registry = []ModelInfo{
 		ID:          "ggml-base",
 		Name:        "Base",
 		Type:        ModelTypeGGML,
+		Engine:      EngineTypeWhisper,
 		Size:        "141 MB",
 		SizeBytes:   147_951_465,
 		Description: "Хороший баланс скорости и качества",
@@ -72,6 +85,7 @@ var Registry = []ModelInfo{
 		ID:          "ggml-small",
 		Name:        "Small",
 		Type:        ModelTypeGGML,
+		Engine:      EngineTypeWhisper,
 		Size:        "465 MB",
 		SizeBytes:   487_601_967,
 		Description: "Хорошее качество распознавания",
@@ -83,6 +97,7 @@ var Registry = []ModelInfo{
 		ID:          "ggml-medium",
 		Name:        "Medium",
 		Type:        ModelTypeGGML,
+		Engine:      EngineTypeWhisper,
 		Size:        "1.4 GB",
 		SizeBytes:   1_533_774_781,
 		Description: "Высокое качество распознавания",
@@ -94,6 +109,7 @@ var Registry = []ModelInfo{
 		ID:          "ggml-large-v3-turbo",
 		Name:        "Large V3 Turbo",
 		Type:        ModelTypeGGML,
+		Engine:      EngineTypeWhisper,
 		Size:        "1.5 GB",
 		SizeBytes:   1_624_417_792,
 		Description: "Быстрая модель с высоким качеством",
@@ -106,6 +122,7 @@ var Registry = []ModelInfo{
 		ID:          "ggml-large-v3",
 		Name:        "Large V3",
 		Type:        ModelTypeGGML,
+		Engine:      EngineTypeWhisper,
 		Size:        "2.9 GB",
 		SizeBytes:   3_094_623_691,
 		Description: "Максимальное качество распознавания",
@@ -114,6 +131,34 @@ var Registry = []ModelInfo{
 		Recommended: true,
 		DownloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
 	},
+
+	// ===== ONNX модели (GigaAM) =====
+	{
+		ID:          "gigaam-v2-ctc",
+		Name:        "GigaAM V2 CTC",
+		Type:        ModelTypeONNX,
+		Engine:      EngineTypeGigaAM,
+		Size:        "236 MB",
+		SizeBytes:   236_457_697,
+		Description: "Лучшая модель для русского языка (Sber)",
+		Languages:   []string{"ru"},
+		WER:         "3.5%",
+		Speed:       "~30x",
+		Recommended: true,
+		DownloadURL: "https://huggingface.co/istupakov/gigaam-v2-onnx/resolve/main/v2_ctc.int8.onnx",
+		VocabURL:    "https://huggingface.co/istupakov/gigaam-v2-onnx/resolve/main/v2_vocab.txt",
+	},
+}
+
+// GetModelsByEngine возвращает модели для определённого движка
+func GetModelsByEngine(engine EngineType) []ModelInfo {
+	var result []ModelInfo
+	for _, m := range Registry {
+		if m.Engine == engine {
+			result = append(result, m)
+		}
+	}
+	return result
 }
 
 // GetModelByID возвращает модель по ID

@@ -146,6 +146,7 @@ function App() {
     const [showSettings, setShowSettings] = useState(false);
     const [echoCancel, setEchoCancel] = useState(0.4); // Эхоподавление 0-1
     const [useVoiceIsolation, setUseVoiceIsolation] = useState(true); // Voice Isolation (macOS 15+)
+    const [autoRetranscribe, setAutoRetranscribe] = useState(false); // Авто-ретранскрипция после записи (отключено по умолчанию)
 
     // Audio player
     const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -184,7 +185,30 @@ function App() {
     const [isStopping, setIsStopping] = useState(false); // Индикатор остановки записи
     const [consoleExpanded, setConsoleExpanded] = useState(false); // Сворачиваемая консоль
 
+    // Full transcription state
+    const [isFullTranscribing, setIsFullTranscribing] = useState(false);
+    const [fullTranscriptionProgress, setFullTranscriptionProgress] = useState(0);
+    const [fullTranscriptionStatus, setFullTranscriptionStatus] = useState<string | null>(null);
+    const [fullTranscriptionError, setFullTranscriptionError] = useState<string | null>(null);
+    const [isCancellingTranscription, setIsCancellingTranscription] = useState(false);
+
+    // AI improvement state
+    const [isImproving, setIsImproving] = useState(false);
+    const [improveError, setImproveError] = useState<string | null>(null);
+
     const transcriptionRef = useRef<HTMLDivElement | null>(null);
+    
+    // Refs для доступа к актуальным значениям в callbacks
+    const autoRetranscribeRef = useRef(autoRetranscribe);
+    const modelsRef = useRef(models);
+    const activeModelIdRef = useRef(activeModelId);
+    const languageRef = useRef(language);
+    
+    // Обновляем refs при изменении состояния
+    useEffect(() => { autoRetranscribeRef.current = autoRetranscribe; }, [autoRetranscribe]);
+    useEffect(() => { modelsRef.current = models; }, [models]);
+    useEffect(() => { activeModelIdRef.current = activeModelId; }, [activeModelId]);
+    useEffect(() => { languageRef.current = language; }, [language]);
 
     const addLog = useCallback((msg: string) => {
         const time = new Date().toLocaleTimeString();
@@ -205,6 +229,7 @@ function App() {
                     setCaptureSystem(settings.captureSystem ?? true);
                     setOllamaModel(settings.ollamaModel || 'llama3.2');
                     setOllamaUrl(settings.ollamaUrl || 'http://localhost:11434');
+                    setAutoRetranscribe(settings.autoRetranscribe ?? false);
                     addLog('Settings loaded');
                 }
                 setSettingsLoaded(true);
@@ -228,14 +253,15 @@ function App() {
                     useVoiceIsolation,
                     captureSystem,
                     ollamaModel,
-                    ollamaUrl
+                    ollamaUrl,
+                    autoRetranscribe
                 });
             } catch (err) {
                 console.error('Failed to save settings:', err);
             }
         };
         saveSettings();
-    }, [language, activeModelId, echoCancel, useVoiceIsolation, captureSystem, ollamaModel, ollamaUrl, settingsLoaded]);
+    }, [language, activeModelId, echoCancel, useVoiceIsolation, captureSystem, ollamaModel, ollamaUrl, autoRetranscribe, settingsLoaded]);
 
     // Таймер записи
     useEffect(() => {
@@ -307,6 +333,30 @@ function App() {
                             // Открываем только что записанную сессию
                             if (msg.session) {
                                 setSelectedSession(msg.session);
+                                
+                                // Авто-ретранскрипция после записи (если включена)
+                                if (autoRetranscribeRef.current && msg.session.id) {
+                                    const activeModel = modelsRef.current.find(m => m.id === activeModelIdRef.current);
+                                    const modelPath = activeModel?.path || '';
+                                    
+                                    if (modelPath) {
+                                        addLog('Starting auto full retranscription...');
+                                        setIsFullTranscribing(true);
+                                        setFullTranscriptionProgress(0);
+                                        setFullTranscriptionStatus('Запуск полной транскрипции...');
+                                        setFullTranscriptionError(null);
+                                        
+                                        // Небольшая задержка чтобы MP3 файл точно закрылся
+                                        setTimeout(() => {
+                                            socket.send(JSON.stringify({
+                                                type: 'retranscribe_full',
+                                                sessionId: msg.session.id,
+                                                model: modelPath,
+                                                language: languageRef.current
+                                            }));
+                                        }, 500);
+                                    }
+                                }
                             }
                             break;
 
@@ -447,6 +497,71 @@ function App() {
                                 }
                             }
                             break;
+
+                        // === Full Transcription ===
+                        case 'full_transcription_started':
+                            setIsFullTranscribing(true);
+                            setFullTranscriptionProgress(0);
+                            setFullTranscriptionStatus('Начало полной транскрипции...');
+                            setFullTranscriptionError(null);
+                            addLog('Full transcription started');
+                            break;
+
+                        case 'full_transcription_progress':
+                            setFullTranscriptionProgress(msg.progress || 0);
+                            setFullTranscriptionStatus(msg.data || null);
+                            break;
+
+                        case 'full_transcription_completed':
+                            setIsFullTranscribing(false);
+                            setFullTranscriptionProgress(1);
+                            setFullTranscriptionStatus(null);
+                            setFullTranscriptionError(null);
+                            // Обновляем сессию с новыми данными
+                            if (msg.session) {
+                                setSelectedSession(msg.session);
+                            }
+                            addLog('Full transcription completed');
+                            break;
+
+                        case 'full_transcription_error':
+                            setIsFullTranscribing(false);
+                            setFullTranscriptionProgress(0);
+                            setFullTranscriptionStatus(null);
+                            setFullTranscriptionError(msg.error || 'Unknown error');
+                            addLog(`Full transcription error: ${msg.error}`);
+                            break;
+
+                        case 'full_transcription_cancelled':
+                            setIsFullTranscribing(false);
+                            setFullTranscriptionProgress(0);
+                            setFullTranscriptionStatus(null);
+                            setFullTranscriptionError(null);
+                            setIsCancellingTranscription(false);
+                            addLog('Full transcription cancelled');
+                            break;
+
+                        // === AI Improvement ===
+                        case 'improve_started':
+                            setIsImproving(true);
+                            setImproveError(null);
+                            addLog('AI improvement started');
+                            break;
+
+                        case 'improve_completed':
+                            setIsImproving(false);
+                            setImproveError(null);
+                            if (msg.session) {
+                                setSelectedSession(msg.session);
+                            }
+                            addLog('AI improvement completed');
+                            break;
+
+                        case 'improve_error':
+                            setIsImproving(false);
+                            setImproveError(msg.error || 'Unknown error');
+                            addLog(`AI improvement error: ${msg.error}`);
+                            break;
                     }
                 } catch {
                     // Ignore JSON errors
@@ -562,6 +677,26 @@ function App() {
         addLog(`Retranscribing chunk with model: ${activeModel?.name || 'default'}, language: ${language}`);
     };
 
+    // Улучшение транскрипции с помощью AI
+    const handleImproveTranscription = useCallback(() => {
+        if (!selectedSession) return;
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+            addLog('WebSocket not connected');
+            return;
+        }
+
+        setIsImproving(true);
+        setImproveError(null);
+
+        wsRef.current.send(JSON.stringify({
+            type: 'improve_transcription',
+            sessionId: selectedSession.id,
+            ollamaModel: ollamaModel,
+            ollamaUrl: ollamaUrl
+        }));
+        addLog(`Improving transcription with AI model: ${ollamaModel}`);
+    }, [selectedSession, ollamaModel, ollamaUrl, addLog]);
+
     // Загрузка списка моделей Ollama
     const loadOllamaModels = useCallback(() => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -585,6 +720,45 @@ function App() {
             ollamaUrl: ollamaUrl
         }));
     }, [selectedSession, ollamaModel, ollamaUrl]);
+
+    // Полная ретранскрипция файла
+    const handleFullRetranscribe = useCallback(() => {
+        if (!selectedSession) return;
+        
+        // Получаем путь к активной модели
+        const activeModel = models.find(m => m.id === activeModelId);
+        const modelPath = activeModel?.path || '';
+        
+        if (!modelPath && activeModelId) {
+            addLog('Модель не скачана. Откройте менеджер моделей для скачивания.');
+            setShowModelManager(true);
+            return;
+        }
+        
+        setFullTranscriptionError(null);
+        wsRef.current?.send(JSON.stringify({
+            type: 'retranscribe_full',
+            sessionId: selectedSession.id,
+            model: modelPath,
+            language: language
+        }));
+        addLog(`Starting full retranscription with model: ${activeModel?.name || 'default'}`);
+    }, [selectedSession, models, activeModelId, language, addLog]);
+
+    // Отмена полной ретранскрипции (с debounce)
+    const handleCancelFullTranscription = useCallback(() => {
+        if (!selectedSession || isCancellingTranscription) return;
+        
+        setIsCancellingTranscription(true);
+        wsRef.current?.send(JSON.stringify({
+            type: 'cancel_full_transcription',
+            sessionId: selectedSession.id
+        }));
+        addLog('Cancelling full transcription...');
+        
+        // Сбрасываем флаг через 2 секунды
+        setTimeout(() => setIsCancellingTranscription(false), 2000);
+    }, [selectedSession, isCancellingTranscription, addLog]);
 
     // Воспроизведение аудио
     const playAudio = (url: string) => {
@@ -1002,6 +1176,15 @@ function App() {
                                     </span>
                                 </label>
                             )}
+
+                            {/* Авто-ретранскрипция после записи */}
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer' }} title="Автоматически распознать весь файл после остановки записи (более точно, чем по чанкам)">
+                                <input type="checkbox" checked={autoRetranscribe} onChange={e => setAutoRetranscribe(e.target.checked)} />
+                                <span style={{ fontSize: '0.85rem' }}>Авто-распознавание</span>
+                                <span style={{ fontSize: '0.65rem', color: '#00bcd4', backgroundColor: '#1a3a3e', padding: '2px 5px', borderRadius: '3px' }}>
+                                    Точнее
+                                </span>
+                            </label>
                             
                             {/* Предупреждение если Voice Isolation недоступен */}
                             {captureSystem && !screenCaptureKitAvailable && (
@@ -1210,94 +1393,206 @@ function App() {
                                 </>
                             )}
                             
-                            <button 
-                                onClick={() => playFullRecording(selectedSession.id)} 
-                                style={{ 
-                                    padding: '0.3rem 0.8rem', 
-                                    backgroundColor: playingAudio?.includes(selectedSession.id) ? '#f44336' : '#2196f3',
-                                    color: 'white',
-                                    border: 'none',
-                                    borderRadius: '4px',
-                                    cursor: 'pointer'
-                                }}
-                            >
-                                {playingAudio?.includes(selectedSession.id) ? '⏹ Стоп' : '▶ Слушать'}
-                            </button>
-                            
-                            {/* Share button with dropdown */}
-                            <div style={{ position: 'relative' }} data-share-menu>
+                            {/* Минималистичные кнопки-иконки */}
+                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                {/* Кнопка воспроизведения */}
                                 <button 
-                                    onClick={() => setShowShareMenu(!showShareMenu)} 
+                                    onClick={() => playFullRecording(selectedSession.id)} 
+                                    title={playingAudio?.includes(selectedSession.id) ? 'Остановить' : 'Слушать запись'}
                                     style={{ 
-                                        padding: '0.3rem 0.8rem', 
-                                        backgroundColor: copySuccess ? '#4caf50' : '#6c5ce7',
-                                        color: 'white',
-                                        border: 'none',
-                                        borderRadius: '4px',
+                                        width: '32px',
+                                        height: '32px',
+                                        padding: 0,
+                                        backgroundColor: 'transparent',
+                                        color: playingAudio?.includes(selectedSession.id) ? '#f44336' : '#888',
+                                        border: '1px solid #333',
+                                        borderRadius: '6px',
                                         cursor: 'pointer',
                                         display: 'flex',
                                         alignItems: 'center',
-                                        gap: '0.3rem'
+                                        justifyContent: 'center',
+                                        transition: 'all 0.2s ease'
                                     }}
+                                    onMouseEnter={e => { e.currentTarget.style.borderColor = '#555'; e.currentTarget.style.color = playingAudio?.includes(selectedSession.id) ? '#f44336' : '#fff'; }}
+                                    onMouseLeave={e => { e.currentTarget.style.borderColor = '#333'; e.currentTarget.style.color = playingAudio?.includes(selectedSession.id) ? '#f44336' : '#888'; }}
                                 >
-                                    {copySuccess ? '✓ Скопировано' : '📤 Поделиться'}
+                                    {playingAudio?.includes(selectedSession.id) ? (
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                            <rect x="6" y="6" width="12" height="12" rx="1"/>
+                                        </svg>
+                                    ) : (
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                            <path d="M8 5v14l11-7z"/>
+                                        </svg>
+                                    )}
                                 </button>
                                 
-                                {showShareMenu && (
-                                    <div style={{
-                                        position: 'absolute',
-                                        top: '100%',
-                                        left: 0,
-                                        marginTop: '0.3rem',
-                                        backgroundColor: '#1a1a2e',
-                                        border: '1px solid #333',
+                                {/* Кнопка экспорта */}
+                                <div style={{ position: 'relative' }} data-share-menu>
+                                    <button 
+                                        onClick={() => setShowShareMenu(!showShareMenu)} 
+                                        title="Экспорт"
+                                        style={{ 
+                                            width: '32px',
+                                            height: '32px',
+                                            padding: 0,
+                                            backgroundColor: copySuccess ? 'rgba(76, 175, 80, 0.2)' : 'transparent',
+                                            color: copySuccess ? '#4caf50' : '#888',
+                                            border: '1px solid',
+                                            borderColor: copySuccess ? '#4caf50' : '#333',
+                                            borderRadius: '6px',
+                                            cursor: 'pointer',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            transition: 'all 0.2s ease'
+                                        }}
+                                        onMouseEnter={e => { if (!copySuccess) { e.currentTarget.style.borderColor = '#555'; e.currentTarget.style.color = '#fff'; }}}
+                                        onMouseLeave={e => { if (!copySuccess) { e.currentTarget.style.borderColor = '#333'; e.currentTarget.style.color = '#888'; }}}
+                                    >
+                                        {copySuccess ? (
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                                <polyline points="20 6 9 17 4 12"/>
+                                            </svg>
+                                        ) : (
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
+                                                <polyline points="16 6 12 2 8 6"/>
+                                                <line x1="12" y1="2" x2="12" y2="15"/>
+                                            </svg>
+                                        )}
+                                    </button>
+                                    
+                                    {showShareMenu && (
+                                        <div style={{
+                                            position: 'absolute',
+                                            top: '100%',
+                                            left: '50%',
+                                            transform: 'translateX(-50%)',
+                                            marginTop: '0.5rem',
+                                            backgroundColor: '#1a1a2e',
+                                            border: '1px solid #333',
+                                            borderRadius: '8px',
+                                            overflow: 'hidden',
+                                            zIndex: 100,
+                                            minWidth: '160px',
+                                            boxShadow: '0 4px 16px rgba(0,0,0,0.4)'
+                                        }}>
+                                            <button
+                                                onClick={handleCopyToClipboard}
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '0.6rem 0.8rem',
+                                                    backgroundColor: 'transparent',
+                                                    border: 'none',
+                                                    color: '#ccc',
+                                                    cursor: 'pointer',
+                                                    textAlign: 'left',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '0.5rem',
+                                                    fontSize: '0.85rem'
+                                                }}
+                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2a2a4e'}
+                                                onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                            >
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                                </svg>
+                                                Копировать
+                                            </button>
+                                            <button
+                                                onClick={handleDownloadFile}
+                                                style={{
+                                                    width: '100%',
+                                                    padding: '0.6rem 0.8rem',
+                                                    backgroundColor: 'transparent',
+                                                    border: 'none',
+                                                    borderTop: '1px solid #333',
+                                                    color: '#ccc',
+                                                    cursor: 'pointer',
+                                                    textAlign: 'left',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    gap: '0.5rem',
+                                                    fontSize: '0.85rem'
+                                                }}
+                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2a2a4e'}
+                                                onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
+                                            >
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                                    <polyline points="7 10 12 15 17 10"/>
+                                                    <line x1="12" y1="15" x2="12" y2="3"/>
+                                                </svg>
+                                                Скачать .txt
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                                
+                                {/* Кнопка полной ретранскрипции */}
+                                <button 
+                                    onClick={handleFullRetranscribe}
+                                    disabled={isFullTranscribing}
+                                    title="Распознать весь файл заново (более точно)"
+                                    style={{ 
+                                        width: '32px',
+                                        height: '32px',
+                                        padding: 0,
+                                        backgroundColor: isFullTranscribing ? 'rgba(255, 152, 0, 0.2)' : 'transparent',
+                                        color: isFullTranscribing ? '#ff9800' : '#888',
+                                        border: '1px solid',
+                                        borderColor: isFullTranscribing ? '#ff9800' : '#333',
                                         borderRadius: '6px',
-                                        overflow: 'hidden',
-                                        zIndex: 100,
-                                        minWidth: '180px',
-                                        boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
-                                    }}>
-                                        <button
-                                            onClick={handleCopyToClipboard}
-                                            style={{
-                                                width: '100%',
-                                                padding: '0.6rem 1rem',
-                                                backgroundColor: 'transparent',
-                                                border: 'none',
-                                                color: '#fff',
-                                                cursor: 'pointer',
-                                                textAlign: 'left',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: '0.5rem'
-                                            }}
-                                            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2a2a4e'}
-                                            onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
-                                        >
-                                            📋 Копировать текст
-                                        </button>
-                                        <button
-                                            onClick={handleDownloadFile}
-                                            style={{
-                                                width: '100%',
-                                                padding: '0.6rem 1rem',
-                                                backgroundColor: 'transparent',
-                                                border: 'none',
-                                                borderTop: '1px solid #333',
-                                                color: '#fff',
-                                                cursor: 'pointer',
-                                                textAlign: 'left',
-                                                display: 'flex',
-                                                alignItems: 'center',
-                                                gap: '0.5rem'
-                                            }}
-                                            onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2a2a4e'}
-                                            onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
-                                        >
-                                            💾 Скачать файл .txt
-                                        </button>
-                                    </div>
-                                )}
+                                        cursor: isFullTranscribing ? 'wait' : 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        transition: 'all 0.2s ease',
+                                        animation: isFullTranscribing ? 'spin 1s linear infinite' : 'none'
+                                    }}
+                                    onMouseEnter={e => { if (!isFullTranscribing) { e.currentTarget.style.borderColor = '#555'; e.currentTarget.style.color = '#fff'; }}}
+                                    onMouseLeave={e => { if (!isFullTranscribing) { e.currentTarget.style.borderColor = '#333'; e.currentTarget.style.color = '#888'; }}}
+                                >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <path d="M23 4v6h-6"/>
+                                        <path d="M1 20v-6h6"/>
+                                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                                    </svg>
+                                </button>
+
+                                {/* Кнопка улучшения с AI */}
+                                <button 
+                                    onClick={handleImproveTranscription}
+                                    disabled={isImproving || isFullTranscribing || allDialogue.length === 0}
+                                    title="Улучшить транскрипцию с помощью AI (исправить ошибки, пунктуацию)"
+                                    style={{ 
+                                        width: '32px',
+                                        height: '32px',
+                                        padding: 0,
+                                        backgroundColor: isImproving ? 'rgba(156, 39, 176, 0.2)' : 'transparent',
+                                        color: isImproving ? '#9c27b0' : (allDialogue.length === 0 ? '#444' : '#888'),
+                                        border: '1px solid',
+                                        borderColor: isImproving ? '#9c27b0' : '#333',
+                                        borderRadius: '6px',
+                                        cursor: isImproving || allDialogue.length === 0 ? 'not-allowed' : 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        transition: 'all 0.2s ease',
+                                        animation: isImproving ? 'pulse 1.5s ease-in-out infinite' : 'none'
+                                    }}
+                                    onMouseEnter={e => { if (!isImproving && allDialogue.length > 0) { e.currentTarget.style.borderColor = '#9c27b0'; e.currentTarget.style.color = '#9c27b0'; }}}
+                                    onMouseLeave={e => { if (!isImproving && allDialogue.length > 0) { e.currentTarget.style.borderColor = '#333'; e.currentTarget.style.color = '#888'; }}}
+                                >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                                        <path d="M2 17l10 5 10-5"/>
+                                        <path d="M2 12l10 5 10-5"/>
+                                    </svg>
+                                </button>
                             </div>
                             
                             <div style={{ flex: 1 }}></div>
@@ -1308,6 +1603,137 @@ function App() {
                             >
                                 ✕
                             </button>
+                        </div>
+                    )}
+
+                    {/* Прогресс-бар полной ретранскрипции */}
+                    {isFullTranscribing && (
+                        <div style={{ 
+                            marginBottom: '1rem', 
+                            padding: '0.75rem', 
+                            backgroundColor: '#1a2a3e', 
+                            borderRadius: '6px',
+                            border: '1px solid #2196f3'
+                        }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                                <span style={{ animation: 'pulse 1s infinite' }}>🔄</span>
+                                <span style={{ color: '#2196f3', fontWeight: 'bold' }}>Полная ретранскрипция</span>
+                                <span style={{ color: '#888', fontSize: '0.85rem' }}>
+                                    {Math.round(fullTranscriptionProgress * 100)}%
+                                </span>
+                                <div style={{ flex: 1 }}></div>
+                                <button
+                                    onClick={handleCancelFullTranscription}
+                                    title={isCancellingTranscription ? "Отмена..." : "Отменить ретранскрипцию"}
+                                    disabled={isCancellingTranscription}
+                                    style={{
+                                        padding: '0.25rem 0.5rem',
+                                        backgroundColor: isCancellingTranscription ? 'rgba(244, 67, 54, 0.1)' : 'transparent',
+                                        color: isCancellingTranscription ? '#888' : '#f44336',
+                                        border: '1px solid',
+                                        borderColor: isCancellingTranscription ? '#666' : '#f44336',
+                                        borderRadius: '4px',
+                                        cursor: isCancellingTranscription ? 'wait' : 'pointer',
+                                        fontSize: '0.75rem',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.25rem',
+                                        opacity: isCancellingTranscription ? 0.7 : 1
+                                    }}
+                                >
+                                    {isCancellingTranscription ? (
+                                        <div style={{ 
+                                            width: '12px', 
+                                            height: '12px', 
+                                            border: '2px solid #888',
+                                            borderTopColor: 'transparent',
+                                            borderRadius: '50%',
+                                            animation: 'spin 1s linear infinite'
+                                        }}></div>
+                                    ) : (
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                            <line x1="18" y1="6" x2="6" y2="18"/>
+                                            <line x1="6" y1="6" x2="18" y2="18"/>
+                                        </svg>
+                                    )}
+                                    {isCancellingTranscription ? 'Отмена...' : 'Отмена'}
+                                </button>
+                            </div>
+                            <div style={{ 
+                                height: '6px', 
+                                backgroundColor: '#1a1a2e', 
+                                borderRadius: '3px', 
+                                overflow: 'hidden',
+                                marginBottom: '0.3rem'
+                            }}>
+                                <div style={{ 
+                                    width: `${fullTranscriptionProgress * 100}%`, 
+                                    height: '100%', 
+                                    backgroundColor: '#2196f3',
+                                    transition: 'width 0.3s ease'
+                                }}></div>
+                            </div>
+                            {fullTranscriptionStatus && (
+                                <div style={{ fontSize: '0.8rem', color: '#888' }}>
+                                    {fullTranscriptionStatus}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Ошибка полной ретранскрипции */}
+                    {fullTranscriptionError && !isFullTranscribing && (
+                        <div style={{ 
+                            marginBottom: '1rem', 
+                            padding: '0.75rem', 
+                            backgroundColor: 'rgba(244, 67, 54, 0.1)', 
+                            borderRadius: '6px',
+                            border: '1px solid rgba(244, 67, 54, 0.3)',
+                            color: '#f44336',
+                            fontSize: '0.85rem'
+                        }}>
+                            ❌ Ошибка: {fullTranscriptionError}
+                        </div>
+                    )}
+
+                    {/* Индикатор AI улучшения */}
+                    {isImproving && (
+                        <div style={{ 
+                            marginBottom: '1rem', 
+                            padding: '0.75rem', 
+                            backgroundColor: 'rgba(156, 39, 176, 0.1)', 
+                            borderRadius: '6px',
+                            border: '1px solid #9c27b0',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.75rem'
+                        }}>
+                            <div style={{ 
+                                width: '20px', 
+                                height: '20px', 
+                                border: '2px solid #9c27b0',
+                                borderTopColor: 'transparent',
+                                borderRadius: '50%',
+                                animation: 'spin 1s linear infinite'
+                            }}></div>
+                            <span style={{ color: '#9c27b0', fontSize: '0.9rem' }}>
+                                Улучшение транскрипции с помощью AI...
+                            </span>
+                        </div>
+                    )}
+
+                    {/* Ошибка AI улучшения */}
+                    {improveError && !isImproving && (
+                        <div style={{ 
+                            marginBottom: '1rem', 
+                            padding: '0.75rem', 
+                            backgroundColor: 'rgba(244, 67, 54, 0.1)', 
+                            borderRadius: '6px',
+                            border: '1px solid rgba(244, 67, 54, 0.3)',
+                            color: '#f44336',
+                            fontSize: '0.85rem'
+                        }}>
+                            ❌ Ошибка AI: {improveError}
                         </div>
                     )}
 
@@ -1348,7 +1774,7 @@ function App() {
                                     padding: '1rem', 
                                     backgroundColor: '#1a1a2e', 
                                     borderRadius: '8px', 
-                                    lineHeight: '1.8',
+                                    lineHeight: '1.9',
                                     fontSize: '0.95rem'
                                 }}>
                                     <h4 style={{ margin: '0 0 1rem 0', color: '#888', fontSize: '0.9rem' }}>Диалог</h4>
@@ -1360,35 +1786,31 @@ function App() {
                                         const ms = Math.floor((totalMs % 1000) / 100); // десятые доли секунды
                                         const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
                                         
+                                        // Книжный формат: [00:05.4] Вы: Текст реплики
                                         return (
                                             <div key={idx} style={{ 
-                                                marginBottom: '0.6rem',
-                                                borderLeft: isMic ? '3px solid #4caf50' : '3px solid #2196f3',
-                                                paddingLeft: '0.75rem',
-                                                backgroundColor: isMic ? 'rgba(76, 175, 80, 0.05)' : 'rgba(33, 150, 243, 0.05)',
-                                                padding: '0.4rem 0.75rem',
-                                                borderRadius: '0 4px 4px 0'
+                                                marginBottom: '0.5rem',
+                                                paddingLeft: '0.5rem',
+                                                borderLeft: isMic ? '3px solid #4caf50' : '3px solid #2196f3'
                                             }}>
-                                                <div style={{ marginBottom: '0.2rem' }}>
-                                                    <span style={{ 
-                                                        color: '#555', 
-                                                        fontSize: '0.75rem',
-                                                        marginRight: '0.5rem',
-                                                        fontFamily: 'monospace'
-                                                    }}>
-                                                        {timeStr}
-                                                    </span>
-                                                    <span style={{ 
-                                                        color: isMic ? '#4caf50' : '#2196f3',
-                                                        fontSize: '0.8rem',
-                                                        fontWeight: 'bold'
-                                                    }}>
-                                                        {isMic ? 'Вы' : 'Собеседник'}
-                                                    </span>
-                                                </div>
-                                                <div style={{ color: '#ddd' }}>
+                                                <span style={{ 
+                                                    color: '#555', 
+                                                    fontSize: '0.8rem',
+                                                    fontFamily: 'monospace'
+                                                }}>
+                                                    [{timeStr}]
+                                                </span>
+                                                {' '}
+                                                <span style={{ 
+                                                    color: isMic ? '#4caf50' : '#2196f3',
+                                                    fontWeight: 'bold'
+                                                }}>
+                                                    {isMic ? 'Вы' : 'Собеседник'}:
+                                                </span>
+                                                {' '}
+                                                <span style={{ color: '#ddd' }}>
                                                     {seg.text}
-                                                </div>
+                                                </span>
                                             </div>
                                         );
                                     })}
@@ -1525,9 +1947,9 @@ function App() {
                                                     )}
                                                 </div>
                                             </div>
-                                            {/* Диалог с таймстемпами */}
+                                            {/* Диалог с таймстемпами - книжный формат */}
                                             {chunk.dialogue && chunk.dialogue.length > 0 ? (
-                                                <div style={{ marginTop: '0.4rem', lineHeight: '1.6' }}>
+                                                <div style={{ marginTop: '0.4rem', lineHeight: '1.7' }}>
                                                     {chunk.dialogue.map((seg, idx) => {
                                                         const isMic = seg.speaker === 'mic';
                                                         const totalMs = seg.start;
@@ -1536,20 +1958,21 @@ function App() {
                                                         const ms = Math.floor((totalMs % 1000) / 100);
                                                         const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
                                                         
+                                                        // Книжный формат: [00:05.4] Вы: Текст
                                                         return (
                                                             <div key={idx} style={{ 
-                                                                marginBottom: '0.4rem',
-                                                                borderLeft: isMic ? '2px solid #4caf50' : '2px solid #2196f3',
-                                                                paddingLeft: '0.5rem'
+                                                                marginBottom: '0.3rem',
+                                                                paddingLeft: '0.4rem',
+                                                                borderLeft: isMic ? '2px solid #4caf50' : '2px solid #2196f3'
                                                             }}>
                                                                 <span style={{ 
                                                                     color: '#666', 
                                                                     fontSize: '0.7rem',
-                                                                    marginRight: '0.5rem',
                                                                     fontFamily: 'monospace'
                                                                 }}>
-                                                                    {timeStr}
+                                                                    [{timeStr}]
                                                                 </span>
+                                                                {' '}
                                                                 <span style={{ 
                                                                     color: isMic ? '#4caf50' : '#2196f3',
                                                                     fontSize: '0.8rem',
@@ -1557,7 +1980,8 @@ function App() {
                                                                 }}>
                                                                     {isMic ? 'Вы' : 'Собеседник'}:
                                                                 </span>
-                                                                <span style={{ color: '#ccc', marginLeft: '0.3rem' }}>
+                                                                {' '}
+                                                                <span style={{ color: '#ccc' }}>
                                                                     {seg.text}
                                                                 </span>
                                                             </div>
@@ -1667,6 +2091,10 @@ function App() {
                 @keyframes transcribing-pulse {
                     0%, 100% { background-color: #2a2a1a; }
                     50% { background-color: #3a3a2a; }
+                }
+                @keyframes spin {
+                    from { transform: rotate(0deg); }
+                    to { transform: rotate(360deg); }
                 }
             `}</style>
 

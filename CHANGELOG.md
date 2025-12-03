@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.6] - 2024-12-03
+
+### Changed
+- **Chunk-Based Full Retranscription**: Full retranscription now uses existing chunks instead of arbitrary 20-minute segments
+  - Chunks are already cut at natural speech boundaries during recording
+  - This preserves context and improves transcription quality
+  - Fallback to 20-minute segments for old sessions without chunk boundaries
+
+- **Unified VAD for Stereo Channels**: Both mic and sys channels now use the same speech region map
+  - Solves timestamp desynchronization between speakers
+  - Uses `CreateUnifiedSpeechRegions()` which mixes channels via max(abs) amplitude
+  - Both channels are mapped to the same timeline for accurate dialogue ordering
+
+### Technical
+- `main.go`: Refactored `retranscribe_full` handler
+  - Added `ProcessingSegment` struct to unify chunk and fallback segment handling
+  - Checks for valid `StartMs`/`EndMs` in existing chunks
+  - Uses `session.CreateUnifiedSpeechRegions()` instead of separate VAD per channel
+  - Adds chunk offset to final timestamps for correct global positioning
+- `session/vad.go`: `CreateUnifiedSpeechRegions()` already implemented in v1.5.5
+
+## [1.5.1] - 2024-12-03
+
+### Added
+- **Chunked Transcription for Long Files**: Audio files are now split into 20-minute segments for reliable transcription
+  - Solves the issue where files >25 minutes were not transcribed at all
+  - Each segment is processed independently with proper timestamp offsetting
+  - Progress indicator shows current segment (e.g., "Segment 2/3")
+  - Works for both stereo and mono modes
+
+### Technical
+- `main.go`: Added `maxSegmentDurationMs` constant (20 minutes)
+- Stereo mode: Loops through segments, extracts audio, runs VAD, transcribes, and merges results
+- Mono mode: Same segmentation approach for consistency
+- Timestamps are correctly offset by segment start time
+
+## [1.5.0] - 2024-12-03
+
+### Added
+- **High-Quality Transcription Mode**: New `TranscribeHighQuality()` method for full file retranscription
+  - Optimized Whisper parameters: beam_size=5, temperature=0.0, entropy threshold=2.4
+  - MaxTokensPerSegment increased to 256 for longer sentences
+  - MaxContext=0 to prevent hallucination loops
+  - Used automatically for full file retranscription
+
+- **AI-Powered Transcription Improvement**: Post-processing with LLM via Ollama
+  - New "Improve with AI" button (purple layers icon) in session header
+  - Fixes recognition errors, punctuation, and capitalization
+  - Uses configured Ollama model (same as summary generation)
+  - New WebSocket messages: `improve_transcription`, `improve_started`, `improve_completed`, `improve_error`
+  - New backend functions: `improveTranscriptionWithLLM()`, `parseImprovedDialogue()`, `UpdateImprovedDialogue()`
+
+### Changed
+- **Enhanced Logging**: Added detailed logging for full transcription process
+  - Logs converted segments with word counts
+  - Logs chunk data before sending to frontend
+  - Better error handling with specific error messages
+
+### Technical
+- `ai/whisper.go`: New `TranscribeHighQuality()` method with optimized parameters
+- `main.go`: 
+  - Full retranscription now uses high-quality mode
+  - Added `improve_transcription` WebSocket handler
+  - Added `improveTranscriptionWithLLM()` and `parseImprovedDialogue()` functions
+- `session/manager.go`: Added `UpdateImprovedDialogue()` method
+- `frontend/src/App.tsx`:
+  - New state: `isImproving`, `improveError`
+  - New handler: `handleImproveTranscription()`
+  - New UI: AI improvement button and progress indicator
+
 ## [1.3.1] - 2024-12-03
 
 ### Fixed

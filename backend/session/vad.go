@@ -296,6 +296,54 @@ func MapWhisperSegmentsToRealTime(whisperStarts []int64, speechRegions []SpeechR
 	return result
 }
 
+// CreateUnifiedSpeechRegions создаёт единую карту речевых регионов для обоих каналов
+// Используется для синхронизации timestamps между mic и sys при ретранскрипции
+// Микширует каналы через max(abs) для надёжного обнаружения речи любого участника
+func CreateUnifiedSpeechRegions(micSamples, sysSamples []float32, sampleRate int) []SpeechRegion {
+	minLen := len(micSamples)
+	if len(sysSamples) < minLen {
+		minLen = len(sysSamples)
+	}
+
+	if minLen == 0 {
+		// Если один канал пустой, используем другой
+		if len(micSamples) > 0 {
+			log.Printf("CreateUnifiedSpeechRegions: sys empty, using mic only (%d samples)", len(micSamples))
+			return DetectSpeechRegions(micSamples, sampleRate)
+		}
+		if len(sysSamples) > 0 {
+			log.Printf("CreateUnifiedSpeechRegions: mic empty, using sys only (%d samples)", len(sysSamples))
+			return DetectSpeechRegions(sysSamples, sampleRate)
+		}
+		return nil
+	}
+
+	// Создаём микс: берём максимум амплитуд (OR логика)
+	// Это гарантирует что речь любого участника будет обнаружена
+	mixedSamples := make([]float32, minLen)
+	for i := 0; i < minLen; i++ {
+		micAbs := micSamples[i]
+		if micAbs < 0 {
+			micAbs = -micAbs
+		}
+		sysAbs := sysSamples[i]
+		if sysAbs < 0 {
+			sysAbs = -sysAbs
+		}
+
+		if micAbs > sysAbs {
+			mixedSamples[i] = micSamples[i]
+		} else {
+			mixedSamples[i] = sysSamples[i]
+		}
+	}
+
+	log.Printf("CreateUnifiedSpeechRegions: created mix of %d samples from mic=%d, sys=%d",
+		minLen, len(micSamples), len(sysSamples))
+
+	return DetectSpeechRegions(mixedSamples, sampleRate)
+}
+
 // MapWhisperTimeToRealTime маппит одиночный таймстемп Whisper на реальное время
 // Используется для маппинга word-level timestamps
 func MapWhisperTimeToRealTime(whisperMs int64, speechRegions []SpeechRegion) int64 {

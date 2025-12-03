@@ -94,3 +94,6 @@ backend/whisper.cpp/talk-llama
 RELEASE_INSTRUCTIONS.md
 RELEASE_v1.0.1_SUMMARY.md
 RELEASE_INSTRUCTIONS.md
+
+# Spike/experimental code
+backend/cmd/spike_gigaam/
