@@ -11,7 +11,6 @@ import (
 	"sync"
 
 	ort "github.com/yalue/onnxruntime_go"
-	"gonum.org/v1/gonum/dsp/fourier"
 )
 
 // Константы GigaAM
@@ -42,9 +41,7 @@ type GigaAMEngine struct {
 	vocabPath    string
 	vocab        []string
 	blankID      int
-	melFilters   [][]float64
-	window       []float64
-	fft          *fourier.FFT
+	melProcessor *MelProcessor
 	mu           sync.Mutex
 	initialized  bool
 	useCoreML    bool   // Использует ли CoreML для GPU ускорения
@@ -95,10 +92,15 @@ func NewGigaAMEngineWithOptions(modelPath, vocabPath string, useCoreML bool) (*G
 	engine.vocab = vocab
 	engine.blankID = blankID
 
-	// Предвычисляем mel-фильтры и окно
-	engine.melFilters = createMelFilterbank(gigaamNFFT, gigaamNMels, gigaamSampleRate)
-	engine.window = createHannWindow(gigaamWinLength)
-	engine.fft = fourier.NewFFT(gigaamNFFT)
+	// Инициализируем MelProcessor
+	melConfig := MelConfig{
+		SampleRate: gigaamSampleRate,
+		NMels:      gigaamNMels,
+		HopLength:  gigaamHopLength,
+		WinLength:  gigaamWinLength,
+		NFFT:       gigaamNFFT,
+	}
+	engine.melProcessor = NewMelProcessor(melConfig)
 
 	// Инициализируем ONNX Runtime (если ещё не инициализирован)
 	if err := initONNXRuntime(); err != nil {
@@ -404,52 +406,7 @@ func (e *GigaAMEngine) Close() {
 
 // computeLogMelSpectrogram вычисляет log-mel спектрограмму
 func (e *GigaAMEngine) computeLogMelSpectrogram(samples []float32) ([][]float32, int) {
-	// Количество фреймов
-	numFrames := len(samples)/gigaamHopLength + 1
-
-	// Результат: [numFrames][nMels]
-	melSpec := make([][]float32, numFrames)
-
-	for frame := 0; frame < numFrames; frame++ {
-		// Центр фрейма
-		center := frame * gigaamHopLength
-
-		// Извлекаем фрейм с паддингом
-		frameData := make([]float64, gigaamNFFT)
-		for i := 0; i < gigaamWinLength; i++ {
-			sampleIdx := center - gigaamWinLength/2 + i
-			if sampleIdx >= 0 && sampleIdx < len(samples) {
-				frameData[i] = float64(samples[sampleIdx]) * e.window[i]
-			}
-		}
-
-		// FFT
-		coeffs := e.fft.Coefficients(nil, frameData)
-
-		// Power spectrum (только положительные частоты)
-		powerSpec := make([]float64, gigaamNFFT/2+1)
-		for i := 0; i <= gigaamNFFT/2; i++ {
-			re := real(coeffs[i])
-			im := imag(coeffs[i])
-			powerSpec[i] = re*re + im*im
-		}
-
-		// Применяем mel-фильтры
-		melSpec[frame] = make([]float32, gigaamNMels)
-		for m := 0; m < gigaamNMels; m++ {
-			sum := float64(0)
-			for k := 0; k < len(powerSpec); k++ {
-				sum += powerSpec[k] * e.melFilters[m][k]
-			}
-			// Log с клампингом
-			if sum < 1e-9 {
-				sum = 1e-9
-			}
-			melSpec[frame][m] = float32(math.Log(sum))
-		}
-	}
-
-	return melSpec, numFrames
+	return e.melProcessor.Compute(samples)
 }
 
 // decodeCTCWithTimestamps выполняет CTC декодирование с timestamps
@@ -602,68 +559,4 @@ func loadGigaAMVocab(path string) ([]string, int, error) {
 	}
 
 	return vocab, blankID, nil
-}
-
-// createMelFilterbank создаёт mel-фильтры
-func createMelFilterbank(nFFT, nMels, sampleRate int) [][]float64 {
-	// Преобразование Hz в mel
-	hzToMel := func(hz float64) float64 {
-		return 2595.0 * math.Log10(1.0+hz/700.0)
-	}
-	// Преобразование mel в Hz
-	melToHz := func(mel float64) float64 {
-		return 700.0 * (math.Pow(10.0, mel/2595.0) - 1.0)
-	}
-
-	// Границы в mel
-	lowFreq := float64(0)
-	highFreq := float64(sampleRate / 2)
-	lowMel := hzToMel(lowFreq)
-	highMel := hzToMel(highFreq)
-
-	// Точки mel-фильтров
-	melPoints := make([]float64, nMels+2)
-	for i := 0; i < nMels+2; i++ {
-		melPoints[i] = lowMel + float64(i)*(highMel-lowMel)/float64(nMels+1)
-	}
-
-	// Преобразуем обратно в Hz и затем в bin индексы
-	binPoints := make([]int, nMels+2)
-	for i := 0; i < nMels+2; i++ {
-		hz := melToHz(melPoints[i])
-		binPoints[i] = int(math.Floor((float64(nFFT)+1)*hz/float64(sampleRate) + 0.5))
-	}
-
-	// Создаём фильтры
-	filters := make([][]float64, nMels)
-	numBins := nFFT/2 + 1
-
-	for m := 0; m < nMels; m++ {
-		filters[m] = make([]float64, numBins)
-		left := binPoints[m]
-		center := binPoints[m+1]
-		right := binPoints[m+2]
-
-		for k := left; k < center && k < numBins; k++ {
-			if center > left {
-				filters[m][k] = float64(k-left) / float64(center-left)
-			}
-		}
-		for k := center; k < right && k < numBins; k++ {
-			if right > center {
-				filters[m][k] = float64(right-k) / float64(right-center)
-			}
-		}
-	}
-
-	return filters
-}
-
-// createHannWindow создаёт окно Ханна
-func createHannWindow(size int) []float64 {
-	window := make([]float64, size)
-	for i := 0; i < size; i++ {
-		window[i] = 0.5 * (1 - math.Cos(2*math.Pi*float64(i)/float64(size-1)))
-	}
-	return window
 }

@@ -3,10 +3,11 @@ package ai
 
 // TranscriptSegment сегмент с таймстемпами
 type TranscriptSegment struct {
-	Start int64            // миллисекунды
-	End   int64            // миллисекунды
-	Text  string           // полный текст сегмента
-	Words []TranscriptWord // слова с точными timestamps (word-level)
+	Start   int64            // миллисекунды
+	End     int64            // миллисекунды
+	Text    string           // полный текст сегмента
+	Words   []TranscriptWord // слова с точными timestamps (word-level)
+	Speaker string           // идентификатор спикера
 }
 
 // TranscriptWord слово с точными таймстемпами

@@ -15,6 +15,7 @@ type EngineType string
 const (
 	EngineTypeWhisper EngineType = "whisper" // whisper.cpp
 	EngineTypeGigaAM  EngineType = "gigaam"  // GigaAM ONNX
+	EngineTypeSpeaker EngineType = "speaker" // Speaker Recognition
 )
 
 // ModelInfo информация о модели
