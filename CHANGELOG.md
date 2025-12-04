@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2025-12-04
+
+### Added
+- **Speaker Diarization for Sys Channel**: Implemented speaker recognition and separation for the system audio channel (Interlocutor)
+  - Uses `WeSpeaker ResNet34` model (ONNX) to identify unique speakers
+  - Automatically labels speakers as `[Speaker 0]`, `[Speaker 1]`, etc.
+  - Works on top of any transcription model (Whisper Turbo, GigaAM)
+  - Integrated into real-time transcription and re-transcription processes
+  - Requires downloading `WeSpeaker ResNet34` from Model Manager
+
+### Technical
+- **New AI Architecture**:
+  - Added `SpeakerEncoder` service for voice embedding extraction
+  - Added `Diarizer` service for clustering speaker embeddings
+  - Refactored audio processing logic into `mel_spectrogram.go` for reuse between GigaAM and Diarization
+  - Updated `main.go` to support speaker diarization pipeline
+  - Added `Speaker` field to `TranscriptSegment` struct
+
 ## [1.6.3] - 2025-12-04
 
 ### Fixed

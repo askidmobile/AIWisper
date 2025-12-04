@@ -28,17 +28,10 @@ import (
 func convertSegments(aiSegs []ai.TranscriptSegment, speaker string) []session.TranscriptSegment {
 	result := make([]session.TranscriptSegment, len(aiSegs))
 	for i, seg := range aiSegs {
-		text := seg.Text
-		// Если есть информация о спикере (после диаризации), добавляем её в текст
-		// Это позволяет отображать разделение голосов на фронтенде без изменения API
-		if seg.Speaker != "" {
-			text = fmt.Sprintf("[%s] %s", seg.Speaker, text)
-		}
-
 		result[i] = session.TranscriptSegment{
 			Start:   seg.Start,
 			End:     seg.End,
-			Text:    text,
+			Text:    seg.Text,
 			Speaker: speaker,
 			Words:   convertWords(seg.Words, speaker, 0),
 		}
@@ -52,16 +45,10 @@ func convertSegments(aiSegs []ai.TranscriptSegment, speaker string) []session.Tr
 func convertSegmentsWithGlobalOffset(aiSegs []ai.TranscriptSegment, speaker string, chunkStartMs int64) []session.TranscriptSegment {
 	result := make([]session.TranscriptSegment, len(aiSegs))
 	for i, seg := range aiSegs {
-		text := seg.Text
-		// Если есть информация о спикере (после диаризации), добавляем её в текст
-		if seg.Speaker != "" {
-			text = fmt.Sprintf("[%s] %s", seg.Speaker, text)
-		}
-
 		result[i] = session.TranscriptSegment{
 			Start:   seg.Start + chunkStartMs, // Добавляем глобальный offset
 			End:     seg.End + chunkStartMs,   // Добавляем глобальный offset
-			Text:    text,
+			Text:    seg.Text,
 			Speaker: speaker,
 			Words:   convertWords(seg.Words, speaker, chunkStartMs),
 		}
@@ -1639,18 +1626,6 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engineMgr *a
 						if sysErr != nil {
 							log.Printf("%s sys transcription error: %v", segLabel, sysErr)
 						} else {
-							// Применяем диаризацию при полной ретранскрипции
-							if diarizer != nil && len(sysSegments) > 0 {
-								conn.WriteJSON(Message{
-									Type:      "full_transcription_progress",
-									SessionID: sess.ID,
-									Progress:  baseProgress + segmentProgress*0.8,
-									Data:      fmt.Sprintf("Разделение голосов (%s)...", segLabel),
-								})
-								log.Printf("%s: running diarization...", segLabel)
-								sysSegments, _ = diarizer.Diarize(sysSegments, sysSamples)
-							}
-
 							// Маппим таймстемпы на реальное время используя те же унифицированные регионы
 							if len(sysSegments) > 0 && len(unifiedRegions) > 0 {
 								whisperStarts := make([]int64, len(sysSegments))
