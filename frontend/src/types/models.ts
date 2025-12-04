@@ -38,7 +38,6 @@ export interface AppSettings {
     echoCancel: number;
     useVoiceIsolation: boolean;
     captureSystem: boolean;
-    autoRetranscribe: boolean; // Авто-ретранскрипция после записи
     // Ollama settings for summary
     ollamaModel: string;  // e.g., 'llama3.2', 'qwen2.5', 'mistral'
     ollamaUrl: string;    // e.g., 'http://localhost:11434'

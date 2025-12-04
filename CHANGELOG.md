@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.3] - 2025-12-04
+
+### Fixed
+- **Retranscription Quality**: Fixed quality degradation during retranscription compared to real-time transcription
+  - Root cause: `TranscribeHighQuality` used `MaxContext=0` which disabled context, hurting recognition quality
+  - Solution: Unified Whisper parameters between `TranscribeWithSegments` (realtime) and `TranscribeHighQuality` (retranscription)
+  - Now uses `MaxContext=-1` (full context) for better accuracy
+  - Unified `MaxTokensPerSegment=128` for consistency
+  - Added `hasSignificantAudio` check to filter empty/quiet segments
+
+### Changed
+- **Removed Auto-Retranscription**: Removed automatic retranscription after recording stop
+  - Auto-retranscription was causing confusion and unexpected behavior
+  - Users now have full control - retranscription only happens when manually triggered
+  - Removed "Авто-распознавание" checkbox from settings
+  - Removed `autoRetranscribe` from app settings and localStorage
+
+### Technical
+- `backend/ai/whisper.go`:
+  - `TranscribeHighQuality()` now uses same parameters as `TranscribeWithSegments()`
+  - `MaxContext` changed from `0` to `-1` (use full context)
+  - `MaxTokensPerSegment` changed from `256` to `128`
+  - Added `hasSignificantAudio()` check for consistency
+- `frontend/src/App.tsx`:
+  - Removed auto-retranscription logic from `session_stopped` handler
+  - Removed `autoRetranscribe` state and ref
+  - Removed auto-retranscription checkbox from settings UI
+- `frontend/src/types/models.ts`:
+  - Removed `autoRetranscribe` from `AppSettings` interface
+
 ## [1.6.2] - 2025-12-03
 
 ### Fixed

@@ -146,7 +146,7 @@ function App() {
     const [showSettings, setShowSettings] = useState(false);
     const [echoCancel, setEchoCancel] = useState(0.4); // Эхоподавление 0-1
     const [useVoiceIsolation, setUseVoiceIsolation] = useState(true); // Voice Isolation (macOS 15+)
-    const [autoRetranscribe, setAutoRetranscribe] = useState(false); // Авто-ретранскрипция после записи (отключено по умолчанию)
+
 
     // Audio player
     const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -199,13 +199,11 @@ function App() {
     const transcriptionRef = useRef<HTMLDivElement | null>(null);
     
     // Refs для доступа к актуальным значениям в callbacks
-    const autoRetranscribeRef = useRef(autoRetranscribe);
     const modelsRef = useRef(models);
     const activeModelIdRef = useRef(activeModelId);
     const languageRef = useRef(language);
     
     // Обновляем refs при изменении состояния
-    useEffect(() => { autoRetranscribeRef.current = autoRetranscribe; }, [autoRetranscribe]);
     useEffect(() => { modelsRef.current = models; }, [models]);
     useEffect(() => { activeModelIdRef.current = activeModelId; }, [activeModelId]);
     useEffect(() => { languageRef.current = language; }, [language]);
@@ -229,7 +227,6 @@ function App() {
                     setCaptureSystem(settings.captureSystem ?? true);
                     setOllamaModel(settings.ollamaModel || 'llama3.2');
                     setOllamaUrl(settings.ollamaUrl || 'http://localhost:11434');
-                    setAutoRetranscribe(settings.autoRetranscribe ?? false);
                     addLog('Settings loaded');
                 }
                 setSettingsLoaded(true);
@@ -253,15 +250,14 @@ function App() {
                     useVoiceIsolation,
                     captureSystem,
                     ollamaModel,
-                    ollamaUrl,
-                    autoRetranscribe
+                    ollamaUrl
                 });
             } catch (err) {
                 console.error('Failed to save settings:', err);
             }
         };
         saveSettings();
-    }, [language, activeModelId, echoCancel, useVoiceIsolation, captureSystem, ollamaModel, ollamaUrl, autoRetranscribe, settingsLoaded]);
+    }, [language, activeModelId, echoCancel, useVoiceIsolation, captureSystem, ollamaModel, ollamaUrl, settingsLoaded]);
 
     // Таймер записи
     useEffect(() => {
@@ -333,30 +329,6 @@ function App() {
                             // Открываем только что записанную сессию
                             if (msg.session) {
                                 setSelectedSession(msg.session);
-                                
-                                // Авто-ретранскрипция после записи (если включена)
-                                if (autoRetranscribeRef.current && msg.session.id) {
-                                    const activeModel = modelsRef.current.find(m => m.id === activeModelIdRef.current);
-                                    const modelPath = activeModel?.path || '';
-                                    
-                                    if (modelPath) {
-                                        addLog('Starting auto full retranscription...');
-                                        setIsFullTranscribing(true);
-                                        setFullTranscriptionProgress(0);
-                                        setFullTranscriptionStatus('Запуск полной транскрипции...');
-                                        setFullTranscriptionError(null);
-                                        
-                                        // Небольшая задержка чтобы MP3 файл точно закрылся
-                                        setTimeout(() => {
-                                            socket.send(JSON.stringify({
-                                                type: 'retranscribe_full',
-                                                sessionId: msg.session.id,
-                                                model: modelPath,
-                                                language: languageRef.current
-                                            }));
-                                        }, 500);
-                                    }
-                                }
                             }
                             break;
 
@@ -1177,14 +1149,7 @@ function App() {
                                 </label>
                             )}
 
-                            {/* Авто-ретранскрипция после записи */}
-                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer' }} title="Автоматически распознать весь файл после остановки записи (более точно, чем по чанкам)">
-                                <input type="checkbox" checked={autoRetranscribe} onChange={e => setAutoRetranscribe(e.target.checked)} />
-                                <span style={{ fontSize: '0.85rem' }}>Авто-распознавание</span>
-                                <span style={{ fontSize: '0.65rem', color: '#00bcd4', backgroundColor: '#1a3a3e', padding: '2px 5px', borderRadius: '3px' }}>
-                                    Точнее
-                                </span>
-                            </label>
+
                             
                             {/* Предупреждение если Voice Isolation недоступен */}
                             {captureSystem && !screenCaptureKitAvailable && (

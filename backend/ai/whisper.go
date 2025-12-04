@@ -371,15 +371,14 @@ func hasSignificantAudio(samples []float32) bool {
 }
 
 // TranscribeHighQuality выполняет высококачественную транскрипцию для полных файлов
-// Использует более агрессивные параметры для максимальной точности
+// Параметры унифицированы с TranscribeWithSegments для консистентного качества
 func (e *WhisperEngine) TranscribeHighQuality(samples []float32) ([]TranscriptSegment, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Для полной транскрипции используем менее строгую проверку
-	// Проверяем только минимальную длину
-	if len(samples) < 1600 { // ~0.1 секунды при 16kHz
-		log.Printf("TranscribeHighQuality: audio too short (%d samples)", len(samples))
+	// Используем такую же проверку как в TranscribeWithSegments для консистентности
+	if !hasSignificantAudio(samples) {
+		log.Printf("TranscribeHighQuality: audio too quiet or no speech detected")
 		return nil, nil
 	}
 
@@ -412,7 +411,7 @@ func (e *WhisperEngine) TranscribeHighQuality(samples []float32) ([]TranscriptSe
 	}
 
 	// ВЫСОКОКАЧЕСТВЕННЫЕ НАСТРОЙКИ для полной транскрипции
-	// Основано на исследовании лучших практик Whisper
+	// Унифицированы с TranscribeWithSegments для консистентного качества
 
 	// Beam search с большим размером для лучшего качества
 	ctx.SetBeamSize(5)
@@ -423,19 +422,17 @@ func (e *WhisperEngine) TranscribeHighQuality(samples []float32) ([]TranscriptSe
 	ctx.SetTemperatureFallback(0.2)
 
 	// Порог энтропии для определения галлюцинаций
-	// Более низкое значение = более строгая фильтрация
 	ctx.SetEntropyThold(2.4)
 
-	// Максимум токенов на сегмент (для длинных предложений)
-	ctx.SetMaxTokensPerSegment(256) // Увеличено с 128
+	// Максимум токенов на сегмент (такой же как в realtime для консистентности)
+	ctx.SetMaxTokensPerSegment(128)
 
 	// Разделение по словам для точных timestamps
 	ctx.SetSplitOnWord(true)
 
-	// Отключаем контекст для предотвращения зацикливания
-	// -1 означает использование всего доступного контекста
-	// 0 означает отключение контекста
-	ctx.SetMaxContext(0) // Полностью отключаем для предотвращения галлюцинаций
+	// Используем контекст как в realtime транскрипции
+	// -1 означает использование всего доступного контекста, что улучшает качество
+	ctx.SetMaxContext(-1)
 
 	// Включаем таймстемпы токенов для точных временных меток
 	ctx.SetTokenTimestamps(true)
