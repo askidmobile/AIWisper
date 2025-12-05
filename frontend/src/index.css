@@ -1,27 +1,58 @@
 :root {
-  font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: 'Space Grotesk', 'SF Pro Display', -apple-system, BlinkMacSystemFont, Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
+  color: var(--text-primary);
+}
 
+[data-theme="dark"] {
   color-scheme: dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #0d0d1a;
-  
-  /* Цветовая палитра */
-  --primary: #6c5ce7;
-  --primary-light: #a29bfe;
-  --primary-dark: #5b4cdb;
-  --accent: #00cec9;
-  --success: #00b894;
-  --warning: #fdcb6e;
-  --danger: #e74c3c;
-  --bg-dark: #0d0d1a;
-  --bg-card: #12121f;
-  --bg-elevated: #1a1a2e;
-  --border: #2d2d44;
-  --text-primary: #ffffff;
-  --text-secondary: #a0a0b0;
-  --text-muted: #666680;
+  --bg: #05060c;
+  --surface: rgba(255, 255, 255, 0.04);
+  --surface-strong: rgba(255, 255, 255, 0.08);
+  --sidebar: rgba(7, 8, 15, 0.9);
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --primary: #8b5cf6;
+  --primary-light: #a78bfa;
+  --primary-dark: #6c43d6;
+  --primary-glow: #b388ff;
+  --accent: #4de1c1;
+  --success: #00c48c;
+  --warning: #f9c74f;
+  --warning-strong: #f8b602;
+  --danger: #ef5350;
+  --text-primary: #f4f5fb;
+  --text-secondary: #c5c7d3;
+  --text-muted: #8c90a5;
+  --app-bg: radial-gradient(circle at 20% 20%, rgba(139, 92, 246, 0.18), transparent 28%), radial-gradient(circle at 80% 10%, rgba(77, 225, 193, 0.18), transparent 26%), linear-gradient(135deg, #0a0c14 0%, #090b13 45%, #0c0f19 100%);
+  --glass: rgba(255, 255, 255, 0.05);
+  --shadow-strong: 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f7fb;
+  --surface: rgba(255, 255, 255, 0.78);
+  --surface-strong: rgba(255, 255, 255, 0.95);
+  --sidebar: rgba(255, 255, 255, 0.9);
+  --border: rgba(0, 0, 0, 0.08);
+  --border-strong: rgba(0, 0, 0, 0.14);
+  --primary: #5f4bff;
+  --primary-light: #8c7bff;
+  --primary-dark: #4a3bc9;
+  --primary-glow: #aea2ff;
+  --accent: #0bb5d9;
+  --success: #1ba97a;
+  --warning: #f2a737;
+  --warning-strong: #db8e16;
+  --danger: #d64545;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #6b7280;
+  --app-bg: radial-gradient(circle at 15% 20%, rgba(94, 80, 255, 0.12), transparent 30%), radial-gradient(circle at 80% 0%, rgba(11, 181, 217, 0.14), transparent 25%), linear-gradient(135deg, #eef2ff 0%, #f8fafc 70%, #ffffff 100%);
+  --glass: rgba(255, 255, 255, 0.7);
+  --shadow-strong: 0 20px 40px rgba(15, 23, 42, 0.15);
 }
 
 * {
@@ -30,12 +61,23 @@
 
 body {
   margin: 0;
-  display: flex;
   min-width: 320px;
   min-height: 100vh;
   width: 100vw;
   overflow: hidden;
-  background: linear-gradient(135deg, #0d0d1a 0%, #1a1a2e 100%);
+  background: var(--app-bg);
+  color: var(--text-primary);
+  position: relative;
+}
+
+body::before,
+body::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at 30% 20%, rgba(255, 255, 255, 0.04), transparent 25%), radial-gradient(circle at 70% 10%, rgba(255, 255, 255, 0.04), transparent 22%);
+  opacity: 0.7;
 }
 
 #root {
@@ -46,6 +88,11 @@ body {
   text-align: left;
 }
 
+.app-frame {
+  position: relative;
+  backdrop-filter: blur(4px);
+}
+
 /* Скроллбар */
 ::-webkit-scrollbar {
   width: 8px;
@@ -53,35 +100,36 @@ body {
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-dark);
+  background: var(--surface);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--border-strong);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  background: var(--primary);
 }
 
 /* Кнопки */
 button {
-  border-radius: 8px;
-  border: 1px solid transparent;
+  border-radius: 10px;
+  border: 1px solid var(--border);
   padding: 0.6em 1.2em;
   font-size: 1em;
-  font-weight: 500;
+  font-weight: 600;
   font-family: inherit;
-  background-color: var(--bg-elevated);
+  background: var(--surface-strong);
   color: var(--text-primary);
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 button:hover:not(:disabled) {
-  background-color: var(--border);
+  border-color: var(--primary);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
   transform: translateY(-1px);
 }
 
@@ -90,16 +138,16 @@ button:active:not(:disabled) {
 }
 
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.55;
   cursor: not-allowed;
 }
 
 /* Селекты */
 select {
-  background: var(--bg-elevated);
+  background: var(--surface-strong);
   color: var(--text-primary);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 0.5rem 0.75rem;
   font-size: 0.95rem;
   cursor: pointer;
@@ -113,7 +161,7 @@ select:hover {
 select:focus {
   outline: none;
   border-color: var(--primary);
-  box-shadow: 0 0 0 2px rgba(108, 92, 231, 0.2);
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2);
 }
 
 /* Чекбоксы */
@@ -137,9 +185,9 @@ input[type="range"] {
 }
 
 @keyframes highlight-pulse {
-  0% { background-color: var(--bg-card); }
-  50% { background-color: rgba(108, 92, 231, 0.2); }
-  100% { background-color: rgba(0, 184, 148, 0.1); }
+  0% { background-color: var(--surface); }
+  50% { background-color: rgba(139, 92, 246, 0.2); }
+  100% { background-color: rgba(77, 225, 193, 0.16); }
 }
 
 @keyframes fadeIn {
@@ -153,8 +201,8 @@ input[type="range"] {
 }
 
 @keyframes glow {
-  0%, 100% { box-shadow: 0 0 5px var(--primary), 0 0 10px var(--primary); }
-  50% { box-shadow: 0 0 20px var(--primary), 0 0 30px var(--primary); }
+  0%, 100% { box-shadow: 0 0 8px var(--primary), 0 0 18px var(--primary); }
+  50% { box-shadow: 0 0 16px var(--primary), 0 0 26px var(--primary); }
 }
 
 @keyframes recordPulse {
@@ -168,7 +216,7 @@ input[type="range"] {
 
 /* Карточки и панели */
 .card {
-  background: var(--bg-card);
+  background: var(--surface);
   border-radius: 12px;
   border: 1px solid var(--border);
   padding: 1rem;
@@ -177,15 +225,19 @@ input[type="range"] {
 
 .card:hover {
   border-color: var(--primary);
-  box-shadow: 0 4px 20px rgba(108, 92, 231, 0.1);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
 }
 
 /* Градиентный текст */
 .gradient-text {
-  background: linear-gradient(135deg, var(--primary), var(--primary-light));
+  background: linear-gradient(135deg, var(--primary), var(--accent));
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+.app-header {
+  backdrop-filter: blur(10px);
 }
 
 /* Кнопка записи */
@@ -216,61 +268,28 @@ input[type="range"] {
   box-shadow: 0 4px 15px rgba(243, 156, 18, 0.4);
 }
 
-/* Индикаторы уровня звука */
-.audio-level-bar {
-  height: 8px;
-  background: var(--bg-elevated);
-  border-radius: 4px;
-  overflow: hidden;
+/* Модальные окна */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease;
 }
 
-.audio-level-fill {
-  height: 100%;
-  border-radius: 4px;
-  transition: width 0.05s ease;
-}
-
-.audio-level-fill.mic {
-  background: linear-gradient(90deg, var(--success), #55efc4);
-}
-
-.audio-level-fill.system {
-  background: linear-gradient(90deg, #0984e3, #74b9ff);
-}
-
-/* Сегменты диалога */
-.dialogue-segment {
-  margin-bottom: 0.6rem;
-  padding: 0.5rem 0.75rem;
-  border-radius: 0 8px 8px 0;
+.modal-content {
+  background: var(--surface);
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  max-width: 90vw;
+  max-height: 90vh;
+  overflow: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
   animation: fadeIn 0.3s ease;
-}
-
-.dialogue-segment.mic {
-  border-left: 3px solid var(--success);
-  background: rgba(0, 184, 148, 0.05);
-}
-
-.dialogue-segment.sys {
-  border-left: 3px solid #0984e3;
-  background: rgba(9, 132, 227, 0.05);
-}
-
-/* Сессии в сайдбаре */
-.session-item {
-  padding: 0.75rem 1rem;
-  border-bottom: 1px solid rgba(45, 45, 68, 0.5);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.session-item:hover {
-  background: rgba(108, 92, 231, 0.1);
-}
-
-.session-item.selected {
-  background: rgba(108, 92, 231, 0.15);
-  border-left: 3px solid var(--primary);
 }
 
 /* Табы */
@@ -291,35 +310,6 @@ input[type="range"] {
 .tab-button.active {
   color: var(--primary);
   border-bottom-color: var(--primary);
-}
-
-/* Модальные окна */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.7);
-  backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  animation: fadeIn 0.2s ease;
-}
-
-.modal-content {
-  background: var(--bg-card);
-  border-radius: 16px;
-  border: 1px solid var(--border);
-  max-width: 90vw;
-  max-height: 90vh;
-  overflow: auto;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-  animation: fadeIn 0.3s ease;
-}
-
-/* Тултипы */
-[title] {
-  position: relative;
 }
 
 /* Бейджи */
@@ -355,14 +345,14 @@ input[type="range"] {
 /* Консоль */
 .console-container {
   border-top: 1px solid var(--border);
-  background: rgba(10, 10, 20, 0.8);
+  background: var(--surface);
   transition: height 0.2s ease-out;
   overflow: hidden;
 }
 
 .console-header {
   padding: 0.4rem 1rem;
-  background: var(--bg-card);
+  background: var(--surface-strong);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -372,7 +362,7 @@ input[type="range"] {
 }
 
 .console-header:hover {
-  background: var(--bg-elevated);
+  background: var(--surface);
 }
 
 .console-logs {
@@ -405,3 +395,13 @@ input[type="range"] {
 .gap-2 { gap: 0.5rem; }
 .gap-3 { gap: 0.75rem; }
 .gap-4 { gap: 1rem; }
+
+/* Data-driven surfaces */
+[data-surface] {
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+[data-elevated] {
+  box-shadow: var(--shadow-strong);
+}

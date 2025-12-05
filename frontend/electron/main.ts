@@ -15,6 +15,7 @@ interface AppSettings {
     echoCancel: number;
     useVoiceIsolation: boolean;
     captureSystem: boolean;
+    theme?: 'light' | 'dark';
 }
 
 interface StoreSchema {
@@ -28,7 +29,8 @@ const store: any = new Store({
             modelId: 'ggml-large-v3-turbo',
             echoCancel: 0.4,
             useVoiceIsolation: true,
-            captureSystem: true
+            captureSystem: true,
+            theme: 'dark'
         }
     }
 });

@@ -98,6 +98,10 @@ func (m *Manager) StopSession() (*Session, error) {
 	session.Status = SessionStatusCompleted
 	session.TotalDuration = now.Sub(session.StartTime)
 
+	if session.Title == "" {
+		session.Title = generateSessionTitle(session.StartTime, session.TotalDuration)
+	}
+
 	m.activeID = ""
 
 	// Сохраняем метаданные
@@ -556,6 +560,7 @@ func (m *Manager) LoadSessions() error {
 			Status        SessionStatus `json:"status"`
 			Language      string        `json:"language"`
 			Model         string        `json:"model"`
+			Title         string        `json:"title,omitempty"`
 			TotalDuration int64         `json:"totalDuration"` // миллисекунды!
 			SampleCount   int64         `json:"sampleCount"`
 		}
@@ -570,12 +575,21 @@ func (m *Manager) LoadSessions() error {
 			Status:        meta.Status,
 			Language:      meta.Language,
 			Model:         meta.Model,
+			Title:         meta.Title,
 			TotalDuration: time.Duration(meta.TotalDuration) * time.Millisecond, // конвертируем из мс
 			SampleCount:   meta.SampleCount,
 		}
 
 		// Устанавливаем DataDir (не сохраняется в JSON)
 		session.DataDir = filepath.Join(m.dataDir, entry.Name())
+
+		// Автогенерация названия, если отсутствует (для старых записей)
+		if session.Title == "" {
+			session.Title = generateSessionTitle(session.StartTime, session.TotalDuration)
+			if err := m.SaveSessionMeta(&session); err != nil {
+				log.Printf("LoadSessions: failed to backfill title for %s: %v", session.ID, err)
+			}
+		}
 
 		// Загружаем summary если есть
 		summaryPath := filepath.Join(m.dataDir, entry.Name(), "summary.txt")
@@ -628,6 +642,7 @@ func (m *Manager) SaveSessionMeta(s *Session) error {
 		Status        SessionStatus `json:"status"`
 		Language      string        `json:"language"`
 		Model         string        `json:"model"`
+		Title         string        `json:"title,omitempty"`
 		TotalDuration int64         `json:"totalDuration"`
 		SampleCount   int64         `json:"sampleCount"`
 		ChunksCount   int           `json:"chunksCount"`
@@ -638,6 +653,7 @@ func (m *Manager) SaveSessionMeta(s *Session) error {
 		Status:        s.Status,
 		Language:      s.Language,
 		Model:         s.Model,
+		Title:         s.Title,
 		TotalDuration: int64(s.TotalDuration / time.Millisecond),
 		SampleCount:   s.SampleCount,
 		ChunksCount:   len(s.Chunks),
@@ -649,6 +665,19 @@ func (m *Manager) SaveSessionMeta(s *Session) error {
 	}
 
 	return os.WriteFile(metaPath, data, 0644)
+}
+
+// generateSessionTitle формирует короткое имя записи по времени старта
+func generateSessionTitle(start time.Time, duration time.Duration) string {
+	datePart := start.Format("02.01")
+	timePart := start.Format("15:04")
+	minutes := int(duration.Minutes())
+	lengthPart := ""
+	if minutes > 0 {
+		lengthPart = fmt.Sprintf(" · %d мин", minutes)
+	}
+
+	return fmt.Sprintf("Запись %s %s%s", datePart, timePart, lengthPart)
 }
 
 // GetSessionWAVPath возвращает путь к полному WAV файлу сессии

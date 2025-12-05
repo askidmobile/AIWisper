@@ -133,11 +133,12 @@ type OllamaModel struct {
 
 // SessionInfo краткая информация о сессии для списка
 type SessionInfo struct {
-	ID            string    `json:"id"`
-	StartTime     time.Time `json:"startTime"`
-	Status        string    `json:"status"`
-	TotalDuration int64     `json:"totalDuration"`
-	ChunksCount   int       `json:"chunksCount"`
+    ID            string    `json:"id"`
+    StartTime     time.Time `json:"startTime"`
+    Status        string    `json:"status"`
+    TotalDuration int64     `json:"totalDuration"`
+    ChunksCount   int       `json:"chunksCount"`
+    Title         string    `json:"title,omitempty"`
 }
 
 func main() {
@@ -373,6 +374,7 @@ func handleSessionsList(w http.ResponseWriter, r *http.Request, mgr *session.Man
 			Status:        string(s.Status),
 			TotalDuration: int64(s.TotalDuration / time.Millisecond),
 			ChunksCount:   len(s.Chunks),
+			Title:         s.Title,
 		}
 	}
 
@@ -878,14 +880,15 @@ func handleConnection(conn *websocket.Conn, capture *audio.Capture, engineMgr *a
 			sessions := sessionMgr.ListSessions()
 			infos := make([]*SessionInfo, len(sessions))
 			for i, s := range sessions {
-				infos[i] = &SessionInfo{
-					ID:            s.ID,
-					StartTime:     s.StartTime,
-					Status:        string(s.Status),
-					TotalDuration: int64(s.TotalDuration / time.Millisecond),
-					ChunksCount:   len(s.Chunks),
-				}
-			}
+		infos[i] = &SessionInfo{
+			ID:            s.ID,
+			StartTime:     s.StartTime,
+			Status:        string(s.Status),
+			TotalDuration: int64(s.TotalDuration / time.Millisecond),
+			ChunksCount:   len(s.Chunks),
+			Title:         s.Title,
+		}
+	}
 			conn.WriteJSON(Message{
 				Type:     "sessions_list",
 				Sessions: infos,

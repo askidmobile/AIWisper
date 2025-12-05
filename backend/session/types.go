@@ -32,6 +32,7 @@ type Session struct {
 	Status        SessionStatus `json:"status"`
 	Language      string        `json:"language"`
 	Model         string        `json:"model"`
+	Title         string        `json:"title,omitempty"`
 	DataDir       string        `json:"dataDir"`
 	TotalDuration time.Duration `json:"totalDuration"`
 	SampleCount   int64         `json:"sampleCount"`

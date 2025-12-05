@@ -50,6 +50,7 @@ interface Session {
     status: 'recording' | 'completed' | 'failed';
     language: string;
     model: string;
+    title?: string;
     totalDuration: number;
     chunks: Chunk[];
     summary?: string;  // AI-generated summary
@@ -61,6 +62,7 @@ interface SessionInfo {
     status: string;
     totalDuration: number;
     chunksCount: number;
+    title?: string;
 }
 
 // Форматирование времени MM:SS
@@ -146,6 +148,7 @@ function App() {
     const [showSettings, setShowSettings] = useState(false);
     const [echoCancel, setEchoCancel] = useState(0.4); // Эхоподавление 0-1
     const [useVoiceIsolation, setUseVoiceIsolation] = useState(true); // Voice Isolation (macOS 15+)
+    const [theme, setTheme] = useState<'light' | 'dark'>('dark');
 
 
     // Audio player
@@ -196,6 +199,8 @@ function App() {
     const [isImproving, setIsImproving] = useState(false);
     const [improveError, setImproveError] = useState<string | null>(null);
 
+    const settingsLocked = isRecording || isStopping;
+
     const transcriptionRef = useRef<HTMLDivElement | null>(null);
     
     // Refs для доступа к актуальным значениям в callbacks
@@ -227,6 +232,7 @@ function App() {
                     setCaptureSystem(settings.captureSystem ?? true);
                     setOllamaModel(settings.ollamaModel || 'llama3.2');
                     setOllamaUrl(settings.ollamaUrl || 'http://localhost:11434');
+                    setTheme((settings as any).theme || 'dark');
                     addLog('Settings loaded');
                 }
                 setSettingsLoaded(true);
@@ -250,14 +256,21 @@ function App() {
                     useVoiceIsolation,
                     captureSystem,
                     ollamaModel,
-                    ollamaUrl
+                    ollamaUrl,
+                    theme
                 });
             } catch (err) {
                 console.error('Failed to save settings:', err);
             }
         };
         saveSettings();
-    }, [language, activeModelId, echoCancel, useVoiceIsolation, captureSystem, ollamaModel, ollamaUrl, settingsLoaded]);
+    }, [language, activeModelId, echoCancel, useVoiceIsolation, captureSystem, ollamaModel, ollamaUrl, theme, settingsLoaded]);
+
+    // Применяем тему к корню документа
+    useEffect(() => {
+        document.documentElement.setAttribute('data-theme', theme);
+        document.body.setAttribute('data-theme', theme);
+    }, [theme]);
 
     // Таймер записи
     useEffect(() => {
@@ -604,6 +617,10 @@ function App() {
         }
     };
 
+    const toggleTheme = () => {
+        setTheme(prev => prev === 'dark' ? 'light' : 'dark');
+    };
+
     const handleViewSession = (sessionId: string) => {
         wsRef.current?.send(JSON.stringify({ type: 'get_session', sessionId }));
     };
@@ -915,30 +932,31 @@ function App() {
         });
 
     return (
-        <div style={{ display: 'flex', height: '100vh', backgroundColor: '#0d0d1a', color: '#fff' }}>
+        <div className="app-frame" style={{ display: 'flex', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)' }}>
             {/* Hidden audio element */}
             <audio ref={audioRef} onEnded={handleAudioEnded} style={{ display: 'none' }} />
             
             {/* Left Sidebar - Sessions List */}
-            <aside style={{ 
-                width: '280px', 
-                backgroundColor: '#12121f', 
-                borderRight: '1px solid #333',
+            <aside data-surface data-elevated style={{ 
+                width: '300px', 
+                background: 'var(--sidebar)', 
+                borderRight: '1px solid var(--border-strong)',
                 display: 'flex',
-                flexDirection: 'column'
+                flexDirection: 'column',
+                boxShadow: 'var(--shadow-strong)'
             }}>
-                <div style={{ padding: '1rem', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h2 style={{ margin: 0, fontSize: '1rem', color: '#888' }}>📁 Записи</h2>
+                <div style={{ padding: '1rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--text-secondary)', letterSpacing: '0.3px' }}>📁 Записи</h2>
                     <button
                         onClick={openDataFolder}
                         title="Открыть папку с записями"
                         style={{
-                            padding: '0.3rem 0.5rem',
-                            fontSize: '0.75rem',
-                            backgroundColor: '#333',
-                            color: '#888',
-                            border: 'none',
-                            borderRadius: '4px',
+                            padding: '0.35rem 0.6rem',
+                            fontSize: '0.8rem',
+                            backgroundColor: 'var(--surface-strong)',
+                            color: 'var(--text-primary)',
+                            border: '1px solid var(--border)',
+                            borderRadius: '8px',
                             cursor: 'pointer'
                         }}
                     >
@@ -948,7 +966,7 @@ function App() {
                 
                 <div style={{ flex: 1, overflowY: 'auto' }}>
                     {sessions.length === 0 ? (
-                        <div style={{ padding: '1rem', color: '#666', textAlign: 'center' }}>
+                        <div style={{ padding: '1rem', color: 'var(--text-muted)', textAlign: 'center' }}>
                             Нет записей
                         </div>
                     ) : (
@@ -962,25 +980,31 @@ function App() {
                                     key={s.id} 
                                     style={{ 
                                         padding: '0.75rem 1rem',
-                                        borderBottom: '1px solid #1a1a2e',
-                                        backgroundColor: isSelected ? '#1a1a3e' : 'transparent',
-                                        cursor: 'pointer'
+                                        borderBottom: '1px solid var(--border)',
+                                        backgroundColor: isSelected ? 'rgba(108, 92, 231, 0.12)' : 'transparent',
+                                        cursor: 'pointer',
+                                        transition: 'all 0.2s ease'
                                     }}
                                     onClick={() => handleViewSession(s.id)}
                                 >
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.3rem' }}>
-                                        <span style={{ fontSize: '0.85rem', color: '#ccc' }}>
-                                            {formatDate(s.startTime)}
+                                        <span style={{ fontSize: '0.92rem', color: 'var(--text-primary)', fontWeight: 600 }}>
+                                            {s.title || formatDate(s.startTime)}
                                         </span>
-                                        <span style={{ fontSize: '0.75rem', color: '#888' }}>
+                                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                                             {formatDuration(durationSec)}
                                         </span>
                                     </div>
                                     
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                        <span style={{ fontSize: '0.75rem', color: '#666' }}>
-                                            {s.chunksCount} чанков
-                                        </span>
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                            <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                                                {formatDate(s.startTime)}
+                                            </span>
+                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                                {s.chunksCount} чанков
+                                            </span>
+                                        </div>
                                         
                                         <div style={{ display: 'flex', gap: '0.3rem' }}>
                                             <button
@@ -1023,46 +1047,36 @@ function App() {
             {/* Main Content */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
                 {/* Header - draggable для перемещения окна */}
-                <header style={{ 
-                    padding: '0.75rem 1.5rem', 
-                    paddingLeft: '80px', // Отступ для кнопок управления окном macOS
-                    borderBottom: '1px solid #333',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '1rem',
-                    WebkitAppRegion: 'drag', // Позволяет перетаскивать окно
-                    userSelect: 'none'
-                } as React.CSSProperties}>
-                    <h1 style={{ margin: 0, fontSize: '1.2rem', background: 'linear-gradient(135deg, #6c5ce7, #a29bfe)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>AIWisper</h1>
+                <header
+                    data-surface
+                    data-elevated
+                    className="app-header"
+                    style={{
+                        padding: '0.9rem 1.5rem',
+                        paddingLeft: '80px', // Отступ для кнопок управления окном macOS
+                        borderBottom: '1px solid var(--border-strong)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '1rem',
+                        WebkitAppRegion: 'drag', // Позволяет перетаскивать окно
+                        userSelect: 'none',
+                        background: 'var(--glass)'
+                    } as React.CSSProperties}
+                >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                        <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: 'var(--primary)', boxShadow: '0 0 16px var(--primary-glow)' }} />
+                        <h1 style={{ margin: 0, fontSize: '1.25rem', letterSpacing: '0.5px', background: 'linear-gradient(120deg, var(--primary), var(--accent))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>AIWisper</h1>
+                    </div>
                     
-                    <div style={{ 
-                        padding: '0.2rem 0.6rem', 
-                        borderRadius: '4px',
-                        fontSize: '0.75rem',
-                        backgroundColor: status === 'Connected' ? '#1b3d1b' : '#3d1b1b',
-                        color: status === 'Connected' ? '#4caf50' : '#f44336'
-                    }}>
-                        {status}
+                    <div style={{ padding: '0.25rem 0.7rem', borderRadius: '999px', fontSize: '0.82rem', background: status === 'Connected' ? 'rgba(0,184,148,0.18)' : 'rgba(244,67,54,0.14)', color: status === 'Connected' ? 'var(--success)' : 'var(--danger)', border: `1px solid ${status === 'Connected' ? 'rgba(0,184,148,0.35)' : 'rgba(244,67,54,0.35)'}`, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                        {status === 'Connected' ? 'Подключено' : 'Отключено'}
                     </div>
 
                     {/* Recording Duration */}
                     {isRecording && (
-                        <div style={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: '0.5rem',
-                            padding: '0.3rem 0.8rem',
-                            backgroundColor: '#3d1b1b',
-                            borderRadius: '4px'
-                        }}>
-                            <span style={{ 
-                                width: '8px', 
-                                height: '8px', 
-                                borderRadius: '50%', 
-                                backgroundColor: '#f44336',
-                                animation: 'pulse 1s infinite'
-                            }}></span>
-                            <span style={{ fontFamily: 'monospace', fontSize: '1rem', color: '#f44336' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', padding: '0.35rem 0.85rem', background: 'rgba(244, 67, 54, 0.12)', border: '1px solid rgba(244, 67, 54, 0.35)', borderRadius: '12px', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+                            <span style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#f44336', boxShadow: '0 0 14px rgba(244,67,54,0.7)', animation: 'pulse 1s infinite' }}></span>
+                            <span style={{ fontFamily: 'monospace', fontSize: '1rem', color: 'var(--text-primary)' }}>
                                 {formatDuration(recordingDuration)}
                             </span>
                         </div>
@@ -1071,10 +1085,17 @@ function App() {
                     <div style={{ flex: 1 }}></div>
                     
                     <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-                        <select 
-                            value={language} 
-                            onChange={e => setLanguage(e.target.value as any)} 
-                            style={{ padding: '0.3rem', backgroundColor: '#1a1a2e', color: '#fff', border: '1px solid #333', borderRadius: '4px' }}
+                        <button
+                            onClick={toggleTheme}
+                            style={{ padding: '0.35rem 0.6rem', backgroundColor: 'var(--surface-strong)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '8px', cursor: 'pointer' }}
+                        >
+                            {theme === 'dark' ? '☀️ Светлая' : '🌙 Тёмная'}
+                        </button>
+
+                        <select
+                            value={language}
+                            onChange={e => setLanguage(e.target.value as any)}
+                            style={{ padding: '0.35rem 0.6rem', backgroundColor: 'var(--surface-strong)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '8px' }}
                         >
                             <option value="ru">Русский</option>
                             <option value="en">English</option>
@@ -1083,7 +1104,7 @@ function App() {
                         
                         <button 
                             onClick={() => setShowSettings(!showSettings)} 
-                            style={{ padding: '0.3rem 0.6rem', backgroundColor: '#1a1a2e', border: '1px solid #333', borderRadius: '4px', cursor: 'pointer' }}
+                            style={{ padding: '0.35rem 0.65rem', backgroundColor: showSettings ? 'var(--primary)' : 'var(--surface-strong)', color: showSettings ? '#fff' : 'var(--text-primary)', border: `1px solid ${showSettings ? 'var(--primary)' : 'var(--border)'}`, borderRadius: '8px', cursor: 'pointer' }}
                         >
                             ⚙️
                         </button>
@@ -1092,15 +1113,16 @@ function App() {
                             onClick={handleStartStop}
                             disabled={status !== 'Connected' || isStopping}
                             style={{
-                                padding: '0.5rem 1.5rem',
-                                backgroundColor: isStopping ? '#ff9800' : isRecording ? '#f44336' : '#6c5ce7',
+                                padding: '0.55rem 1.55rem',
+                                background: isStopping ? 'linear-gradient(135deg, #ffb347, #ff9800)' : isRecording ? 'linear-gradient(135deg, #ff5858, #f44336)' : 'linear-gradient(135deg, var(--primary), var(--accent))',
                                 color: 'white',
                                 border: 'none',
-                                borderRadius: '8px',
-                                fontWeight: 'bold',
+                                borderRadius: '12px',
+                                fontWeight: 700,
+                                letterSpacing: '0.02em',
                                 cursor: (status === 'Connected' && !isStopping) ? 'pointer' : 'not-allowed',
                                 opacity: status === 'Connected' ? 1 : 0.5,
-                                boxShadow: isRecording ? '0 0 20px rgba(244, 67, 54, 0.4)' : '0 4px 15px rgba(108, 92, 231, 0.3)',
+                                boxShadow: isRecording ? '0 0 26px rgba(244, 67, 54, 0.35)' : '0 6px 18px rgba(108, 92, 231, 0.35)',
                                 transition: 'all 0.3s ease'
                             }}
                         >
@@ -1111,25 +1133,38 @@ function App() {
 
                 {/* Settings Panel */}
                 {showSettings && (
-                    <div style={{ padding: '0.75rem 1.5rem', backgroundColor: '#1a1a2e', borderBottom: '1px solid #333' }}>
-                        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div
+                        data-surface
+                        data-elevated
+                        className="settings-panel"
+                        style={{ padding: '0.9rem 1.5rem', position: 'relative', borderBottom: '1px solid var(--border-strong)', overflow: 'hidden' }}
+                    >
+                        {settingsLocked && (
+                            <div className="settings-lock" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(135deg, rgba(0,0,0,0.55), rgba(0,0,0,0.35))', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', zIndex: 5, color: 'var(--text-primary)' }}>
+                                <span style={{ fontSize: '1rem' }}>🔒</span>
+                                <span style={{ fontWeight: 600 }}>Запись идёт — настройки временно заблокированы</span>
+                            </div>
+                        )}
+
+                        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap', opacity: settingsLocked ? 0.55 : 1, pointerEvents: settingsLocked ? 'none' : 'auto' }}>
+                            <div data-chip style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.35rem 0.75rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-strong)' }}>
                                 <span>🎤</span>
-                                <select 
-                                    value={micDevice} 
-                                    onChange={e => setMicDevice(e.target.value)} 
-                                    style={{ padding: '0.3rem', backgroundColor: '#12121f', color: '#fff', border: '1px solid #333', borderRadius: '4px' }}
+                                <select
+                                    value={micDevice}
+                                    disabled={settingsLocked}
+                                    onChange={e => setMicDevice(e.target.value)}
+                                    style={{ padding: '0.35rem 0.6rem', backgroundColor: 'var(--surface)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '8px' }}
                                 >
                                     <option value="">Default</option>
                                     {inputDevices.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
                                 </select>
                             </div>
-                            
-                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer' }}>
-                                <input type="checkbox" checked={captureSystem} onChange={e => setCaptureSystem(e.target.checked)} />
+
+                            <label data-chip style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', padding: '0.35rem 0.75rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-strong)' }}>
+                                <input type="checkbox" checked={captureSystem} disabled={settingsLocked} onChange={e => setCaptureSystem(e.target.checked)} />
                                 <span>🔊 System Audio</span>
                                 {captureSystem && screenCaptureKitAvailable && (
-                                    <span style={{ fontSize: '0.7rem', color: '#4caf50', backgroundColor: '#1b3d1b', padding: '2px 6px', borderRadius: '3px' }}>
+                                    <span style={{ fontSize: '0.7rem', color: 'var(--success)', backgroundColor: 'rgba(0,184,148,0.14)', padding: '2px 6px', borderRadius: '999px' }}>
                                         Native
                                     </span>
                                 )}
@@ -1137,103 +1172,70 @@ function App() {
 
                             {/* Voice Isolation - встроенное эхоподавление macOS */}
                             {captureSystem && screenCaptureKitAvailable && (
-                                <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer' }} title="ВАЖНО: Разделение микрофона и системного звука для раздельной транскрибации (Вы/Собеседник). Использует встроенное эхоподавление и шумоподавление macOS (требует macOS 15+)">
-                                    <input type="checkbox" checked={useVoiceIsolation} onChange={e => setUseVoiceIsolation(e.target.checked)} />
+                                <label data-chip style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', padding: '0.35rem 0.75rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-strong)' }} title="ВАЖНО: Разделение микрофона и системного звука для раздельной транскрибации (Вы/Собеседник). Использует встроенное эхоподавление и шумоподавление macOS (требует macOS 15+)">
+                                    <input type="checkbox" checked={useVoiceIsolation} disabled={settingsLocked} onChange={e => setUseVoiceIsolation(e.target.checked)} />
                                     <span style={{ fontSize: '0.85rem' }}>Voice Isolation</span>
-                                    <span style={{ fontSize: '0.65rem', color: '#2196f3', backgroundColor: '#1a2a4e', padding: '2px 5px', borderRadius: '3px' }}>
+                                    <span style={{ fontSize: '0.65rem', color: 'var(--primary)', backgroundColor: 'rgba(108,92,231,0.12)', padding: '2px 5px', borderRadius: '999px' }}>
                                         macOS 15+
                                     </span>
-                                    <span style={{ fontSize: '0.65rem', color: '#4caf50', backgroundColor: '#1b3d1b', padding: '2px 5px', borderRadius: '3px', marginLeft: '0.2rem' }}>
+                                    <span style={{ fontSize: '0.65rem', color: 'var(--success)', backgroundColor: 'rgba(0,184,148,0.14)', padding: '2px 5px', borderRadius: '999px', marginLeft: '0.2rem' }}>
                                         Раздельные каналы
                                     </span>
                                 </label>
                             )}
 
-
-                            
                             {/* Предупреждение если Voice Isolation недоступен */}
                             {captureSystem && !screenCaptureKitAvailable && (
-                                <div style={{ 
-                                    fontSize: '0.75rem', 
-                                    color: '#ff9800', 
-                                    backgroundColor: 'rgba(255, 152, 0, 0.1)', 
-                                    padding: '4px 8px', 
-                                    borderRadius: '4px',
-                                    border: '1px solid rgba(255, 152, 0, 0.3)'
-                                }}>
-                                    ⚠️ Voice Isolation недоступен - транскрипция будет в моно режиме
+                                <div style={{ fontSize: '0.75rem', color: 'var(--warning-strong)', backgroundColor: 'rgba(253,203,110,0.15)', padding: '6px 10px', borderRadius: '10px', border: '1px solid rgba(253,203,110,0.35)' }}>
+                                    ⚠️ Voice Isolation недоступен — транскрипция будет в моно режиме
                                 </div>
                             )}
-                            
+
                             {/* Кнопка выбора модели */}
                             <button
                                 onClick={() => setShowModelManager(true)}
-                                style={{
-                                    padding: '0.3rem 0.6rem',
-                                    backgroundColor: '#12121f',
-                                    color: '#fff',
-                                    border: '1px solid #333',
-                                    borderRadius: '4px',
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '0.3rem'
-                                }}
+                                disabled={settingsLocked}
+                                style={{ padding: '0.4rem 0.7rem', backgroundColor: 'var(--surface-strong)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '10px', cursor: settingsLocked ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
                             >
                                 <span>🤖</span>
                                 <span>{models.find(m => m.id === activeModelId)?.name || 'Выбрать модель'}</span>
-                                <span style={{ color: '#888', fontSize: '0.8rem' }}>▼</span>
+                                <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>▼</span>
                             </button>
 
                             {/* Эхоподавление (только если Voice Isolation выключен) */}
                             {captureSystem && !useVoiceIsolation && (
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                    <span style={{ fontSize: '0.8rem', color: '#888' }}>Echo:</span>
-                                    <input 
-                                        type="range" 
-                                        min="0" 
-                                        max="100" 
+                                <div data-chip style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', padding: '0.35rem 0.75rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-strong)' }}>
+                                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Echo:</span>
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="100"
                                         value={echoCancel * 100}
+                                        disabled={settingsLocked}
                                         onChange={e => setEchoCancel(Number(e.target.value) / 100)}
-                                        style={{ width: '80px', accentColor: '#2196f3' }}
+                                        style={{ width: '90px', accentColor: 'var(--primary)' }}
                                         title={`Эхоподавление: ${Math.round(echoCancel * 100)}%`}
                                     />
-                                    <span style={{ fontSize: '0.7rem', color: '#666', minWidth: '30px' }}>
+                                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', minWidth: '32px' }}>
                                         {Math.round(echoCancel * 100)}%
                                     </span>
                                 </div>
                             )}
                         </div>
-                        
+
                         {/* Ollama Settings for Summary */}
-                        <div style={{ 
-                            marginTop: '0.75rem', 
-                            paddingTop: '0.75rem', 
-                            borderTop: '1px solid #333',
-                            display: 'flex', 
-                            gap: '1rem', 
-                            alignItems: 'center', 
-                            flexWrap: 'wrap' 
-                        }}>
-                            <span style={{ fontSize: '0.85rem', color: '#888' }}>📋 Summary (Ollama):</span>
-                            
+                        <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px dashed var(--border)', display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap', opacity: settingsLocked ? 0.55 : 1, pointerEvents: settingsLocked ? 'none' : 'auto' }}>
+                            <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>📋 Summary (Ollama)</span>
+
                             {/* Выбор модели из списка */}
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <span style={{ fontSize: '0.8rem', color: '#666' }}>Модель:</span>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Модель:</span>
                                 <select
                                     value={ollamaModel}
+                                    disabled={settingsLocked}
                                     onChange={e => setOllamaModel(e.target.value)}
                                     onFocus={loadOllamaModels}
-                                    style={{ 
-                                        padding: '0.3rem 0.5rem', 
-                                        backgroundColor: '#12121f', 
-                                        color: '#fff', 
-                                        border: '1px solid #333', 
-                                        borderRadius: '4px',
-                                        minWidth: '180px',
-                                        fontSize: '0.85rem',
-                                        cursor: 'pointer'
-                                    }}
+                                    style={{ padding: '0.35rem 0.6rem', backgroundColor: 'var(--surface)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '8px', minWidth: '180px', fontSize: '0.9rem', cursor: 'pointer' }}
                                     title="Выберите модель Ollama для генерации summary"
                                 >
                                     {ollamaModelsLoading ? (
@@ -1254,44 +1256,26 @@ function App() {
                                 </select>
                                 <button
                                     onClick={loadOllamaModels}
-                                    disabled={ollamaModelsLoading}
-                                    style={{
-                                        padding: '0.3rem 0.5rem',
-                                        backgroundColor: '#333',
-                                        color: '#888',
-                                        border: 'none',
-                                        borderRadius: '4px',
-                                        cursor: ollamaModelsLoading ? 'wait' : 'pointer',
-                                        fontSize: '0.8rem'
-                                    }}
+                                    disabled={ollamaModelsLoading || settingsLocked}
+                                    style={{ padding: '0.35rem 0.55rem', backgroundColor: 'var(--surface-strong)', color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: '8px', cursor: ollamaModelsLoading ? 'wait' : 'pointer', fontSize: '0.85rem' }}
                                     title="Обновить список моделей"
                                 >
                                     {ollamaModelsLoading ? '⏳' : '🔄'}
                                 </button>
                             </div>
-                            
+
                             {/* Ошибка Ollama */}
                             {ollamaError && (
-                                <span style={{ 
-                                    fontSize: '0.75rem', 
-                                    color: '#f44336',
-                                    backgroundColor: 'rgba(244, 67, 54, 0.1)',
-                                    padding: '2px 6px',
-                                    borderRadius: '3px'
-                                }}>
+                                <span style={{ fontSize: '0.8rem', color: 'var(--danger)', backgroundColor: 'rgba(231, 76, 60, 0.14)', padding: '4px 8px', borderRadius: '8px', border: '1px solid rgba(231, 76, 60, 0.28)' }}>
                                     ⚠️ {ollamaError}
                                 </span>
                             )}
-                            
-                            <a 
-                                href="https://ollama.ai" 
-                                target="_blank" 
+
+                            <a
+                                href="https://ollama.ai"
+                                target="_blank"
                                 rel="noopener noreferrer"
-                                style={{ 
-                                    fontSize: '0.75rem', 
-                                    color: '#2196f3', 
-                                    textDecoration: 'none' 
-                                }}
+                                style={{ fontSize: '0.8rem', color: 'var(--primary)', textDecoration: 'none', fontWeight: 600 }}
                             >
                                 Установить Ollama →
                             </a>
@@ -1300,18 +1284,18 @@ function App() {
                 )}
 
                 {/* Audio Level Indicators */}
-                <div style={{ padding: '0.5rem 1.5rem', backgroundColor: '#0d0d1a' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.3rem' }}>
-                        <span style={{ fontSize: '0.75rem', color: '#888', minWidth: '70px' }}>🎤 Mic</span>
-                        <div style={{ flex: 1, height: '8px', backgroundColor: '#1a1a2e', borderRadius: '4px', overflow: 'hidden' }}>
-                            <div style={{ width: `${micLevel}%`, height: '100%', backgroundColor: '#4caf50', transition: 'width 0.05s' }}></div>
+                <div data-surface style={{ padding: '0.6rem 1.5rem', backgroundColor: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
+                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', minWidth: '70px' }}>🎤 Mic</span>
+                        <div style={{ flex: 1, height: '10px', backgroundColor: 'var(--surface-strong)', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--border)' }}>
+                            <div style={{ width: `${micLevel}%`, height: '100%', background: 'linear-gradient(90deg, var(--success), #55efc4)', transition: 'width 0.05s' }}></div>
                         </div>
                     </div>
                     {captureSystem && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <span style={{ fontSize: '0.75rem', color: '#888', minWidth: '70px' }}>🔊 System</span>
-                            <div style={{ flex: 1, height: '8px', backgroundColor: '#1a1a2e', borderRadius: '4px', overflow: 'hidden' }}>
-                                <div style={{ width: `${systemLevel}%`, height: '100%', backgroundColor: '#2196f3', transition: 'width 0.05s' }}></div>
+                            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', minWidth: '70px' }}>🔊 System</span>
+                            <div style={{ flex: 1, height: '10px', backgroundColor: 'var(--surface-strong)', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--border)' }}>
+                                <div style={{ width: `${systemLevel}%`, height: '100%', background: 'linear-gradient(90deg, #0984e3, #74b9ff)', transition: 'width 0.05s' }}></div>
                             </div>
                         </div>
                     )}
@@ -1323,35 +1307,41 @@ function App() {
                     {(selectedSession || isRecording) && (
                         <div style={{ 
                             flexShrink: 0,
-                            backgroundColor: '#0d0d1a',
-                            borderBottom: '1px solid #333',
+                            backgroundColor: 'var(--app-bg)',
+                            borderBottom: '1px solid var(--border)',
                             padding: '0 1.5rem'
                         }}>
                     {selectedSession && !isRecording && (
                         <div style={{ 
                             marginBottom: '1rem', 
-                            padding: '0.75rem', 
-                            backgroundColor: '#1a1a2e', 
-                            borderRadius: '6px', 
+                            padding: '0.9rem', 
+                            backgroundColor: 'var(--surface)', 
+                            borderRadius: '12px', 
                             display: 'flex', 
                             alignItems: 'center', 
-                            gap: '1rem' 
+                            gap: '1rem',
+                            border: '1px solid var(--border)'
                         }}>
-                            <span style={{ color: '#888' }}>📄</span>
-                            <span>{formatDate(selectedSession.startTime)}</span>
-                            <span style={{ color: '#666' }}>•</span>
-                            <span style={{ color: '#888' }}>{formatDuration(selectedSession.totalDuration / 1000)}</span>
+                            <span style={{ color: 'var(--text-muted)' }}>📄</span>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                <span style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '1rem' }}>{selectedSession.title || 'Запись'}</span>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                                    <span>{formatDate(selectedSession.startTime)}</span>
+                                    <span style={{ color: 'var(--text-muted)' }}>•</span>
+                                    <span>{formatDuration(selectedSession.totalDuration / 1000)}</span>
+                                </div>
+                            </div>
                             
                             {/* Индикатор режима стерео/моно */}
                             {selectedSession.chunks.length > 0 && selectedSession.chunks[0].isStereo && (
                                 <>
-                                    <span style={{ color: '#666' }}>•</span>
+                                    <span style={{ color: 'var(--text-muted)' }}>•</span>
                                     <span style={{ 
                                         fontSize: '0.7rem', 
-                                        color: '#4caf50', 
-                                        backgroundColor: '#1b3d1b', 
+                                        color: 'var(--success)', 
+                                        backgroundColor: 'rgba(0, 184, 148, 0.12)', 
                                         padding: '2px 6px', 
-                                        borderRadius: '3px' 
+                                        borderRadius: '999px' 
                                     }}>
                                         Стерео (раздельные каналы)
                                     </span>
@@ -1428,20 +1418,20 @@ function App() {
                                         )}
                                     </button>
                                     
-                                    {showShareMenu && (
-                                        <div style={{
-                                            position: 'absolute',
-                                            top: '100%',
-                                            left: '50%',
-                                            transform: 'translateX(-50%)',
-                                            marginTop: '0.5rem',
-                                            backgroundColor: '#1a1a2e',
-                                            border: '1px solid #333',
-                                            borderRadius: '8px',
-                                            overflow: 'hidden',
-                                            zIndex: 100,
-                                            minWidth: '160px',
-                                            boxShadow: '0 4px 16px rgba(0,0,0,0.4)'
+                                        {showShareMenu && (
+                                            <div style={{
+                                                position: 'absolute',
+                                                top: '100%',
+                                                left: '50%',
+                                                transform: 'translateX(-50%)',
+                                                marginTop: '0.5rem',
+                                                backgroundColor: 'var(--surface)',
+                                                border: '1px solid var(--border)',
+                                                borderRadius: '8px',
+                                                overflow: 'hidden',
+                                                zIndex: 100,
+                                                minWidth: '160px',
+                                                boxShadow: '0 4px 16px rgba(0,0,0,0.4)'
                                         }}>
                                             <button
                                                 onClick={handleCopyToClipboard}
@@ -1450,7 +1440,7 @@ function App() {
                                                     padding: '0.6rem 0.8rem',
                                                     backgroundColor: 'transparent',
                                                     border: 'none',
-                                                    color: '#ccc',
+                                                    color: 'var(--text-primary)',
                                                     cursor: 'pointer',
                                                     textAlign: 'left',
                                                     display: 'flex',
@@ -1458,7 +1448,7 @@ function App() {
                                                     gap: '0.5rem',
                                                     fontSize: '0.85rem'
                                                 }}
-                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2a2a4e'}
+                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = 'var(--surface-strong)'}
                                                 onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
                                             >
                                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1474,8 +1464,8 @@ function App() {
                                                     padding: '0.6rem 0.8rem',
                                                     backgroundColor: 'transparent',
                                                     border: 'none',
-                                                    borderTop: '1px solid #333',
-                                                    color: '#ccc',
+                                                    borderTop: '1px solid var(--border)',
+                                                    color: 'var(--text-primary)',
                                                     cursor: 'pointer',
                                                     textAlign: 'left',
                                                     display: 'flex',
@@ -1483,7 +1473,7 @@ function App() {
                                                     gap: '0.5rem',
                                                     fontSize: '0.85rem'
                                                 }}
-                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2a2a4e'}
+                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = 'var(--surface-strong)'}
                                                 onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
                                             >
                                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1626,7 +1616,7 @@ function App() {
                             </div>
                             <div style={{ 
                                 height: '6px', 
-                                backgroundColor: '#1a1a2e', 
+                                backgroundColor: 'var(--surface-strong)', 
                                 borderRadius: '3px', 
                                 overflow: 'hidden',
                                 marginBottom: '0.3rem'
@@ -1718,12 +1708,12 @@ function App() {
                     {/* Scrollable Content Area */}
                     <div ref={transcriptionRef} style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto' }}>
                     {chunks.length === 0 && !isRecording && !selectedSession ? (
-                        <div style={{ color: '#666', textAlign: 'center', marginTop: '3rem' }}>
+                        <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
                             <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎙</div>
                             <div>Нажмите «Запись» чтобы начать</div>
                         </div>
                     ) : chunks.length === 0 && isRecording ? (
-                        <div style={{ color: '#666', textAlign: 'center', marginTop: '3rem' }}>
+                        <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
                             <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🔴</div>
                             <div>Идёт запись... Транскрипция появится после остановки</div>
                         </div>
@@ -1737,12 +1727,12 @@ function App() {
                                 <div style={{ 
                                     marginBottom: '1.5rem', 
                                     padding: '1rem', 
-                                    backgroundColor: '#1a1a2e', 
+                                    backgroundColor: 'var(--surface)', 
                                     borderRadius: '8px', 
                                     lineHeight: '1.9',
                                     fontSize: '0.95rem'
                                 }}>
-                                    <h4 style={{ margin: '0 0 1rem 0', color: '#888', fontSize: '0.9rem' }}>Диалог</h4>
+                                    <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
                                     {allDialogue.map((seg, idx) => {
                                         const isMic = seg.speaker === 'mic';
                                         const totalMs = seg.start;
@@ -1759,7 +1749,7 @@ function App() {
                                                 borderLeft: isMic ? '3px solid #4caf50' : '3px solid #2196f3'
                                             }}>
                                                 <span style={{ 
-                                                    color: '#555', 
+                                                    color: 'var(--text-muted)', 
                                                     fontSize: '0.8rem',
                                                     fontFamily: 'monospace'
                                                 }}>
@@ -1773,7 +1763,7 @@ function App() {
                                                     {isMic ? 'Вы' : 'Собеседник'}:
                                                 </span>
                                                 {' '}
-                                                <span style={{ color: '#ddd' }}>
+                                                <span style={{ color: 'var(--text-primary)' }}>
                                                     {seg.text}
                                                 </span>
                                             </div>
@@ -1785,7 +1775,7 @@ function App() {
                                 <div style={{ 
                                     marginBottom: '1.5rem', 
                                     padding: '1rem', 
-                                    backgroundColor: '#1a1a2e', 
+                                    backgroundColor: 'var(--surface)', 
                                     borderRadius: '8px', 
                                     lineHeight: '1.8',
                                     fontSize: '0.95rem'
@@ -1808,7 +1798,7 @@ function App() {
                                                                 borderRadius: '0 4px 4px 0'
                                                             }}>
                                                                 <span style={{ color: '#4caf50', fontWeight: 'bold', fontSize: '0.85rem' }}>Вы: </span>
-                                                                <span style={{ color: '#ddd' }}>{chunk.micText}</span>
+                                                                <span style={{ color: 'var(--text-primary)' }}>{chunk.micText}</span>
                                                             </div>
                                                         )}
                                                         {chunk.sysText && (
@@ -1820,7 +1810,7 @@ function App() {
                                                                 borderRadius: '0 4px 4px 0'
                                                             }}>
                                                                 <span style={{ color: '#2196f3', fontWeight: 'bold', fontSize: '0.85rem' }}>Собеседник: </span>
-                                                                <span style={{ color: '#ddd' }}>{chunk.sysText}</span>
+                                                                <span style={{ color: 'var(--text-primary)' }}>{chunk.sysText}</span>
                                                             </div>
                                                         )}
                                                     </div>
