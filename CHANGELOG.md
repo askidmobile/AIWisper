@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2] - 2025-12-08
+
+### Fixed
+- **Audio Resource Leak on macOS**: Fixed issue where system audio quality remained degraded ("muffled") after stopping recording
+  - **Problem**: When recording started, macOS ScreenCaptureKit captured system audio via audio tap, but when recording stopped, the SCStream was not properly released. This caused macOS to keep the audio tap active, resulting in muffled/degraded system audio until app restart.
+  - **Root Cause**: `removeStreamOutput()` was not called before `stopCapture()`, leaving stream outputs attached and preventing proper resource cleanup
+  - **Solution**: Implemented correct 6-step cleanup sequence based on Apple best practices:
+    1. Stop delegates to prevent new data processing
+    2. Wait for pending operations in outputQueue to complete
+    3. **Call `removeStreamOutput()` BEFORE `stopCapture()`** (critical step!)
+    4. Call `stopCapture()` to release audio tap
+    5. Clear all object references for ARC
+    6. Final delay for macOS to process resource release
+  - **Result**: System audio now returns to normal quality immediately after stopping recording
+
+### Technical
+- `backend/audio/screencapture/Sources/main.swift`:
+  - Added `waitForPendingOperations()` method to `AudioCaptureDelegate` for sync on outputQueue
+  - New 6-step `performCleanup()` async function with proper cleanup order
+  - Added `removeStreamOutput()` calls before `stopCapture()`
+  - Signal handlers use semaphore to wait for async cleanup on separate queue
+  - Increased cleanup delay to 200ms for resource release
+- `backend/audio/screencapture_darwin.go`:
+  - Increased graceful shutdown timeout to 5 seconds
+  - Added wait after Kill() to ensure process termination
+
 ## [1.7.0] - 2025-12-04
 
 ### Added

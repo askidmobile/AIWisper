@@ -46,10 +46,10 @@ func writeChannelData(marker: UInt8, samples: [Float]) {
 
 class AudioCaptureDelegate: NSObject, SCStreamDelegate, SCStreamOutput {
     private var isRunning = true
-    private let outputQueue = DispatchQueue(label: "audio.output", qos: .userInteractive)
+    let outputQueue = DispatchQueue(label: "audio.output", qos: .userInteractive)
     private var formatLogged = false
     private let marker: UInt8  // 'M' или 'S'
-    private let streamName: String
+    let streamName: String
     private let targetSampleRate: Int
     private var sourceSampleRate: Int = 0
     
@@ -58,6 +58,11 @@ class AudioCaptureDelegate: NSObject, SCStreamDelegate, SCStreamOutput {
         self.streamName = streamName
         self.targetSampleRate = targetSampleRate
         super.init()
+    }
+    
+    /// Дождаться завершения всех pending операций в очереди вывода
+    func waitForPendingOperations() {
+        outputQueue.sync {}
     }
     
     // Простой ресемплинг с линейной интерполяцией
@@ -175,6 +180,82 @@ class AudioCaptureDelegate: NSObject, SCStreamDelegate, SCStreamOutput {
     }
 }
 
+// MARK: - Cleanup
+
+/// Корректно останавливает все потоки захвата и освобождает ресурсы macOS
+/// Порядок операций критичен для корректного освобождения audio tap!
+func performCleanup() async {
+    fputs("Stopping audio capture...\n", stderr)
+    
+    // ШАГ 1: Останавливаем делегаты чтобы прекратить обработку новых данных
+    fputs("Step 1: Stopping delegates\n", stderr)
+    ScreenCaptureAudio.systemDelegate?.stop()
+    ScreenCaptureAudio.micDelegate?.stop()
+    
+    // ШАГ 2: Дождаться завершения всех pending операций в outputQueue
+    // Это важно чтобы все буферы были обработаны до удаления output
+    fputs("Step 2: Waiting for pending operations\n", stderr)
+    ScreenCaptureAudio.systemDelegate?.waitForPendingOperations()
+    ScreenCaptureAudio.micDelegate?.waitForPendingOperations()
+    
+    // ШАГ 3: ВАЖНО! Удалить stream outputs ПЕРЕД stopCapture()
+    // Это освобождает буферы и ресурсы ScreenCaptureKit
+    fputs("Step 3: Removing stream outputs\n", stderr)
+    if let stream = ScreenCaptureAudio.systemStream, let delegate = ScreenCaptureAudio.systemDelegate {
+        do {
+            try stream.removeStreamOutput(delegate, type: .audio)
+            fputs("System stream output removed\n", stderr)
+        } catch {
+            fputs("Warning: Could not remove system stream output: \(error.localizedDescription)\n", stderr)
+        }
+    }
+    
+    if #available(macOS 15.0, *) {
+        if let stream = ScreenCaptureAudio.micStream, let delegate = ScreenCaptureAudio.micDelegate {
+            do {
+                try stream.removeStreamOutput(delegate, type: .microphone)
+                fputs("Mic stream output removed\n", stderr)
+            } catch {
+                fputs("Warning: Could not remove mic stream output: \(error.localizedDescription)\n", stderr)
+            }
+        }
+    }
+    
+    // ШАГ 4: Остановить потоки захвата
+    // Это освобождает audio tap в macOS
+    fputs("Step 4: Stopping capture streams\n", stderr)
+    do {
+        if let stream = ScreenCaptureAudio.systemStream {
+            try await stream.stopCapture()
+            fputs("System stream stopped\n", stderr)
+        }
+    } catch {
+        fputs("Error stopping system stream: \(error.localizedDescription)\n", stderr)
+    }
+    
+    do {
+        if let stream = ScreenCaptureAudio.micStream {
+            try await stream.stopCapture()
+            fputs("Mic stream stopped\n", stderr)
+        }
+    } catch {
+        fputs("Error stopping mic stream: \(error.localizedDescription)\n", stderr)
+    }
+    
+    // ШАГ 5: Очищаем ссылки - это позволяет ARC освободить объекты
+    fputs("Step 5: Clearing references\n", stderr)
+    ScreenCaptureAudio.systemStream = nil
+    ScreenCaptureAudio.micStream = nil
+    ScreenCaptureAudio.systemDelegate = nil
+    ScreenCaptureAudio.micDelegate = nil
+    
+    // ШАГ 6: Небольшая задержка чтобы macOS успела обработать освобождение ресурсов
+    fputs("Step 6: Final delay for resource release\n", stderr)
+    try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
+    
+    fputs("Cleanup complete - audio resources released\n", stderr)
+}
+
 // MARK: - Main
 
 @main
@@ -197,25 +278,36 @@ struct ScreenCaptureAudio {
         signal(SIGINT, SIG_IGN)
         signal(SIGTERM, SIG_IGN)
         
-        let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        // Используем отдельную очередь для обработки сигналов (не main!)
+        // чтобы можно было ждать async Task без deadlock
+        let signalQueue = DispatchQueue(label: "signal.handler", qos: .userInteractive)
+        
+        let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: signalQueue)
         sigintSource.setEventHandler {
-            systemDelegate?.stop()
-            micDelegate?.stop()
+            let semaphore = DispatchSemaphore(value: 0)
             Task {
-                try? await systemStream?.stopCapture()
-                try? await micStream?.stopCapture()
+                await performCleanup()
+                semaphore.signal()
+            }
+            // Ждём завершения cleanup с таймаутом 3 секунды
+            let result = semaphore.wait(timeout: .now() + 3.0)
+            if result == .timedOut {
+                fputs("WARNING: Cleanup timed out\n", stderr)
             }
             exit(0)
         }
         sigintSource.resume()
         
-        let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: signalQueue)
         sigtermSource.setEventHandler {
-            systemDelegate?.stop()
-            micDelegate?.stop()
+            let semaphore = DispatchSemaphore(value: 0)
             Task {
-                try? await systemStream?.stopCapture()
-                try? await micStream?.stopCapture()
+                await performCleanup()
+                semaphore.signal()
+            }
+            let result = semaphore.wait(timeout: .now() + 3.0)
+            if result == .timedOut {
+                fputs("WARNING: Cleanup timed out\n", stderr)
             }
             exit(0)
         }

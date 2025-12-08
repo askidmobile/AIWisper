@@ -192,23 +192,31 @@ func (c *Capture) StopScreenCaptureKitAudio() {
 
 	log.Println("Stopping system audio capture...")
 
-	// Отправляем SIGTERM для graceful shutdown
+	// Отправляем SIGINT для graceful shutdown
+	// Swift процесс должен корректно остановить SCStream и освободить audio tap
 	if screenCaptureCmd.Process != nil {
 		screenCaptureCmd.Process.Signal(os.Interrupt)
 
-		// Ждём завершения с таймаутом
+		// Ждём завершения с таймаутом 5 секунд
+		// (Swift cleanup занимает до 3 сек + 100ms задержка)
 		done := make(chan error, 1)
 		go func() {
 			done <- screenCaptureCmd.Wait()
 		}()
 
 		select {
-		case <-done:
-			// Процесс завершился нормально
-		case <-time.After(2 * time.Second):
+		case err := <-done:
+			if err != nil {
+				log.Printf("ScreenCaptureKit process exited with: %v", err)
+			} else {
+				log.Println("ScreenCaptureKit process stopped gracefully")
+			}
+		case <-time.After(5 * time.Second):
 			// Таймаут - убиваем принудительно
 			log.Println("ScreenCaptureKit process didn't stop gracefully, killing...")
 			screenCaptureCmd.Process.Kill()
+			// Ждём завершения после kill
+			<-done
 		}
 	}
 
