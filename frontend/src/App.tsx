@@ -90,9 +90,86 @@ const formatDate = (dateStr: string): string => {
     });
 };
 
+// Цвета для разных спикеров
+const SPEAKER_COLORS = ['#2196f3', '#e91e63', '#ff9800', '#9c27b0', '#00bcd4', '#8bc34a'];
+
+// Определение имени и цвета спикера
+const getSpeakerInfo = (speaker?: string): { name: string; color: string } => {
+    if (speaker === 'mic') {
+        return { name: 'Вы', color: '#4caf50' };
+    } else if (speaker?.startsWith('Speaker ')) {
+        // Speaker 0 -> Собеседник 1
+        const speakerNum = parseInt(speaker.replace('Speaker ', ''), 10);
+        return {
+            name: `Собеседник ${speakerNum + 1}`,
+            color: SPEAKER_COLORS[speakerNum % SPEAKER_COLORS.length]
+        };
+    } else if (speaker === 'sys') {
+        return { name: 'Собеседник', color: '#2196f3' };
+    } else {
+        return { name: speaker || 'Собеседник', color: '#2196f3' };
+    }
+};
+
 const extractSessionIdFromUrl = (url: string): string | null => {
     const match = url.match(/sessions\/([a-f0-9\-]{36})/i);
     return match ? match[1] : null;
+};
+
+// Приводим длительность к секундам, поддерживая миллисекунды (списки сессий) и наносекунды (детали сессии)
+const normalizeDurationSeconds = (value?: number | string | null): number => {
+    const normalizeNumber = (num: number) => {
+        if (!Number.isFinite(num) || num <= 0) return 0;
+        if (num > 1e11) return num / 1e9;  // наносекунды -> секунды
+        if (num > 1e6) return num / 1e3;   // миллисекунды -> секунды
+        return num;                        // уже секунды
+    };
+
+    if (typeof value === 'number') return normalizeNumber(value);
+
+    if (typeof value === 'string') {
+        const numeric = Number(value);
+        if (!Number.isNaN(numeric)) return normalizeNumber(numeric);
+
+        // Парсим строку формата go duration, например "1h2m3.5s"
+        const regex = /(-?\d+(?:\.\d+)?)(ns|µs|us|ms|s|m|h)/g;
+        let match: RegExpExecArray | null;
+        let totalSeconds = 0;
+
+        while ((match = regex.exec(value)) !== null) {
+            const amount = Number(match[1]);
+            const unit = match[2];
+            if (Number.isNaN(amount)) continue;
+
+            switch (unit) {
+                case 'ns':
+                    totalSeconds += amount / 1e9;
+                    break;
+                case 'µs':
+                case 'us':
+                    totalSeconds += amount / 1e6;
+                    break;
+                case 'ms':
+                    totalSeconds += amount / 1e3;
+                    break;
+                case 's':
+                    totalSeconds += amount;
+                    break;
+                case 'm':
+                    totalSeconds += amount * 60;
+                    break;
+                case 'h':
+                    totalSeconds += amount * 3600;
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        return totalSeconds;
+    }
+
+    return 0;
 };
 
 // Electron IPC для открытия папки с записями
@@ -179,10 +256,12 @@ function App() {
     const analyserRightRef = useRef<AnalyserNode | null>(null);
     const audioSourceConnectedRef = useRef<boolean>(false);
     const playbackRafRef = useRef<number | null>(null);
+    const progressTickerRef = useRef<number | null>(null);
     const leftTimeDataRef = useRef<Float32Array | null>(null);
     const rightTimeDataRef = useRef<Float32Array | null>(null);
     const playbackLevelSlicesRef = useRef<{ mic: number[]; sys: number[]; sliceDuration: number; duration: number; sessionId?: string } | null>(null);
     const playbackOffsetRef = useRef(0);
+    const lastPlaybackTimeRef = useRef(0);
     const spectrogramSessionIdRef = useRef<string | null>(null);
 
     // Share menu
@@ -890,8 +969,16 @@ function App() {
         const activeModel = models.find(m => m.id === activeModelId);
         const modelId = activeModel?.id || activeModelId;
 
-        if (!activeModel?.downloaded && activeModelId) {
-            addLog('Модель не скачана. Откройте менеджер моделей для скачивания.');
+        // Проверяем статус модели - должен быть 'downloaded' или 'active'
+        const isModelReady = activeModel?.status === 'downloaded' || activeModel?.status === 'active';
+        if (!isModelReady && activeModelId) {
+            addLog(`Модель не скачана (status: ${activeModel?.status}). Откройте менеджер моделей для скачивания.`);
+            setShowModelManager(true);
+            return;
+        }
+
+        if (!modelId) {
+            addLog('Модель не выбрана. Выберите модель в настройках.');
             setShowModelManager(true);
             return;
         }
@@ -959,6 +1046,7 @@ function App() {
             audioEl.currentTime = 0;
             setPlayingAudio(null);
             setPlaybackTime(0);
+            lastPlaybackTimeRef.current = 0;
             setPlaybackOffset(0);
             playbackOffsetRef.current = 0;
             resetPlaybackLevels();
@@ -967,6 +1055,7 @@ function App() {
 
         audioEl.src = url;
         setPlaybackTime(0);
+        lastPlaybackTimeRef.current = 0;
 
         if (!audioContextRef.current) {
             audioContextRef.current = new AudioContext();
@@ -1022,6 +1111,12 @@ function App() {
             if (!el || el.paused || el.ended) {
                 resetPlaybackLevels();
                 return;
+            }
+
+            const currentPlaybackTime = el.currentTime;
+            if (Math.abs(currentPlaybackTime - lastPlaybackTimeRef.current) > 0.02) {
+                lastPlaybackTimeRef.current = currentPlaybackTime;
+                setPlaybackTime(currentPlaybackTime);
             }
 
             const slices = playbackLevelSlicesRef.current;
@@ -1112,6 +1207,7 @@ function App() {
         setPlayingAudio(null);
         setPlaybackMicLevel(0);
         setPlaybackSysLevel(0);
+        lastPlaybackTimeRef.current = 0;
         setPlaybackOffset(0);
         playbackOffsetRef.current = 0;
         if (playbackRafRef.current !== null) {
@@ -1152,7 +1248,7 @@ function App() {
                 const mins = Math.floor(startSec / 60);
                 const secs = startSec % 60;
                 const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-                const speaker = seg.speaker === 'mic' ? 'Вы' : 'Собеседник';
+                const { name: speaker } = getSpeakerInfo(seg.speaker);
                 return `[${timeStr}] ${speaker}: ${seg.text}`;
             }).join('\n\n');
 
@@ -1251,9 +1347,45 @@ function App() {
 
     const displaySession = selectedSession || currentSession;
     const chunks = displaySession?.chunks || [];
+    const sessionDurationSeconds = normalizeDurationSeconds(displaySession?.totalDuration);
     const timelineDuration = waveformData?.duration
         || playbackDuration
-        || (displaySession?.totalDuration ? displaySession.totalDuration / 1000000000 : 0);
+        || sessionDurationSeconds;
+
+    useEffect(() => {
+        if (sessionDurationSeconds > 0) {
+            setPlaybackDuration(prev =>
+                prev && prev > 0
+                    ? prev
+                    : sessionDurationSeconds
+            );
+        }
+    }, [sessionDurationSeconds]);
+
+    // Высокочастотное обновление позиции проигрывания, чтобы индикатор двигался плавно на длинных записях
+    useEffect(() => {
+        if (!playingAudio) return;
+
+        const tick = () => {
+            const el = audioRef.current;
+            if (el && !Number.isNaN(el.currentTime)) {
+                const t = el.currentTime;
+                if (Math.abs(t - lastPlaybackTimeRef.current) > 0.01) {
+                    lastPlaybackTimeRef.current = t;
+                    setPlaybackTime(t);
+                }
+            }
+            progressTickerRef.current = requestAnimationFrame(tick);
+        };
+
+        progressTickerRef.current = requestAnimationFrame(tick);
+        return () => {
+            if (progressTickerRef.current !== null) {
+                cancelAnimationFrame(progressTickerRef.current);
+                progressTickerRef.current = null;
+            }
+        };
+    }, [playingAudio]);
 
     // Собираем полный диалог из всех чанков
     const allDialogue: TranscriptSegment[] = chunks
@@ -1283,7 +1415,11 @@ function App() {
                 ref={audioRef}
                 crossOrigin="anonymous"
                 onEnded={handleAudioEnded}
-                onTimeUpdate={(e) => setPlaybackTime((e.target as HTMLAudioElement).currentTime)}
+                onTimeUpdate={(e) => {
+                    const t = (e.target as HTMLAudioElement).currentTime;
+                    lastPlaybackTimeRef.current = t;
+                    setPlaybackTime(t);
+                }}
                 onLoadedMetadata={(e) => setPlaybackDuration((e.target as HTMLAudioElement).duration)}
                 style={{ display: 'none' }}
             />
@@ -2108,7 +2244,7 @@ function App() {
                                             }}>
                                                 <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
                                                 {allDialogue.map((seg, idx) => {
-                                                    const isMic = seg.speaker === 'mic';
+                                                    const { name: speakerName, color: speakerColor } = getSpeakerInfo(seg.speaker);
                                                     const totalMs = seg.start;
                                                     const mins = Math.floor(totalMs / 60000);
                                                     const secs = Math.floor((totalMs % 60000) / 1000);
@@ -2120,7 +2256,7 @@ function App() {
                                                         <div key={idx} style={{
                                                             marginBottom: '0.5rem',
                                                             paddingLeft: '0.5rem',
-                                                            borderLeft: isMic ? '3px solid #4caf50' : '3px solid #2196f3'
+                                                            borderLeft: `3px solid ${speakerColor}`
                                                         }}>
                                                             <span style={{
                                                                 color: 'var(--text-muted)',
@@ -2131,10 +2267,10 @@ function App() {
                                                             </span>
                                                             {' '}
                                                             <span style={{
-                                                                color: isMic ? '#4caf50' : '#2196f3',
+                                                                color: speakerColor,
                                                                 fontWeight: 'bold'
                                                             }}>
-                                                                {isMic ? 'Вы' : 'Собеседник'}:
+                                                                {speakerName}:
                                                             </span>
                                                             {' '}
                                                             <span style={{ color: 'var(--text-primary)' }}>
@@ -2280,7 +2416,7 @@ function App() {
                                                     {chunk.dialogue && chunk.dialogue.length > 0 ? (
                                                         <div style={{ marginTop: '0.4rem', lineHeight: '1.7' }}>
                                                             {chunk.dialogue.map((seg, idx) => {
-                                                                const isMic = seg.speaker === 'mic';
+                                                                const { name: speakerName, color: speakerColor } = getSpeakerInfo(seg.speaker);
                                                                 const totalMs = seg.start;
                                                                 const mins = Math.floor(totalMs / 60000);
                                                                 const secs = Math.floor((totalMs % 60000) / 1000);
@@ -2292,7 +2428,7 @@ function App() {
                                                                     <div key={idx} style={{
                                                                         marginBottom: '0.3rem',
                                                                         paddingLeft: '0.4rem',
-                                                                        borderLeft: isMic ? '2px solid #4caf50' : '2px solid #2196f3'
+                                                                        borderLeft: `2px solid ${speakerColor}`
                                                                     }}>
                                                                         <span style={{
                                                                             color: '#666',
@@ -2303,11 +2439,11 @@ function App() {
                                                                         </span>
                                                                         {' '}
                                                                         <span style={{
-                                                                            color: isMic ? '#4caf50' : '#2196f3',
+                                                                            color: speakerColor,
                                                                             fontSize: '0.8rem',
                                                                             fontWeight: 'bold'
                                                                         }}>
-                                                                            {isMic ? 'Вы' : 'Собеседник'}:
+                                                                            {speakerName}:
                                                                         </span>
                                                                         {' '}
                                                                         <span style={{ color: '#ccc' }}>

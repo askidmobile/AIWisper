@@ -301,10 +301,12 @@ const WaveformDisplay: React.FC<WaveformDisplayProps> = ({
                         top: 0,
                         bottom: 0,
                         width: '2px',
-                        left: `${progressPercent}%`,
+                        left: 0,
+                        transform: `translateX(${progressPercent}%)`,
+                        willChange: 'transform',
                         background: 'white',
                         boxShadow: '0 0 12px rgba(255, 255, 255, 0.9)',
-                        transition: isPlaying ? 'none' : 'left 0.1s ease',
+                        transition: isPlaying ? 'none' : 'transform 0.1s ease',
                         pointerEvents: 'none',
                     }}
                 />

@@ -174,10 +174,31 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                             const ms = Math.floor((totalMs % 1000) / 100);
                                             const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
 
+                                            // Определяем имя спикера и цвет
+                                            let speakerName: string;
+                                            let speakerColor: string;
+                                            if (isMic) {
+                                                speakerName = 'Вы';
+                                                speakerColor = '#4caf50';
+                                            } else if (seg.speaker?.startsWith('Speaker ')) {
+                                                // Извлекаем номер спикера (Speaker 0 -> Собеседник 1)
+                                                const speakerNum = parseInt(seg.speaker.replace('Speaker ', ''), 10);
+                                                speakerName = `Собеседник ${speakerNum + 1}`;
+                                                // Разные цвета для разных спикеров
+                                                const colors = ['#2196f3', '#e91e63', '#ff9800', '#9c27b0', '#00bcd4', '#8bc34a'];
+                                                speakerColor = colors[speakerNum % colors.length];
+                                            } else if (seg.speaker === 'sys') {
+                                                speakerName = 'Собеседник';
+                                                speakerColor = '#2196f3';
+                                            } else {
+                                                speakerName = seg.speaker || 'Собеседник';
+                                                speakerColor = '#2196f3';
+                                            }
+
                                             return (
-                                                <div key={idx} style={{ marginBottom: '0.5rem', paddingLeft: '0.5rem', borderLeft: isMic ? '3px solid #4caf50' : '3px solid #2196f3' }}>
+                                                <div key={idx} style={{ marginBottom: '0.5rem', paddingLeft: '0.5rem', borderLeft: `3px solid ${speakerColor}` }}>
                                                     <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontFamily: 'monospace' }}>[{timeStr}]</span>{' '}
-                                                    <span style={{ color: isMic ? '#4caf50' : '#2196f3', fontWeight: 'bold' }}>{isMic ? 'Вы' : 'Собеседник'}:</span>{' '}
+                                                    <span style={{ color: speakerColor, fontWeight: 'bold' }}>{speakerName}:</span>{' '}
                                                     <span style={{ color: 'var(--text-primary)' }}>{seg.text}</span>
                                                 </div>
                                             );
