@@ -482,21 +482,31 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			}
 		}
 
-		conn.WriteJSON(Message{Type: "full_transcription_started", SessionID: msg.SessionID})
+		// Отправляем через broadcast для всех клиентов
+		log.Printf("Sending full_transcription_started for session %s", msg.SessionID)
+		s.broadcast(Message{Type: "full_transcription_started", SessionID: msg.SessionID})
 
 		go func() {
 			sess, err := s.SessionMgr.GetSession(msg.SessionID)
 			if err != nil {
+				log.Printf("Full retranscription error: %v", err)
 				s.broadcast(Message{Type: "full_transcription_error", SessionID: msg.SessionID, Error: err.Error()})
 				return
 			}
 
 			totalChunks := len(sess.Chunks)
+			if totalChunks == 0 {
+				log.Printf("Full retranscription: no chunks to process")
+				s.broadcast(Message{Type: "full_transcription_completed", SessionID: msg.SessionID, Session: sess})
+				return
+			}
+
 			log.Printf("Full retranscription: processing %d chunks", totalChunks)
 
 			for i, chunk := range sess.Chunks {
 				// Отправляем прогресс
 				progress := float64(i) / float64(totalChunks)
+				log.Printf("Full retranscription progress: %d/%d (%.1f%%)", i+1, totalChunks, progress*100)
 				s.broadcast(Message{
 					Type:      "full_transcription_progress",
 					SessionID: msg.SessionID,
@@ -504,11 +514,20 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 					Data:      fmt.Sprintf("Обработка чанка %d из %d...", i+1, totalChunks),
 				})
 
-				log.Printf("Retranscribing chunk %d/%d", i+1, totalChunks)
+				log.Printf("Retranscribing chunk %d/%d (id=%s)", i+1, totalChunks, chunk.ID)
 				s.TranscriptionService.HandleChunk(chunk)
 			}
 
+			// Финальный прогресс 100%
+			s.broadcast(Message{
+				Type:      "full_transcription_progress",
+				SessionID: msg.SessionID,
+				Progress:  1.0,
+				Data:      "Завершение...",
+			})
+
 			updatedSess, _ := s.SessionMgr.GetSession(msg.SessionID)
+			log.Printf("Full retranscription completed for session %s", msg.SessionID)
 			s.broadcast(Message{Type: "full_transcription_completed", SessionID: msg.SessionID, Session: updatedSess})
 		}()
 
