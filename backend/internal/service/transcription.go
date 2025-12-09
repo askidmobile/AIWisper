@@ -153,14 +153,15 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk) {
 	var micSegments, sysSegments []ai.TranscriptSegment
 	var micErr, sysErr error
 
-	// VAD processing
-	var micRegions, sysRegions []session.SpeechRegion
+	// NOTE: VAD regions больше не нужны для маппинга таймстемпов,
+	// т.к. Whisper получает полное аудио и возвращает правильные таймстемпы.
+	// VAD используется только для логирования/отладки.
 	if len(micSamples) > 0 {
-		micRegions = session.DetectSpeechRegions(micSamples, session.WhisperSampleRate)
+		micRegions := session.DetectSpeechRegions(micSamples, session.WhisperSampleRate)
 		log.Printf("VAD: Mic has %d speech regions", len(micRegions))
 	}
 	if len(sysSamples) > 0 {
-		sysRegions = session.DetectSpeechRegions(sysSamples, session.WhisperSampleRate)
+		sysRegions := session.DetectSpeechRegions(sysSamples, session.WhisperSampleRate)
 		log.Printf("VAD: Sys has %d speech regions", len(sysRegions))
 	}
 
@@ -171,7 +172,9 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk) {
 		if micErr != nil {
 			log.Printf("Mic transcription error: %v", micErr)
 		} else {
-			micSegments = mapSegmentsToRealTime(micSegments, micRegions)
+			// NOTE: Whisper получает полное аудио чанка (включая паузы),
+			// поэтому возвращает правильные таймстемпы относительно начала чанка.
+			// Маппинг через VAD regions НЕ нужен - он ошибочно "расширял" время.
 			var texts []string
 			for _, seg := range micSegments {
 				texts = append(texts, seg.Text)
@@ -188,7 +191,9 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk) {
 		if sysErr != nil {
 			log.Printf("Sys transcription error: %v", sysErr)
 		} else {
-			sysSegments = mapSegmentsToRealTime(sysSegments, sysRegions)
+			// NOTE: Whisper получает полное аудио чанка (включая паузы),
+			// поэтому возвращает правильные таймстемпы относительно начала чанка.
+			// Маппинг через VAD regions НЕ нужен.
 			var texts []string
 			for _, seg := range sysSegments {
 				texts = append(texts, seg.Text)
@@ -300,31 +305,9 @@ func convertWordsWithSpeaker(aiWords []ai.TranscriptWord, speaker string, chunkS
 
 // Helpers
 
-func mapSegmentsToRealTime(segments []ai.TranscriptSegment, regions []session.SpeechRegion) []ai.TranscriptSegment {
-	if len(segments) == 0 || len(regions) == 0 {
-		return segments
-	}
-
-	whisperStarts := make([]int64, len(segments))
-	for i, seg := range segments {
-		whisperStarts[i] = seg.Start
-	}
-
-	realStarts := session.MapWhisperSegmentsToRealTime(whisperStarts, regions)
-
-	for i := range segments {
-		duration := segments[i].End - segments[i].Start
-		segments[i].Start = realStarts[i]
-		segments[i].End = realStarts[i] + duration
-
-		for j := range segments[i].Words {
-			wordDuration := segments[i].Words[j].End - segments[i].Words[j].Start
-			segments[i].Words[j].Start = session.MapWhisperTimeToRealTime(segments[i].Words[j].Start, regions)
-			segments[i].Words[j].End = segments[i].Words[j].Start + wordDuration
-		}
-	}
-	return segments
-}
+// NOTE: mapSegmentsToRealTime удалена - она ошибочно "расширяла" таймстемпы,
+// предполагая что Whisper работает со "сжатым" аудио без пауз.
+// На самом деле Whisper получает полное аудио чанка и возвращает правильные таймстемпы.
 
 func convertSegmentsWithGlobalOffset(aiSegs []ai.TranscriptSegment, speaker string, chunkStartMs int64) []session.TranscriptSegment {
 	result := make([]session.TranscriptSegment, len(aiSegs))
