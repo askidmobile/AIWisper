@@ -23,7 +23,7 @@ func Load() *Config {
 	modelPath := flag.String("model", "ggml-base.bin", "Path to Whisper model")
 	dataDir := flag.String("data", "data/sessions", "Directory for session data")
 	modelsDir := flag.String("models", "", "Directory for downloaded models (default: dataDir/../models)")
-	port := flag.String("port", "8080", "Server port")
+	port := flag.String("port", "18080", "Server port")
 	grpcAddr := flag.String("grpc-addr", defaultGRPCAddress(), "gRPC listen address (unix:/path/to.sock or npipe:////./pipe/aiwisper-grpc)")
 
 	// LLM настройки

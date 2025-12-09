@@ -23,6 +23,7 @@ interface MainLayoutProps {
 export const MainLayout: React.FC<MainLayoutProps> = ({
     language, logs, addLog
 }) => {
+    const API_BASE = `http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}`;
     const {
         startSession, stopSession, isRecording
     } = useSessionContext();
@@ -124,7 +125,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
         // Assuming backend serves full recording at specific URL
         // In App.tsx it was playFullRecording(id)
         // Usually: /api/sessions/{id}/audio
-        const url = `http://localhost:8080/api/sessions/${sessionId}/audio.mp3`;
+        const url = `${API_BASE}/api/sessions/${sessionId}/audio.mp3`;
         // Note: Backend needs to support this. App.tsx logic was slightly custom.
         // Let's assume standard URL or check App.tsx implementation.
         // App.tsx uses `playFullRecording` which likely constructs the URL.

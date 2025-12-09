@@ -95,9 +95,11 @@ function startGoBackend() {
     const resourcesPath = getResourcesPath();
     const grpcAddress = getGrpcAddress();
     grpcAddressValue = grpcAddress;
+    const backendPort = 18080;
 
     // Прокидываем адрес gRPC сокета и в дочерний backend, и в renderer (process.env)
     process.env.AIWISPER_GRPC_ADDR = grpcAddress;
+    process.env.AIWISPER_HTTP_PORT = backendPort.toString();
 
     let backendPath: string;
     let modelPath: string;
@@ -162,7 +164,7 @@ function startGoBackend() {
 
     env.AIWISPER_GRPC_ADDR = grpcAddress;
 
-    goProcess = spawn(backendPath, ['-model', modelPath, '-data', dataDir, '-models', modelsDirPath, '-grpc-addr', grpcAddress], {
+    goProcess = spawn(backendPath, ['-model', modelPath, '-data', dataDir, '-models', modelsDirPath, '-grpc-addr', grpcAddress, '-port', backendPort.toString()], {
         cwd: cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: env,

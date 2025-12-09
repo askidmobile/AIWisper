@@ -6,6 +6,8 @@ import SummaryView from '../SummaryView';
 import { SessionControls } from './SessionControls';
 import { TranscriptSegment } from '../../types/session';
 
+const API_BASE = `http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}`;
+
 interface TranscriptionViewProps {
     onPlayChunk: (url: string) => void;
     playingUrl: string | null;
@@ -239,7 +241,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                             <span style={{ color: '#888' }}>#{chunk.index ?? 0} • {((chunk.duration || 0) / 1e9).toFixed(1)}s</span>
                                             <div style={{ display: 'flex', gap: '5px' }}>
                                                 {displaySession && (
-                                                    <button onClick={() => onPlayChunk(`http://localhost:8080/api/sessions/${displaySession.id}/chunk/${chunk.index ?? 0}.mp3`)}>
+                                                    <button onClick={() => onPlayChunk(`${API_BASE}/api/sessions/${displaySession.id}/chunk/${chunk.index ?? 0}.mp3`)}>
                                                         {playingUrl?.includes(`chunk/${chunk.index ?? 0}.mp3`) ? '⏹' : '▶'}
                                                     </button>
                                                 )}

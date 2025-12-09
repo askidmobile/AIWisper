@@ -10,6 +10,8 @@ import { WaveformData, computeWaveform } from './utils/waveform';
 import { groupSessionsByTime, formatDuration as formatDurationUtil, formatDate as formatDateUtil, formatTime as formatTimeUtil } from './utils/groupSessions';
 import { createGrpcSocket, RPC_READY_STATE, RpcSocketLike } from './utils/grpcStream';
 
+const API_BASE = `http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}`;
+
 // Electron IPC
 const electron = typeof window !== 'undefined' && (window as any).require ? (window as any).require('electron') : null;
 const ipcRenderer = electron?.ipcRenderer;
@@ -440,7 +442,7 @@ function App() {
 
         const loadSpectrogram = async () => {
             try {
-                const url = `http://localhost:8080/api/sessions/${targetId}/full.mp3`;
+                const url = `${API_BASE}/api/sessions/${targetId}/full.mp3`;
                 const resp = await fetch(url);
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const arr = await resp.arrayBuffer();
@@ -1325,7 +1327,7 @@ function App() {
         if (waveformData?.duration) {
             setPlaybackDuration(waveformData.duration);
         }
-        playAudio(`http://localhost:8080/api/sessions/${sessionId}/full.mp3`);
+        playAudio(`${API_BASE}/api/sessions/${sessionId}/full.mp3`);
     };
 
     const playChunk = (sessionId: string, chunkIndex: number) => {
@@ -1345,7 +1347,7 @@ function App() {
         }
 
         // Используем новый API для воспроизведения конкретного чанка
-        playAudio(`http://localhost:8080/api/sessions/${sessionId}/chunk/${chunkIndex}.mp3`);
+        playAudio(`${API_BASE}/api/sessions/${sessionId}/chunk/${chunkIndex}.mp3`);
     };
 
     const handleAudioEnded = () => {
@@ -2526,7 +2528,7 @@ function App() {
                                         {chunks.map(chunk => {
                                             // Аудио чанков извлекается через chunk API
                                             const chunkAudioUrl = displaySession ?
-                                                `http://localhost:8080/api/sessions/${displaySession.id}/chunk/${chunk.index}.mp3` : '';
+                                                `${API_BASE}/api/sessions/${displaySession.id}/chunk/${chunk.index}.mp3` : '';
                                             const isPlaying = playingAudio === chunkAudioUrl;
                                             const isHighlighted = highlightedChunkId === chunk.id;
                                             const isTranscribing = transcribingChunkId === chunk.id || chunk.status === 'transcribing';
