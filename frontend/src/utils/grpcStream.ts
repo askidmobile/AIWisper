@@ -20,19 +20,9 @@ export interface RpcSocketLike {
     onerror: ((err: any) => void) | null;
 }
 
-const controlServiceDefinition = {
-    Stream: {
-        path: '/aiwisper.Control/Stream',
-        requestStream: true,
-        responseStream: true,
-        requestSerialize: (value: any) => Buffer.from(JSON.stringify(value)),
-        requestDeserialize: (value: Buffer) => JSON.parse(value.toString('utf8')),
-        responseSerialize: (value: any) => Buffer.from(JSON.stringify(value)),
-        responseDeserialize: (value: Buffer) => JSON.parse(value.toString('utf8')),
-    },
-};
-
-const ControlClient = grpc.makeGenericClientConstructor(controlServiceDefinition, 'Control');
+const pathStream = '/aiwisper.Control/Stream';
+const serialize = (value: any) => Buffer.from(JSON.stringify(value));
+const deserialize = (value: Buffer) => JSON.parse(value.toString('utf8'));
 
 function resolveAddress(): string {
     const envAddr = typeof process !== 'undefined' ? process.env.AIWISPER_GRPC_ADDR : undefined;
@@ -52,7 +42,7 @@ class GrpcSocket implements RpcSocketLike {
     public onclose: ((event?: any) => void) | null = null;
     public onerror: ((err: any) => void) | null = null;
 
-    private client: any;
+    private client: import('@grpc/grpc-js').Client | null = null;
     private call: import('@grpc/grpc-js').ClientDuplexStream<any, any> | null = null;
     private readonly address: string;
 
@@ -62,13 +52,16 @@ class GrpcSocket implements RpcSocketLike {
     }
 
     private connect() {
-        this.client = new ControlClient(this.address, grpc.credentials.createInsecure(), {
+        this.client = new grpc.Client(this.address, grpc.credentials.createInsecure(), {
             'grpc.max_receive_message_length': -1,
             'grpc.max_send_message_length': -1,
         });
 
-        // @ts-expect-error Generic client создаёт метод в camelCase
-        this.call = this.client.stream();
+        this.call = this.client.makeBidiStreamRequest(
+            pathStream,
+            serialize,
+            deserialize,
+        );
 
         this.readyState = RPC_READY_STATE.OPEN;
         setTimeout(() => {
