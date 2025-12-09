@@ -604,6 +604,17 @@ function App() {
                             const active = (msg.models || []).find((m: ModelState) => m.status === 'active');
                             if (active) {
                                 setActiveModelId(active.id);
+                            } else {
+                                // Если backend не имеет активной модели, но у нас есть сохранённая - синхронизируем
+                                const savedModelId = activeModelIdRef.current;
+                                if (savedModelId) {
+                                    const savedModel = (msg.models || []).find((m: ModelState) => m.id === savedModelId);
+                                    // Проверяем, что модель скачана
+                                    if (savedModel && savedModel.status === 'downloaded') {
+                                        console.log('Syncing saved active model to backend:', savedModelId);
+                                        socket.send(JSON.stringify({ type: 'set_active_model', modelId: savedModelId }));
+                                    }
+                                }
                             }
                             break;
 
