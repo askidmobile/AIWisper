@@ -542,8 +542,28 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			provider, msg.SegmentationModelPath, msg.EmbeddingModelPath)
 
 		if msg.SegmentationModelPath == "" || msg.EmbeddingModelPath == "" {
-			conn.WriteJSON(Message{Type: "error", Data: "segmentationModelPath and embeddingModelPath are required"})
+			conn.WriteJSON(Message{Type: "diarization_error", Error: "segmentationModelPath and embeddingModelPath are required"})
 			return
+		}
+
+		// Проверяем есть ли активный engine, если нет - пробуем загрузить активную модель
+		if s.EngineMgr != nil && s.EngineMgr.GetActiveEngine() == nil {
+			// Пробуем загрузить активную модель из ModelMgr
+			activeModelID := ""
+			if s.ModelMgr != nil {
+				activeModelID = s.ModelMgr.GetActiveModel()
+			}
+			if activeModelID != "" {
+				log.Printf("enable_diarization: loading active model %s before enabling diarization", activeModelID)
+				if err := s.EngineMgr.SetActiveModel(activeModelID); err != nil {
+					log.Printf("enable_diarization: failed to load model %s: %v", activeModelID, err)
+					conn.WriteJSON(Message{Type: "diarization_error", Error: fmt.Sprintf("Не удалось загрузить модель транскрипции: %v", err)})
+					return
+				}
+			} else {
+				conn.WriteJSON(Message{Type: "diarization_error", Error: "Не выбрана модель транскрипции. Выберите модель в настройках."})
+				return
+			}
 		}
 
 		err := s.TranscriptionService.EnableDiarizationWithProvider(
