@@ -30,6 +30,7 @@ export interface ModelState extends ModelInfo {
     progress?: number;  // 0-100
     error?: string;
     path?: string;
+    downloaded?: boolean;
 }
 
 export interface AppSettings {

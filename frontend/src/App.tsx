@@ -2,7 +2,12 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import ModelManager from './components/ModelManager';
 import SessionTabs, { TabType } from './components/SessionTabs';
 import SummaryView from './components/SummaryView';
+import SettingsModal from './components/SettingsModal';
+import AudioMeterSidebar from './components/AudioMeterSidebar';
+import WaveformDisplay from './components/WaveformDisplay';
 import { ModelState, AppSettings, OllamaModel } from './types/models';
+import { WaveformData, computeWaveform } from './utils/waveform';
+import { groupSessionsByTime, formatDuration as formatDurationUtil, formatDate as formatDateUtil, formatTime as formatTimeUtil } from './utils/groupSessions';
 
 // Electron IPC
 const electron = typeof window !== 'undefined' && (window as any).require ? (window as any).require('electron') : null;
@@ -28,6 +33,8 @@ interface Chunk {
     sessionId: string;
     index: number;
     duration: number;
+    startMs?: number;
+    endMs?: number;
     status: 'pending' | 'transcribing' | 'completed' | 'failed';
     transcription?: string;
     micText?: string;      // Транскрипция микрофона (Вы)
@@ -75,12 +82,17 @@ const formatDuration = (seconds: number): string => {
 // Форматирование даты
 const formatDate = (dateStr: string): string => {
     const date = new Date(dateStr);
-    return date.toLocaleDateString('ru-RU', { 
-        day: '2-digit', 
+    return date.toLocaleDateString('ru-RU', {
+        day: '2-digit',
         month: '2-digit',
         hour: '2-digit',
         minute: '2-digit'
     });
+};
+
+const extractSessionIdFromUrl = (url: string): string | null => {
+    const match = url.match(/sessions\/([a-f0-9\-]{36})/i);
+    return match ? match[1] : null;
 };
 
 // Electron IPC для открытия папки с записями
@@ -103,16 +115,16 @@ const playBeep = (frequency: number = 800, duration: number = 150, volume: numbe
         const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
         const oscillator = audioContext.createOscillator();
         const gainNode = audioContext.createGain();
-        
+
         oscillator.connect(gainNode);
         gainNode.connect(audioContext.destination);
-        
+
         oscillator.frequency.value = frequency;
         oscillator.type = 'sine';
-        
+
         gainNode.gain.setValueAtTime(volume, audioContext.currentTime);
         gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + duration / 1000);
-        
+
         oscillator.start(audioContext.currentTime);
         oscillator.stop(audioContext.currentTime + duration / 1000);
     } catch (err) {
@@ -125,17 +137,17 @@ function App() {
     const [status, setStatus] = useState('Disconnected');
     const [language, setLanguage] = useState<'ru' | 'en' | 'auto'>('ru');
     const wsRef = useRef<WebSocket | null>(null);
-    
+
     // Audio levels
     const [micLevel, setMicLevel] = useState(0);
     const [systemLevel, setSystemLevel] = useState(0);
-    
+
     // Recording state
     const [isRecording, setIsRecording] = useState(false);
     const [recordingDuration, setRecordingDuration] = useState(0);
     const [currentSession, setCurrentSession] = useState<Session | null>(null);
     const recordingStartRef = useRef<number | null>(null);
-    
+
     // Sessions list
     const [sessions, setSessions] = useState<SessionInfo[]>([]);
     const [selectedSession, setSelectedSession] = useState<Session | null>(null);
@@ -148,21 +160,42 @@ function App() {
     const [showSettings, setShowSettings] = useState(false);
     const [echoCancel, setEchoCancel] = useState(0.4); // Эхоподавление 0-1
     const [useVoiceIsolation, setUseVoiceIsolation] = useState(true); // Voice Isolation (macOS 15+)
-    const [theme, setTheme] = useState<'light' | 'dark'>('dark');
+    const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
 
 
     // Audio player
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const [playingAudio, setPlayingAudio] = useState<string | null>(null);
+    const [playbackTime, setPlaybackTime] = useState(0);
+    const [playbackDuration, setPlaybackDuration] = useState(0);
+    const [playbackOffset, setPlaybackOffset] = useState(0);
+    const [playbackMicLevel, setPlaybackMicLevel] = useState(0);
+    const [playbackSysLevel, setPlaybackSysLevel] = useState(0);
+    const [waveformData, setWaveformData] = useState<WaveformData | null>(null);
+    const [spectrogramStatus, setSpectrogramStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+    const [spectrogramError, setSpectrogramError] = useState<string | null>(null);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const analyserLeftRef = useRef<AnalyserNode | null>(null);
+    const analyserRightRef = useRef<AnalyserNode | null>(null);
+    const audioSourceConnectedRef = useRef<boolean>(false);
+    const playbackRafRef = useRef<number | null>(null);
+    const leftTimeDataRef = useRef<Float32Array | null>(null);
+    const rightTimeDataRef = useRef<Float32Array | null>(null);
+    const playbackLevelSlicesRef = useRef<{ mic: number[]; sys: number[]; sliceDuration: number; duration: number; sessionId?: string } | null>(null);
+    const playbackOffsetRef = useRef(0);
+    const spectrogramSessionIdRef = useRef<string | null>(null);
 
     // Share menu
     const [showShareMenu, setShowShareMenu] = useState(false);
     const [copySuccess, setCopySuccess] = useState(false);
 
+    // Delete confirmation modal
+    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
     // Highlight chunk during and after retranscription
     const [highlightedChunkId, setHighlightedChunkId] = useState<string | null>(null);
     const [transcribingChunkId, setTranscribingChunkId] = useState<string | null>(null);
-    
+
     // Track if new chunk was added (for auto-scroll during recording only)
     const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
 
@@ -199,15 +232,13 @@ function App() {
     const [isImproving, setIsImproving] = useState(false);
     const [improveError, setImproveError] = useState<string | null>(null);
 
-    const settingsLocked = isRecording || isStopping;
-
     const transcriptionRef = useRef<HTMLDivElement | null>(null);
-    
+
     // Refs для доступа к актуальным значениям в callbacks
     const modelsRef = useRef(models);
     const activeModelIdRef = useRef(activeModelId);
     const languageRef = useRef(language);
-    
+
     // Обновляем refs при изменении состояния
     useEffect(() => { modelsRef.current = models; }, [models]);
     useEffect(() => { activeModelIdRef.current = activeModelId; }, [activeModelId]);
@@ -272,10 +303,86 @@ function App() {
         document.body.setAttribute('data-theme', theme);
     }, [theme]);
 
+    const spectrogramTargetSessionId = selectedSession?.id || (playingAudio ? extractSessionIdFromUrl(playingAudio) : null);
+
+    useEffect(() => {
+        const targetId = spectrogramTargetSessionId;
+        if (!targetId) {
+            spectrogramSessionIdRef.current = null;
+            setWaveformData(null);
+            setSpectrogramStatus('idle');
+            setSpectrogramError(null);
+            playbackLevelSlicesRef.current = null;
+            return;
+        }
+
+        if (spectrogramSessionIdRef.current === targetId && waveformData) return;
+
+        let cancelled = false;
+        setSpectrogramStatus('loading');
+        setSpectrogramError(null);
+
+        const loadSpectrogram = async () => {
+            try {
+                const url = `http://localhost:8080/api/sessions/${targetId}/full.mp3`;
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const arr = await resp.arrayBuffer();
+                if (cancelled) return;
+
+                const ctx = new AudioContext();
+                const decoded = await ctx.decodeAudioData(arr);
+                if (cancelled) {
+                    ctx.close();
+                    return;
+                }
+
+                const waveform = computeWaveform(decoded);
+                ctx.close();
+                if (!cancelled) {
+                    setWaveformData(waveform);
+                    spectrogramSessionIdRef.current = targetId;
+                    setSpectrogramStatus('ready');
+                }
+            } catch (err) {
+                if (cancelled) return;
+                console.error('Failed to build waveform', err);
+                setWaveformData(null);
+                spectrogramSessionIdRef.current = null;
+                setSpectrogramStatus('error');
+                setSpectrogramError(err instanceof Error ? err.message : String(err));
+            }
+        };
+
+        loadSpectrogram();
+
+        return () => { cancelled = true; };
+    }, [spectrogramTargetSessionId]);
+
+    useEffect(() => {
+        if (!waveformData) {
+            playbackLevelSlicesRef.current = null;
+            return;
+        }
+        const mic = waveformData.peaks[0] || [];
+        const sys = waveformData.peaks[1] || mic;
+        playbackLevelSlicesRef.current = {
+            mic,
+            sys,
+            sliceDuration: waveformData.sampleDuration,
+            duration: waveformData.duration,
+            sessionId: spectrogramSessionIdRef.current || undefined
+        };
+    }, [waveformData]);
+
+    useEffect(() => {
+        playbackOffsetRef.current = playbackOffset;
+    }, [playbackOffset]);
+
     // Таймер записи
     useEffect(() => {
         let interval: NodeJS.Timeout | null = null;
-        
+
         if (isRecording) {
             recordingStartRef.current = Date.now();
             interval = setInterval(() => {
@@ -287,7 +394,7 @@ function App() {
             setRecordingDuration(0);
             recordingStartRef.current = null;
         }
-        
+
         return () => {
             if (interval) clearInterval(interval);
         };
@@ -311,7 +418,7 @@ function App() {
             socket.onmessage = (event) => {
                 try {
                     const msg = JSON.parse(event.data);
-                    
+
                     switch (msg.type) {
                         case 'devices':
                             setDevices(msg.devices || []);
@@ -358,29 +465,29 @@ function App() {
                         case 'chunk_transcribed':
                             const text = msg.chunk.transcription || '';
                             addLog(`Chunk ${msg.chunk.index}: ${text.substring(0, 50)}${text.length > 50 ? '...' : ''}`);
-                            
+
                             // Обновляем текущую сессию
                             setCurrentSession(prev => {
                                 if (!prev || prev.id !== msg.sessionId) return prev;
                                 const chunks = prev.chunks.map(c => c.id === msg.chunk.id ? msg.chunk : c);
                                 return { ...prev, chunks };
                             });
-                            
+
                             // Автоскролл при получении транскрипции во время записи
                             if (isRecording) {
                                 setShouldAutoScroll(true);
                             }
-                            
+
                             // Обновляем выбранную сессию и подсвечиваем чанк
                             setSelectedSession(prev => {
                                 if (!prev || prev.id !== msg.sessionId) return prev;
                                 const chunks = prev.chunks.map(c => c.id === msg.chunk.id ? msg.chunk : c);
                                 return { ...prev, chunks };
                             });
-                            
+
                             // Сбрасываем индикатор транскрипции
                             setTranscribingChunkId(prev => prev === msg.chunk.id ? null : prev);
-                            
+
                             // Подсвечиваем перетранскрибированный чанк (мигание)
                             setHighlightedChunkId(msg.chunk.id);
                             setTimeout(() => setHighlightedChunkId(null), 2000);
@@ -415,8 +522,8 @@ function App() {
                             break;
 
                         case 'model_progress':
-                            setModels(prev => prev.map(m => 
-                                m.id === msg.modelId 
+                            setModels(prev => prev.map(m =>
+                                m.id === msg.modelId
                                     ? { ...m, status: msg.data as any, progress: msg.progress, error: msg.error }
                                     : m
                             ));
@@ -593,74 +700,72 @@ function App() {
             setSelectedSession(null);
             setShowShareMenu(false);
             setActiveTab('dialogue'); // Сбрасываем на вкладку диалога
-            
-            // Получаем путь к активной модели
+
+            // Получаем активную модель
             const activeModel = models.find(m => m.id === activeModelId);
-            const modelPath = activeModel?.path || '';
-            
-            if (!modelPath && activeModelId) {
-                addLog('Модель не скачана. Откройте менеджер моделей для скачивания.');
+            const modelId = activeModel?.id || activeModelId;
+
+            console.log('handleStartStop: activeModelId=', activeModelId, 'activeModel=', activeModel, 'models=', models);
+            addLog(`Starting recording with model: ${modelId}`);
+
+            // Проверяем статус модели - должен быть 'downloaded' или 'active'
+            const isModelReady = activeModel?.status === 'downloaded' || activeModel?.status === 'active';
+            if (!isModelReady && activeModelId) {
+                addLog(`Модель не скачана (status: ${activeModel?.status}). Откройте менеджер моделей для скачивания.`);
                 setShowModelManager(true);
                 return;
             }
-            
+
+            if (!modelId) {
+                addLog('Модель не выбрана. Выберите модель в настройках.');
+                setShowModelManager(true);
+                return;
+            }
+
             ws.send(JSON.stringify({
                 type: 'start_session',
                 language,
-                model: modelPath,
+                model: modelId,
                 micDevice,
                 captureSystem,
                 useNativeCapture: screenCaptureKitAvailable && captureSystem,
                 useVoiceIsolation: screenCaptureKitAvailable && captureSystem && useVoiceIsolation,
                 echoCancel: captureSystem && !useVoiceIsolation ? echoCancel : 0
             }));
+            addLog('start_session sent to backend');
         }
-    };
-
-    const toggleTheme = () => {
-        setTheme(prev => prev === 'dark' ? 'light' : 'dark');
     };
 
     const handleViewSession = (sessionId: string) => {
         wsRef.current?.send(JSON.stringify({ type: 'get_session', sessionId }));
     };
 
-    const handleDeleteSession = (sessionId: string) => {
-        if (confirm('Удалить эту запись?')) {
-            wsRef.current?.send(JSON.stringify({ type: 'delete_session', sessionId }));
-            setSessions(prev => prev.filter(s => s.id !== sessionId));
-            if (selectedSession?.id === sessionId) {
-                setSelectedSession(null);
-            }
-        }
-    };
-
     const handleRetranscribe = (chunkId: string) => {
         if (!selectedSession) return;
-        
-        // Получаем путь к активной модели
+
+        // Получаем активную модель
         const activeModel = models.find(m => m.id === activeModelId);
-        const modelPath = activeModel?.path || '';
-        
+        const modelId = activeModel?.id || activeModelId;
+
         // Сразу обновляем UI: очищаем ошибку и ставим статус transcribing
         setSelectedSession(prev => {
             if (!prev) return prev;
-            const chunks = prev.chunks.map(c => 
-                c.id === chunkId 
+            const chunks = prev.chunks.map(c =>
+                c.id === chunkId
                     ? { ...c, status: 'transcribing' as const, error: undefined, transcription: '', micText: '', sysText: '', dialogue: [] }
                     : c
             );
             return { ...prev, chunks };
         });
-        
+
         // Подсвечиваем чанк во время транскрипции
         setTranscribingChunkId(chunkId);
-        
+
         wsRef.current?.send(JSON.stringify({
             type: 'retranscribe_chunk',
             sessionId: selectedSession.id,
             data: chunkId,
-            model: modelPath,
+            model: modelId,
             language: language
         }));
         addLog(`Retranscribing chunk with model: ${activeModel?.name || 'default'}, language: ${language}`);
@@ -689,7 +794,7 @@ function App() {
     // Загрузка списка моделей Ollama
     const loadOllamaModels = useCallback(() => {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
-        
+
         setOllamaModelsLoading(true);
         setOllamaError(null);
         wsRef.current.send(JSON.stringify({
@@ -701,7 +806,7 @@ function App() {
     // Генерация summary
     const handleGenerateSummary = useCallback(() => {
         if (!selectedSession) return;
-        
+
         wsRef.current?.send(JSON.stringify({
             type: 'generate_summary',
             sessionId: selectedSession.id,
@@ -713,22 +818,22 @@ function App() {
     // Полная ретранскрипция файла
     const handleFullRetranscribe = useCallback(() => {
         if (!selectedSession) return;
-        
-        // Получаем путь к активной модели
+
+        // Получаем активную модель
         const activeModel = models.find(m => m.id === activeModelId);
-        const modelPath = activeModel?.path || '';
-        
-        if (!modelPath && activeModelId) {
+        const modelId = activeModel?.id || activeModelId;
+
+        if (!activeModel?.downloaded && activeModelId) {
             addLog('Модель не скачана. Откройте менеджер моделей для скачивания.');
             setShowModelManager(true);
             return;
         }
-        
+
         setFullTranscriptionError(null);
         wsRef.current?.send(JSON.stringify({
             type: 'retranscribe_full',
             sessionId: selectedSession.id,
-            model: modelPath,
+            model: modelId,
             language: language
         }));
         addLog(`Starting full retranscription with model: ${activeModel?.name || 'default'}`);
@@ -737,50 +842,221 @@ function App() {
     // Отмена полной ретранскрипции (с debounce)
     const handleCancelFullTranscription = useCallback(() => {
         if (!selectedSession || isCancellingTranscription) return;
-        
+
         setIsCancellingTranscription(true);
         wsRef.current?.send(JSON.stringify({
             type: 'cancel_full_transcription',
             sessionId: selectedSession.id
         }));
         addLog('Cancelling full transcription...');
-        
+
         // Сбрасываем флаг через 2 секунды
         setTimeout(() => setIsCancellingTranscription(false), 2000);
     }, [selectedSession, isCancellingTranscription, addLog]);
 
+    // Удаление сессии
+    const handleDeleteSession = useCallback(() => {
+        if (!selectedSession) return;
+
+        wsRef.current?.send(JSON.stringify({
+            type: 'delete_session',
+            sessionId: selectedSession.id
+        }));
+        addLog(`Удалена сессия: ${selectedSession.title || selectedSession.id}`);
+        setSelectedSession(null);
+        setShowDeleteConfirm(false);
+    }, [selectedSession, addLog]);
+
     // Воспроизведение аудио
     const playAudio = (url: string) => {
-        if (audioRef.current) {
-            if (playingAudio === url) {
-                audioRef.current.pause();
-                audioRef.current.currentTime = 0;
-                setPlayingAudio(null);
-            } else {
-                audioRef.current.src = url;
-                audioRef.current.play();
-                setPlayingAudio(url);
-            }
+        const audioEl = audioRef.current;
+        if (!audioEl) return;
+
+        // Останавливаем предыдущий цикл анализа, если он был запущен
+        if (playbackRafRef.current !== null) {
+            cancelAnimationFrame(playbackRafRef.current);
+            playbackRafRef.current = null;
         }
+
+        const resetPlaybackLevels = () => {
+            setPlaybackMicLevel(0);
+            setPlaybackSysLevel(0);
+            if (playbackRafRef.current !== null) {
+                cancelAnimationFrame(playbackRafRef.current);
+                playbackRafRef.current = null;
+            }
+        };
+
+        if (playingAudio === url) {
+            audioEl.pause();
+            audioEl.currentTime = 0;
+            setPlayingAudio(null);
+            setPlaybackTime(0);
+            setPlaybackOffset(0);
+            playbackOffsetRef.current = 0;
+            resetPlaybackLevels();
+            return;
+        }
+
+        audioEl.src = url;
+        setPlaybackTime(0);
+
+        if (!audioContextRef.current) {
+            audioContextRef.current = new AudioContext();
+        }
+
+        if (audioContextRef.current.state === 'suspended') {
+            audioContextRef.current.resume();
+        }
+
+        // Строим граф только один раз для элемента audio
+        if (!audioSourceConnectedRef.current && audioContextRef.current) {
+            const source = audioContextRef.current.createMediaElementSource(audioEl);
+            const splitter = audioContextRef.current.createChannelSplitter(2);
+
+            analyserLeftRef.current = audioContextRef.current.createAnalyser();
+            analyserRightRef.current = audioContextRef.current.createAnalyser();
+            analyserLeftRef.current.fftSize = 512;
+            analyserRightRef.current.fftSize = 512;
+            analyserLeftRef.current.smoothingTimeConstant = 0.6;
+            analyserRightRef.current.smoothingTimeConstant = 0.6;
+
+            // Выделяем буферы под временную область, чтобы не создавать их на каждом кадре
+            leftTimeDataRef.current = new Float32Array(analyserLeftRef.current.fftSize);
+            rightTimeDataRef.current = new Float32Array(analyserRightRef.current.fftSize);
+
+            const merger = audioContextRef.current.createChannelMerger(2);
+
+            source.connect(splitter);
+            splitter.connect(analyserLeftRef.current, 0);
+            splitter.connect(analyserRightRef.current, 1);
+
+            analyserLeftRef.current.connect(merger, 0, 0);
+            analyserRightRef.current.connect(merger, 0, 1);
+            merger.connect(audioContextRef.current.destination);
+
+            audioSourceConnectedRef.current = true;
+        }
+
+        const calculateRMS = (data: Float32Array) => {
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) {
+                const sample = data[i];
+                sum += sample * sample;
+            }
+            return Math.sqrt(sum / data.length);
+        };
+
+        const analyzeAudio = () => {
+            const leftAnalyser = analyserLeftRef.current;
+            const rightAnalyser = analyserRightRef.current;
+            const el = audioRef.current;
+
+            if (!el || el.paused || el.ended) {
+                resetPlaybackLevels();
+                return;
+            }
+
+            const slices = playbackLevelSlicesRef.current;
+            const currentSessionId = playingAudio ? extractSessionIdFromUrl(playingAudio) : null;
+            const precomputedAvailable =
+                slices &&
+                slices.mic.length > 0 &&
+                (!currentSessionId || !slices.sessionId || slices.sessionId === currentSessionId);
+
+            if (precomputedAvailable && slices) {
+                const absolute = Math.min(slices.duration, Math.max(0, playbackOffsetRef.current + el.currentTime));
+                const sliceIndex = Math.min(slices.mic.length - 1, Math.floor(absolute / slices.sliceDuration));
+                setPlaybackMicLevel(Math.min(100, slices.mic[sliceIndex] * 100));
+                setPlaybackSysLevel(Math.min(100, slices.sys[sliceIndex] * 100));
+            } else if (leftAnalyser && rightAnalyser) {
+                if (!leftTimeDataRef.current || leftTimeDataRef.current.length !== leftAnalyser.fftSize) {
+                    leftTimeDataRef.current = new Float32Array(leftAnalyser.fftSize);
+                }
+                if (!rightTimeDataRef.current || rightTimeDataRef.current.length !== rightAnalyser.fftSize) {
+                    rightTimeDataRef.current = new Float32Array(rightAnalyser.fftSize);
+                }
+
+                leftAnalyser.getFloatTimeDomainData(leftTimeDataRef.current as Float32Array<ArrayBuffer>);
+                rightAnalyser.getFloatTimeDomainData(rightTimeDataRef.current as Float32Array<ArrayBuffer>);
+
+                const micRms = calculateRMS(leftTimeDataRef.current);
+                const sysRms = calculateRMS(rightTimeDataRef.current);
+
+                setPlaybackMicLevel(Math.min(100, micRms * 140));
+                setPlaybackSysLevel(Math.min(100, sysRms * 140));
+            }
+
+            playbackRafRef.current = requestAnimationFrame(analyzeAudio);
+        };
+
+        audioEl.play()
+            .then(() => {
+                setPlayingAudio(url);
+                playbackRafRef.current = requestAnimationFrame(analyzeAudio);
+            })
+            .catch((err) => {
+                console.error('Failed to play audio:', err);
+                resetPlaybackLevels();
+                setPlayingAudio(null);
+            });
+    };
+
+    const getChunkOffsetSec = (session: Session | null, chunkIndex: number) => {
+        if (!session) return 0;
+        const chunk = session.chunks.find(c => c.index === chunkIndex);
+        if (chunk?.startMs !== undefined) return chunk.startMs / 1000;
+
+        return session.chunks
+            .filter(c => c.index < chunkIndex)
+            .reduce((sum, c) => sum + (c.duration || 0) / 1000000000, 0);
     };
 
     const playFullRecording = (sessionId: string) => {
+        setPlaybackOffset(0);
+        playbackOffsetRef.current = 0;
+        if (waveformData?.duration) {
+            setPlaybackDuration(waveformData.duration);
+        }
         playAudio(`http://localhost:8080/api/sessions/${sessionId}/full.mp3`);
     };
 
     const playChunk = (sessionId: string, chunkIndex: number) => {
+        const session = (selectedSession && selectedSession.id === sessionId)
+            ? selectedSession
+            : (currentSession && currentSession.id === sessionId)
+                ? currentSession
+                : selectedSession;
+
+        const offsetSec = getChunkOffsetSec(session || null, chunkIndex);
+        setPlaybackOffset(offsetSec);
+        playbackOffsetRef.current = offsetSec;
+
+        const chunk = session?.chunks.find(c => c.index === chunkIndex);
+        if (chunk?.duration) {
+            setPlaybackDuration(chunk.duration / 1000000000);
+        }
+
         // Используем новый API для воспроизведения конкретного чанка
         playAudio(`http://localhost:8080/api/sessions/${sessionId}/chunk/${chunkIndex}.mp3`);
     };
 
     const handleAudioEnded = () => {
         setPlayingAudio(null);
+        setPlaybackMicLevel(0);
+        setPlaybackSysLevel(0);
+        setPlaybackOffset(0);
+        playbackOffsetRef.current = 0;
+        if (playbackRafRef.current !== null) {
+            cancelAnimationFrame(playbackRafRef.current);
+            playbackRafRef.current = null;
+        }
     };
 
     // Генерация полного текста транскрипции
     const generateFullText = useCallback((session: Session): string => {
         const sessionChunks = session.chunks || [];
-        
+
         // Собираем диалог
         const dialogue: TranscriptSegment[] = sessionChunks
             .filter(c => c.status === 'completed')
@@ -790,7 +1066,7 @@ function App() {
                     const chunkOffset = sessionChunks
                         .filter(prev => prev.index < c.index)
                         .reduce((sum, prev) => sum + (prev.duration / 1000000), 0);
-                    
+
                     return c.dialogue.map(seg => ({
                         ...seg,
                         start: seg.start + chunkOffset,
@@ -803,7 +1079,7 @@ function App() {
         // Если есть диалог с сегментами
         if (dialogue.length > 0) {
             const header = `Транскрипция записи от ${formatDate(session.startTime)}\nДлительность: ${formatDuration(session.totalDuration / 1000)}\n${'='.repeat(50)}\n\n`;
-            
+
             const dialogueText = dialogue.map(seg => {
                 const startSec = Math.floor(seg.start / 1000);
                 const mins = Math.floor(startSec / 60);
@@ -841,15 +1117,15 @@ function App() {
     // Копирование в буфер обмена
     const handleCopyToClipboard = useCallback(async () => {
         if (!selectedSession) return;
-        
+
         const text = generateFullText(selectedSession);
-        
+
         try {
             await navigator.clipboard.writeText(text);
             setCopySuccess(true);
             setShowShareMenu(false);
             addLog('Текст скопирован в буфер обмена');
-            
+
             setTimeout(() => setCopySuccess(false), 2000);
         } catch (err) {
             addLog('Ошибка копирования в буфер');
@@ -860,16 +1136,16 @@ function App() {
     // Скачивание как файл
     const handleDownloadFile = useCallback(() => {
         if (!selectedSession) return;
-        
+
         const text = generateFullText(selectedSession);
         const date = new Date(selectedSession.startTime);
         const dateStr = date.toISOString().slice(0, 10);
         const timeStr = date.toTimeString().slice(0, 5).replace(':', '-');
         const filename = `transcription_${dateStr}_${timeStr}.txt`;
-        
+
         const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
         const url = URL.createObjectURL(blob);
-        
+
         const a = document.createElement('a');
         a.href = url;
         a.download = filename;
@@ -877,7 +1153,7 @@ function App() {
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-        
+
         setShowShareMenu(false);
         addLog(`Файл ${filename} скачан`);
     }, [selectedSession, generateFullText, addLog]);
@@ -901,14 +1177,16 @@ function App() {
                 setShowShareMenu(false);
             }
         };
-        
+
         document.addEventListener('click', handleClickOutside);
         return () => document.removeEventListener('click', handleClickOutside);
     }, [showShareMenu]);
 
-    const inputDevices = devices.filter(d => d.isInput);
     const displaySession = selectedSession || currentSession;
     const chunks = displaySession?.chunks || [];
+    const timelineDuration = waveformData?.duration
+        || playbackDuration
+        || (displaySession?.totalDuration ? displaySession.totalDuration / 1000000000 : 0);
 
     // Собираем полный диалог из всех чанков
     const allDialogue: TranscriptSegment[] = chunks
@@ -921,7 +1199,7 @@ function App() {
                 const chunkOffset = chunks
                     .filter(prev => prev.index < c.index)
                     .reduce((sum, prev) => sum + (prev.duration / 1000000), 0); // duration в наносекундах -> мс
-                
+
                 return c.dialogue.map(seg => ({
                     ...seg,
                     start: seg.start + chunkOffset,
@@ -934,1078 +1212,1099 @@ function App() {
     return (
         <div className="app-frame" style={{ display: 'flex', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)' }}>
             {/* Hidden audio element */}
-            <audio ref={audioRef} onEnded={handleAudioEnded} style={{ display: 'none' }} />
-            
-            {/* Left Sidebar - Sessions List */}
-            <aside data-surface data-elevated style={{ 
-                width: '300px', 
-                background: 'var(--sidebar)', 
-                borderRight: '1px solid var(--border-strong)',
-                display: 'flex',
-                flexDirection: 'column',
-                boxShadow: 'var(--shadow-strong)'
-            }}>
-                <div style={{ padding: '1rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h2 style={{ margin: 0, fontSize: '1.05rem', color: 'var(--text-secondary)', letterSpacing: '0.3px' }}>📁 Записи</h2>
+            <audio
+                ref={audioRef}
+                crossOrigin="anonymous"
+                onEnded={handleAudioEnded}
+                onTimeUpdate={(e) => setPlaybackTime((e.target as HTMLAudioElement).currentTime)}
+                onLoadedMetadata={(e) => setPlaybackDuration((e.target as HTMLAudioElement).duration)}
+                style={{ display: 'none' }}
+            />
+
+            {/* Left Sidebar - Sessions List - Liquid Glass Style */}
+            <aside
+                className="glass-surface-elevated"
+                style={{
+                    width: '300px',
+                    margin: 'var(--spacing-inset)',
+                    marginRight: 0,
+                    borderRadius: 'var(--radius-xl)',
+                    background: 'var(--sidebar-bg)',
+                    backdropFilter: 'blur(var(--glass-blur)) saturate(var(--glass-saturation))',
+                    WebkitBackdropFilter: 'blur(var(--glass-blur)) saturate(var(--glass-saturation))',
+                    border: '1px solid var(--glass-border)',
+                    boxShadow: 'var(--shadow-glass)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflow: 'hidden',
+                }}
+            >
+                {/* Sidebar Header */}
+                <div style={{
+                    padding: '1rem 1.25rem',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                }}>
+                    <h2 style={{
+                        margin: 0,
+                        fontSize: '1.2rem',
+                        fontWeight: 'var(--font-weight-bold)',
+                        letterSpacing: '-0.02em',
+                        color: 'var(--text-primary)',
+                    }}>
+                        Все записи
+                    </h2>
                     <button
+                        className="btn-icon btn-icon-sm"
                         onClick={openDataFolder}
                         title="Открыть папку с записями"
-                        style={{
-                            padding: '0.35rem 0.6rem',
-                            fontSize: '0.8rem',
-                            backgroundColor: 'var(--surface-strong)',
-                            color: 'var(--text-primary)',
-                            border: '1px solid var(--border)',
-                            borderRadius: '8px',
-                            cursor: 'pointer'
-                        }}
+                        style={{ width: '32px', height: '32px' }}
                     >
-                        📂
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                        </svg>
                     </button>
                 </div>
-                
-                <div style={{ flex: 1, overflowY: 'auto' }}>
+
+                {/* Sessions List with Grouping */}
+                <div
+                    className="scroll-soft-edges"
+                    style={{ flex: 1, overflowY: 'auto', paddingBottom: '1rem' }}
+                >
                     {sessions.length === 0 ? (
-                        <div style={{ padding: '1rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+                        <div style={{
+                            padding: '2rem 1rem',
+                            color: 'var(--text-muted)',
+                            textAlign: 'center',
+                            fontSize: '0.9rem',
+                        }}>
                             Нет записей
                         </div>
                     ) : (
-                        sessions.map(s => {
-                            const isSelected = selectedSession?.id === s.id;
-                            const isPlayingThis = playingAudio?.includes(s.id);
-                            const durationSec = s.totalDuration / 1000; // ms to sec
-                            
-                            return (
-                                <div 
-                                    key={s.id} 
-                                    style={{ 
-                                        padding: '0.75rem 1rem',
-                                        borderBottom: '1px solid var(--border)',
-                                        backgroundColor: isSelected ? 'rgba(108, 92, 231, 0.12)' : 'transparent',
-                                        cursor: 'pointer',
-                                        transition: 'all 0.2s ease'
-                                    }}
-                                    onClick={() => handleViewSession(s.id)}
-                                >
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.3rem' }}>
-                                        <span style={{ fontSize: '0.92rem', color: 'var(--text-primary)', fontWeight: 600 }}>
-                                            {s.title || formatDate(s.startTime)}
-                                        </span>
-                                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                                            {formatDuration(durationSec)}
-                                        </span>
-                                    </div>
-                                    
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                                            <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                                                {formatDate(s.startTime)}
-                                            </span>
-                                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                                {s.chunksCount} чанков
-                                            </span>
+                        groupSessionsByTime(sessions).map((group) => (
+                            <div key={group.label}>
+                                {/* Group Header */}
+                                <div className="group-header">{group.label}</div>
+
+                                {/* Sessions in Group */}
+                                {group.sessions.map((s) => {
+                                    const isSelected = selectedSession?.id === s.id;
+                                    const durationSec = s.totalDuration / 1000;
+
+                                    return (
+                                        <div
+                                            key={s.id}
+                                            className={`session-item ${isSelected ? 'selected' : ''}`}
+                                            onClick={() => handleViewSession(s.id)}
+                                        >
+                                            {/* Title */}
+                                            <div style={{
+                                                fontSize: '0.95rem',
+                                                fontWeight: 'var(--font-weight-semibold)',
+                                                color: 'var(--text-primary)',
+                                                marginBottom: '0.35rem',
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap',
+                                            }}>
+                                                {s.title || `Запись ${formatDateUtil(s.startTime)}`}
+                                            </div>
+
+                                            {/* Meta Info */}
+                                            <div style={{
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '0.5rem',
+                                                fontSize: '0.8rem',
+                                                color: 'var(--text-muted)',
+                                            }}>
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ opacity: 0.6 }}>
+                                                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                                                    <line x1="16" y1="2" x2="16" y2="6"/>
+                                                    <line x1="8" y1="2" x2="8" y2="6"/>
+                                                    <line x1="3" y1="10" x2="21" y2="10"/>
+                                                </svg>
+                                                <span>{formatDateUtil(s.startTime)}, {formatTimeUtil(s.startTime)}</span>
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ opacity: 0.6 }}>
+                                                    <circle cx="12" cy="12" r="10"/>
+                                                    <polyline points="12 6 12 12 16 14"/>
+                                                </svg>
+                                                <span>{formatDurationUtil(durationSec)}</span>
+                                            </div>
                                         </div>
-                                        
-                                        <div style={{ display: 'flex', gap: '0.3rem' }}>
-                                            <button
-                                                onClick={(e) => { e.stopPropagation(); playFullRecording(s.id); }}
-                                                style={{
-                                                    padding: '0.2rem 0.5rem',
-                                                    fontSize: '0.7rem',
-                                                    backgroundColor: isPlayingThis ? '#f44336' : '#2196f3',
-                                                    color: 'white',
-                                                    border: 'none',
-                                                    borderRadius: '3px',
-                                                    cursor: 'pointer'
-                                                }}
-                                            >
-                                                {isPlayingThis ? '⏹' : '▶'}
-                                            </button>
-                                            <button
-                                                onClick={(e) => { e.stopPropagation(); handleDeleteSession(s.id); }}
-                                                style={{
-                                                    padding: '0.2rem 0.5rem',
-                                                    fontSize: '0.7rem',
-                                                    backgroundColor: '#333',
-                                                    color: '#f44336',
-                                                    border: 'none',
-                                                    borderRadius: '3px',
-                                                    cursor: 'pointer'
-                                                }}
-                                            >
-                                                🗑
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            );
-                        })
+                                    );
+                                })}
+                            </div>
+                        ))
                     )}
+                </div>
+
+                {/* New Recording Button at Bottom */}
+                <div style={{
+                    padding: '0.75rem 1rem',
+                    borderTop: '1px solid var(--glass-border-subtle)',
+                }}>
+                    <button
+                        className="btn-capsule"
+                        onClick={handleStartStop}
+                        disabled={status !== 'Connected' || isStopping}
+                        style={{
+                            width: '100%',
+                            justifyContent: 'center',
+                            padding: '0.6rem 1rem',
+                            gap: '0.4rem',
+                            background: isRecording
+                                ? 'linear-gradient(135deg, #f87171, #ef4444)'
+                                : 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+                            border: 'none',
+                            color: 'white',
+                            boxShadow: isRecording
+                                ? '0 0 20px rgba(239, 68, 68, 0.4)'
+                                : 'var(--shadow-glow-primary)',
+                        }}
+                    >
+                        {isStopping ? (
+                            <>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}>
+                                    <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                                </svg>
+                                Сохранение...
+                            </>
+                        ) : isRecording ? (
+                            <>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                                    <rect x="6" y="6" width="12" height="12" rx="2"/>
+                                </svg>
+                                Стоп
+                            </>
+                        ) : (
+                            <>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                    <line x1="12" y1="5" x2="12" y2="19"/>
+                                    <line x1="5" y1="12" x2="19" y2="12"/>
+                                </svg>
+                                Новая запись
+                            </>
+                        )}
+                    </button>
                 </div>
             </aside>
 
             {/* Main Content */}
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                {/* Header - draggable для перемещения окна */}
+                {/* Header - Minimal Liquid Glass Style */}
                 <header
-                    data-surface
-                    data-elevated
-                    className="app-header"
                     style={{
-                        padding: '0.9rem 1.5rem',
-                        paddingLeft: '80px', // Отступ для кнопок управления окном macOS
-                        borderBottom: '1px solid var(--border-strong)',
+                        padding: '0.75rem 1.5rem',
+                        paddingLeft: '88px', // Traffic lights offset
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '1rem',
-                        WebkitAppRegion: 'drag', // Позволяет перетаскивать окно
+                        justifyContent: 'space-between',
+                        background: 'transparent',
+                        WebkitAppRegion: 'drag',
                         userSelect: 'none',
-                        background: 'var(--glass)'
+                        minHeight: '52px',
                     } as React.CSSProperties}
                 >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
-                        <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: 'var(--primary)', boxShadow: '0 0 16px var(--primary-glow)' }} />
-                        <h1 style={{ margin: 0, fontSize: '1.25rem', letterSpacing: '0.5px', background: 'linear-gradient(120deg, var(--primary), var(--accent))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>AIWisper</h1>
-                    </div>
-                    
-                    <div style={{ padding: '0.25rem 0.7rem', borderRadius: '999px', fontSize: '0.82rem', background: status === 'Connected' ? 'rgba(0,184,148,0.18)' : 'rgba(244,67,54,0.14)', color: status === 'Connected' ? 'var(--success)' : 'var(--danger)', border: `1px solid ${status === 'Connected' ? 'rgba(0,184,148,0.35)' : 'rgba(244,67,54,0.35)'}`, WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-                        {status === 'Connected' ? 'Подключено' : 'Отключено'}
+                    {/* Left: Connection Status Indicator */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <div
+                            style={{
+                                width: '8px',
+                                height: '8px',
+                                borderRadius: '50%',
+                                background: status === 'Connected' ? 'var(--success)' : 'var(--danger)',
+                                boxShadow: status === 'Connected'
+                                    ? '0 0 12px var(--success)'
+                                    : '0 0 12px var(--danger)',
+                                transition: 'all var(--duration-normal) var(--transition-smooth)',
+                            }}
+                        />
                     </div>
 
-                    {/* Recording Duration */}
+                    {/* Center: Recording Timer (only when recording) */}
                     {isRecording && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', padding: '0.35rem 0.85rem', background: 'rgba(244, 67, 54, 0.12)', border: '1px solid rgba(244, 67, 54, 0.35)', borderRadius: '12px', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-                            <span style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#f44336', boxShadow: '0 0 14px rgba(244,67,54,0.7)', animation: 'pulse 1s infinite' }}></span>
-                            <span style={{ fontFamily: 'monospace', fontSize: '1rem', color: 'var(--text-primary)' }}>
+                        <div
+                            className="animate-scale-in"
+                            style={{
+                                position: 'absolute',
+                                left: '50%',
+                                transform: 'translateX(-50%)',
+                                padding: '0.4rem 1rem',
+                                borderRadius: 'var(--radius-capsule)',
+                                background: 'rgba(239, 68, 68, 0.15)',
+                                backdropFilter: 'blur(var(--glass-blur-light))',
+                                WebkitBackdropFilter: 'blur(var(--glass-blur-light))',
+                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem',
+                                WebkitAppRegion: 'no-drag',
+                            } as React.CSSProperties}
+                        >
+                            <div
+                                style={{
+                                    width: '8px',
+                                    height: '8px',
+                                    borderRadius: '50%',
+                                    background: '#ef4444',
+                                    animation: 'pulse 1s infinite',
+                                }}
+                            />
+                            <span
+                                style={{
+                                    fontFamily: 'SF Mono, Menlo, monospace',
+                                    fontSize: '0.9rem',
+                                    fontWeight: 'var(--font-weight-semibold)',
+                                    color: 'var(--text-primary)',
+                                }}
+                            >
                                 {formatDuration(recordingDuration)}
                             </span>
                         </div>
                     )}
-                    
-                    <div style={{ flex: 1 }}></div>
-                    
-                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-                        <button
-                            onClick={toggleTheme}
-                            style={{ padding: '0.35rem 0.6rem', backgroundColor: 'var(--surface-strong)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '8px', cursor: 'pointer' }}
-                        >
-                            {theme === 'dark' ? '☀️ Светлая' : '🌙 Тёмная'}
-                        </button>
 
-                        <select
-                            value={language}
-                            onChange={e => setLanguage(e.target.value as any)}
-                            style={{ padding: '0.35rem 0.6rem', backgroundColor: 'var(--surface-strong)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '8px' }}
-                        >
-                            <option value="ru">Русский</option>
-                            <option value="en">English</option>
-                            <option value="auto">Auto</option>
-                        </select>
-                        
-                        <button 
-                            onClick={() => setShowSettings(!showSettings)} 
-                            style={{ padding: '0.35rem 0.65rem', backgroundColor: showSettings ? 'var(--primary)' : 'var(--surface-strong)', color: showSettings ? '#fff' : 'var(--text-primary)', border: `1px solid ${showSettings ? 'var(--primary)' : 'var(--border)'}`, borderRadius: '8px', cursor: 'pointer' }}
-                        >
-                            ⚙️
-                        </button>
-                        
+                    {/* Right: Settings only */}
+                    <div
+                        style={{
+                            display: 'flex',
+                            gap: '0.5rem',
+                            alignItems: 'center',
+                            WebkitAppRegion: 'no-drag',
+                        } as React.CSSProperties}
+                    >
                         <button
-                            onClick={handleStartStop}
-                            disabled={status !== 'Connected' || isStopping}
-                            style={{
-                                padding: '0.55rem 1.55rem',
-                                background: isStopping ? 'linear-gradient(135deg, #ffb347, #ff9800)' : isRecording ? 'linear-gradient(135deg, #ff5858, #f44336)' : 'linear-gradient(135deg, var(--primary), var(--accent))',
-                                color: 'white',
-                                border: 'none',
-                                borderRadius: '12px',
-                                fontWeight: 700,
-                                letterSpacing: '0.02em',
-                                cursor: (status === 'Connected' && !isStopping) ? 'pointer' : 'not-allowed',
-                                opacity: status === 'Connected' ? 1 : 0.5,
-                                boxShadow: isRecording ? '0 0 26px rgba(244, 67, 54, 0.35)' : '0 6px 18px rgba(108, 92, 231, 0.35)',
-                                transition: 'all 0.3s ease'
-                            }}
+                            className="btn-icon"
+                            onClick={() => setShowSettings(true)}
+                            title="Настройки"
+                            style={{ width: '36px', height: '36px' }}
                         >
-                            {isStopping ? '⏳ Сохранение...' : isRecording ? '⏹ Стоп' : '● Запись'}
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <circle cx="12" cy="12" r="3"/>
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                            </svg>
                         </button>
                     </div>
                 </header>
 
-                {/* Settings Panel */}
-                {showSettings && (
-                    <div
-                        data-surface
-                        data-elevated
-                        className="settings-panel"
-                        style={{ padding: '0.9rem 1.5rem', position: 'relative', borderBottom: '1px solid var(--border-strong)', overflow: 'hidden' }}
-                    >
-                        {settingsLocked && (
-                            <div className="settings-lock" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(135deg, rgba(0,0,0,0.55), rgba(0,0,0,0.35))', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', zIndex: 5, color: 'var(--text-primary)' }}>
-                                <span style={{ fontSize: '1rem' }}>🔒</span>
-                                <span style={{ fontWeight: 600 }}>Запись идёт — настройки временно заблокированы</span>
-                            </div>
-                        )}
-
-                        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap', opacity: settingsLocked ? 0.55 : 1, pointerEvents: settingsLocked ? 'none' : 'auto' }}>
-                            <div data-chip style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.35rem 0.75rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-strong)' }}>
-                                <span>🎤</span>
-                                <select
-                                    value={micDevice}
-                                    disabled={settingsLocked}
-                                    onChange={e => setMicDevice(e.target.value)}
-                                    style={{ padding: '0.35rem 0.6rem', backgroundColor: 'var(--surface)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '8px' }}
-                                >
-                                    <option value="">Default</option>
-                                    {inputDevices.map(d => <option key={d.id} value={d.name}>{d.name}</option>)}
-                                </select>
-                            </div>
-
-                            <label data-chip style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', padding: '0.35rem 0.75rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-strong)' }}>
-                                <input type="checkbox" checked={captureSystem} disabled={settingsLocked} onChange={e => setCaptureSystem(e.target.checked)} />
-                                <span>🔊 System Audio</span>
-                                {captureSystem && screenCaptureKitAvailable && (
-                                    <span style={{ fontSize: '0.7rem', color: 'var(--success)', backgroundColor: 'rgba(0,184,148,0.14)', padding: '2px 6px', borderRadius: '999px' }}>
-                                        Native
-                                    </span>
-                                )}
-                            </label>
-
-                            {/* Voice Isolation - встроенное эхоподавление macOS */}
-                            {captureSystem && screenCaptureKitAvailable && (
-                                <label data-chip style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', padding: '0.35rem 0.75rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-strong)' }} title="ВАЖНО: Разделение микрофона и системного звука для раздельной транскрибации (Вы/Собеседник). Использует встроенное эхоподавление и шумоподавление macOS (требует macOS 15+)">
-                                    <input type="checkbox" checked={useVoiceIsolation} disabled={settingsLocked} onChange={e => setUseVoiceIsolation(e.target.checked)} />
-                                    <span style={{ fontSize: '0.85rem' }}>Voice Isolation</span>
-                                    <span style={{ fontSize: '0.65rem', color: 'var(--primary)', backgroundColor: 'rgba(108,92,231,0.12)', padding: '2px 5px', borderRadius: '999px' }}>
-                                        macOS 15+
-                                    </span>
-                                    <span style={{ fontSize: '0.65rem', color: 'var(--success)', backgroundColor: 'rgba(0,184,148,0.14)', padding: '2px 5px', borderRadius: '999px', marginLeft: '0.2rem' }}>
-                                        Раздельные каналы
-                                    </span>
-                                </label>
-                            )}
-
-                            {/* Предупреждение если Voice Isolation недоступен */}
-                            {captureSystem && !screenCaptureKitAvailable && (
-                                <div style={{ fontSize: '0.75rem', color: 'var(--warning-strong)', backgroundColor: 'rgba(253,203,110,0.15)', padding: '6px 10px', borderRadius: '10px', border: '1px solid rgba(253,203,110,0.35)' }}>
-                                    ⚠️ Voice Isolation недоступен — транскрипция будет в моно режиме
-                                </div>
-                            )}
-
-                            {/* Кнопка выбора модели */}
-                            <button
-                                onClick={() => setShowModelManager(true)}
-                                disabled={settingsLocked}
-                                style={{ padding: '0.4rem 0.7rem', backgroundColor: 'var(--surface-strong)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '10px', cursor: settingsLocked ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                            >
-                                <span>🤖</span>
-                                <span>{models.find(m => m.id === activeModelId)?.name || 'Выбрать модель'}</span>
-                                <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>▼</span>
-                            </button>
-
-                            {/* Эхоподавление (только если Voice Isolation выключен) */}
-                            {captureSystem && !useVoiceIsolation && (
-                                <div data-chip style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', padding: '0.35rem 0.75rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-strong)' }}>
-                                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Echo:</span>
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="100"
-                                        value={echoCancel * 100}
-                                        disabled={settingsLocked}
-                                        onChange={e => setEchoCancel(Number(e.target.value) / 100)}
-                                        style={{ width: '90px', accentColor: 'var(--primary)' }}
-                                        title={`Эхоподавление: ${Math.round(echoCancel * 100)}%`}
-                                    />
-                                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', minWidth: '32px' }}>
-                                        {Math.round(echoCancel * 100)}%
-                                    </span>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Ollama Settings for Summary */}
-                        <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px dashed var(--border)', display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap', opacity: settingsLocked ? 0.55 : 1, pointerEvents: settingsLocked ? 'none' : 'auto' }}>
-                            <span style={{ fontSize: '0.9rem', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>📋 Summary (Ollama)</span>
-
-                            {/* Выбор модели из списка */}
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Модель:</span>
-                                <select
-                                    value={ollamaModel}
-                                    disabled={settingsLocked}
-                                    onChange={e => setOllamaModel(e.target.value)}
-                                    onFocus={loadOllamaModels}
-                                    style={{ padding: '0.35rem 0.6rem', backgroundColor: 'var(--surface)', color: 'var(--text-primary)', border: '1px solid var(--border)', borderRadius: '8px', minWidth: '180px', fontSize: '0.9rem', cursor: 'pointer' }}
-                                    title="Выберите модель Ollama для генерации summary"
-                                >
-                                    {ollamaModelsLoading ? (
-                                        <option value="">Загрузка...</option>
-                                    ) : ollamaModels.length === 0 ? (
-                                        <option value={ollamaModel}>{ollamaModel}</option>
-                                    ) : (
-                                        <>
-                                            {ollamaModels.map(m => (
-                                                <option key={m.name} value={m.name}>
-                                                    {m.isCloud ? '☁️ ' : '💻 '}
-                                                    {m.name}
-                                                    {m.parameters ? ` (${m.parameters})` : ''}
-                                                </option>
-                                            ))}
-                                        </>
-                                    )}
-                                </select>
-                                <button
-                                    onClick={loadOllamaModels}
-                                    disabled={ollamaModelsLoading || settingsLocked}
-                                    style={{ padding: '0.35rem 0.55rem', backgroundColor: 'var(--surface-strong)', color: 'var(--text-muted)', border: '1px solid var(--border)', borderRadius: '8px', cursor: ollamaModelsLoading ? 'wait' : 'pointer', fontSize: '0.85rem' }}
-                                    title="Обновить список моделей"
-                                >
-                                    {ollamaModelsLoading ? '⏳' : '🔄'}
-                                </button>
-                            </div>
-
-                            {/* Ошибка Ollama */}
-                            {ollamaError && (
-                                <span style={{ fontSize: '0.8rem', color: 'var(--danger)', backgroundColor: 'rgba(231, 76, 60, 0.14)', padding: '4px 8px', borderRadius: '8px', border: '1px solid rgba(231, 76, 60, 0.28)' }}>
-                                    ⚠️ {ollamaError}
-                                </span>
-                            )}
-
-                            <a
-                                href="https://ollama.ai"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                style={{ fontSize: '0.8rem', color: 'var(--primary)', textDecoration: 'none', fontWeight: 600 }}
-                            >
-                                Установить Ollama →
-                            </a>
-                        </div>
-                    </div>
-                )}
-
-                {/* Audio Level Indicators */}
-                <div data-surface style={{ padding: '0.6rem 1.5rem', backgroundColor: 'var(--surface)', borderBottom: '1px solid var(--border)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
-                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', minWidth: '70px' }}>🎤 Mic</span>
-                        <div style={{ flex: 1, height: '10px', backgroundColor: 'var(--surface-strong)', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--border)' }}>
-                            <div style={{ width: `${micLevel}%`, height: '100%', background: 'linear-gradient(90deg, var(--success), #55efc4)', transition: 'width 0.05s' }}></div>
-                        </div>
-                    </div>
-                    {captureSystem && (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', minWidth: '70px' }}>🔊 System</span>
-                            <div style={{ flex: 1, height: '10px', backgroundColor: 'var(--surface-strong)', borderRadius: '6px', overflow: 'hidden', border: '1px solid var(--border)' }}>
-                                <div style={{ width: `${systemLevel}%`, height: '100%', background: 'linear-gradient(90deg, #0984e3, #74b9ff)', transition: 'width 0.05s' }}></div>
-                            </div>
-                        </div>
-                    )}
-                </div>
+                {/* Settings Modal */}
+                <SettingsModal
+                    isOpen={showSettings}
+                    onClose={() => setShowSettings(false)}
+                    devices={devices}
+                    micDevice={micDevice}
+                    setMicDevice={setMicDevice}
+                    captureSystem={captureSystem}
+                    setCaptureSystem={setCaptureSystem}
+                    screenCaptureKitAvailable={screenCaptureKitAvailable}
+                    useVoiceIsolation={useVoiceIsolation}
+                    setUseVoiceIsolation={setUseVoiceIsolation}
+                    echoCancel={echoCancel}
+                    setEchoCancel={setEchoCancel}
+                    language={language}
+                    setLanguage={setLanguage}
+                    theme={theme}
+                    setTheme={setTheme}
+                    ollamaModel={ollamaModel}
+                    setOllamaModel={setOllamaModel}
+                    ollamaModels={ollamaModels}
+                    ollamaModelsLoading={ollamaModelsLoading}
+                    ollamaError={ollamaError}
+                    loadOllamaModels={loadOllamaModels}
+                    onShowModelManager={() => setShowModelManager(true)}
+                    activeModelId={activeModelId}
+                    models={models}
+                />
 
                 {/* Transcription Area */}
                 <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                     {/* Sticky Header: Session info + Tabs */}
                     {(selectedSession || isRecording) && (
-                        <div style={{ 
+                        <div style={{
                             flexShrink: 0,
                             backgroundColor: 'var(--app-bg)',
                             borderBottom: '1px solid var(--border)',
                             padding: '0 1.5rem'
                         }}>
-                    {selectedSession && !isRecording && (
-                        <div style={{ 
-                            marginBottom: '1rem', 
-                            padding: '0.9rem', 
-                            backgroundColor: 'var(--surface)', 
-                            borderRadius: '12px', 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: '1rem',
-                            border: '1px solid var(--border)'
-                        }}>
-                            <span style={{ color: 'var(--text-muted)' }}>📄</span>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                                <span style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '1rem' }}>{selectedSession.title || 'Запись'}</span>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-                                    <span>{formatDate(selectedSession.startTime)}</span>
-                                    <span style={{ color: 'var(--text-muted)' }}>•</span>
-                                    <span>{formatDuration(selectedSession.totalDuration / 1000)}</span>
-                                </div>
-                            </div>
-                            
-                            {/* Индикатор режима стерео/моно */}
-                            {selectedSession.chunks.length > 0 && selectedSession.chunks[0].isStereo && (
-                                <>
-                                    <span style={{ color: 'var(--text-muted)' }}>•</span>
-                                    <span style={{ 
-                                        fontSize: '0.7rem', 
-                                        color: 'var(--success)', 
-                                        backgroundColor: 'rgba(0, 184, 148, 0.12)', 
-                                        padding: '2px 6px', 
-                                        borderRadius: '999px' 
-                                    }}>
-                                        Стерео (раздельные каналы)
-                                    </span>
-                                </>
-                            )}
-                            
-                            {/* Минималистичные кнопки-иконки */}
-                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                                {/* Кнопка воспроизведения */}
-                                <button 
-                                    onClick={() => playFullRecording(selectedSession.id)} 
-                                    title={playingAudio?.includes(selectedSession.id) ? 'Остановить' : 'Слушать запись'}
-                                    style={{ 
-                                        width: '32px',
-                                        height: '32px',
-                                        padding: 0,
-                                        backgroundColor: 'transparent',
-                                        color: playingAudio?.includes(selectedSession.id) ? '#f44336' : '#888',
-                                        border: '1px solid #333',
-                                        borderRadius: '6px',
-                                        cursor: 'pointer',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        transition: 'all 0.2s ease'
-                                    }}
-                                    onMouseEnter={e => { e.currentTarget.style.borderColor = '#555'; e.currentTarget.style.color = playingAudio?.includes(selectedSession.id) ? '#f44336' : '#fff'; }}
-                                    onMouseLeave={e => { e.currentTarget.style.borderColor = '#333'; e.currentTarget.style.color = playingAudio?.includes(selectedSession.id) ? '#f44336' : '#888'; }}
-                                >
-                                    {playingAudio?.includes(selectedSession.id) ? (
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                            <rect x="6" y="6" width="12" height="12" rx="1"/>
-                                        </svg>
-                                    ) : (
-                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                                            <path d="M8 5v14l11-7z"/>
-                                        </svg>
-                                    )}
-                                </button>
-                                
-                                {/* Кнопка экспорта */}
-                                <div style={{ position: 'relative' }} data-share-menu>
-                                    <button 
-                                        onClick={() => setShowShareMenu(!showShareMenu)} 
-                                        title="Экспорт"
-                                        style={{ 
-                                            width: '32px',
-                                            height: '32px',
-                                            padding: 0,
-                                            backgroundColor: copySuccess ? 'rgba(76, 175, 80, 0.2)' : 'transparent',
-                                            color: copySuccess ? '#4caf50' : '#888',
-                                            border: '1px solid',
-                                            borderColor: copySuccess ? '#4caf50' : '#333',
-                                            borderRadius: '6px',
-                                            cursor: 'pointer',
+                            {selectedSession && !isRecording && (
+                                <div style={{
+                                    marginBottom: '1rem',
+                                    padding: '1rem 1.25rem',
+                                    background: 'linear-gradient(135deg, rgba(108, 92, 231, 0.08) 0%, rgba(162, 155, 254, 0.04) 100%)',
+                                    borderRadius: '16px',
+                                    border: '1px solid rgba(108, 92, 231, 0.2)'
+                                }}>
+                                    {/* Main row: Play button, Title, Action buttons */}
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
+                                        {/* Big Play Button */}
+                                        <button
+                                            onClick={() => playFullRecording(selectedSession.id)}
+                                            title={playingAudio?.includes(selectedSession.id) ? 'Остановить' : 'Слушать запись'}
+                                            style={{
+                                                width: '56px',
+                                                height: '56px',
+                                                padding: 0,
+                                                background: playingAudio?.includes(selectedSession.id)
+                                                    ? 'linear-gradient(135deg, #f44336, #e91e63)'
+                                                    : 'linear-gradient(135deg, #6c5ce7, #a29bfe)',
+                                                color: '#fff',
+                                                border: 'none',
+                                                borderRadius: '50%',
+                                                cursor: 'pointer',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                boxShadow: playingAudio?.includes(selectedSession.id)
+                                                    ? '0 4px 20px rgba(244, 67, 54, 0.4)'
+                                                    : '0 4px 20px rgba(108, 92, 231, 0.4)',
+                                                transition: 'all 0.3s ease',
+                                                transform: 'scale(1)',
+                                                flexShrink: 0
+                                            }}
+                                            onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.08)'; }}
+                                            onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
+                                        >
+                                            {playingAudio?.includes(selectedSession.id) ? (
+                                                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                                                    <rect x="6" y="5" width="4" height="14" rx="1" />
+                                                    <rect x="14" y="5" width="4" height="14" rx="1" />
+                                                </svg>
+                                            ) : (
+                                                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                                                    <path d="M8 5v14l11-7z" />
+                                                </svg>
+                                            )}
+                                        </button>
+
+                                        {/* Title and Info */}
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                            <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '1.1rem', marginBottom: '0.2rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                {selectedSession.title || 'Запись'}
+                                            </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-muted)', fontSize: '0.8rem', flexWrap: 'wrap' }}>
+                                                <span>{formatDate(selectedSession.startTime)}</span>
+                                                <span>•</span>
+                                                <span>{formatDuration(selectedSession.totalDuration / 1000000000)}</span>
+                                                {selectedSession.chunks.length > 0 && selectedSession.chunks[0].isStereo && (
+                                                    <>
+                                                        <span>•</span>
+                                                        <span style={{
+                                                            fontSize: '0.7rem',
+                                                            color: 'var(--success)',
+                                                            backgroundColor: 'rgba(0, 184, 148, 0.12)',
+                                                            padding: '2px 6px',
+                                                            borderRadius: '999px'
+                                                        }}>
+                                                            Стерео
+                                                        </span>
+                                                    </>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {/* Action Buttons - Right Side */}
+                                        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexShrink: 0 }}>
+                                            {/* Export Button */}
+                                            <div style={{ position: 'relative' }} data-share-menu>
+                                                <button
+                                                    onClick={() => setShowShareMenu(!showShareMenu)}
+                                                    title="Экспорт"
+                                                    style={{
+                                                        width: '36px',
+                                                        height: '36px',
+                                                        padding: 0,
+                                                        backgroundColor: copySuccess ? 'rgba(76, 175, 80, 0.2)' : 'var(--surface-strong)',
+                                                        color: copySuccess ? '#4caf50' : 'var(--text-muted)',
+                                                        border: '1px solid var(--border)',
+                                                        borderRadius: '8px',
+                                                        cursor: 'pointer',
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        justifyContent: 'center',
+                                                        transition: 'all 0.2s ease'
+                                                    }}
+                                                >
+                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                        <path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8M16 6l-4-4-4 4M12 2v13" />
+                                                    </svg>
+                                                </button>
+                                                {showShareMenu && (
+                                                    <div style={{
+                                                        position: 'absolute',
+                                                        top: '100%',
+                                                        right: 0,
+                                                        marginTop: '4px',
+                                                        backgroundColor: 'var(--surface)',
+                                                        border: '1px solid var(--border)',
+                                                        borderRadius: '8px',
+                                                        boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+                                                        zIndex: 100,
+                                                        minWidth: '160px',
+                                                        overflow: 'hidden'
+                                                    }}>
+                                                        <button onClick={handleCopyToClipboard} style={{ width: '100%', padding: '0.6rem 1rem', background: 'none', border: 'none', color: 'var(--text-primary)', textAlign: 'left', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                                            📋 Копировать текст
+                                                        </button>
+                                                        <button onClick={handleDownloadFile} style={{ width: '100%', padding: '0.6rem 1rem', background: 'none', border: 'none', color: 'var(--text-primary)', textAlign: 'left', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                                            📄 Скачать .txt
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            {/* Retranscribe Button */}
+                                            <button
+                                                onClick={handleFullRetranscribe}
+                                                disabled={isFullTranscribing}
+                                                title="Распознать заново"
+                                                style={{
+                                                    width: '36px',
+                                                    height: '36px',
+                                                    padding: 0,
+                                                    backgroundColor: isFullTranscribing ? 'rgba(255, 152, 0, 0.2)' : 'var(--surface-strong)',
+                                                    color: isFullTranscribing ? '#ff9800' : 'var(--text-muted)',
+                                                    border: '1px solid var(--border)',
+                                                    borderRadius: '8px',
+                                                    cursor: isFullTranscribing ? 'wait' : 'pointer',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    transition: 'all 0.2s ease',
+                                                    animation: isFullTranscribing ? 'spin 1s linear infinite' : 'none'
+                                                }}
+                                            >
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                    <path d="M23 4v6h-6" />
+                                                    <path d="M1 20v-6h6" />
+                                                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                                                </svg>
+                                            </button>
+
+                                            {/* AI Improve Button */}
+                                            <button
+                                                onClick={handleImproveTranscription}
+                                                disabled={isImproving || isFullTranscribing || allDialogue.length === 0}
+                                                title="Улучшить с AI"
+                                                style={{
+                                                    width: '36px',
+                                                    height: '36px',
+                                                    padding: 0,
+                                                    backgroundColor: isImproving ? 'rgba(156, 39, 176, 0.2)' : 'var(--surface-strong)',
+                                                    color: isImproving ? '#9c27b0' : (allDialogue.length === 0 ? 'var(--text-muted)' : 'var(--text-muted)'),
+                                                    border: '1px solid var(--border)',
+                                                    borderRadius: '8px',
+                                                    cursor: isImproving || allDialogue.length === 0 ? 'not-allowed' : 'pointer',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    transition: 'all 0.2s ease',
+                                                    animation: isImproving ? 'pulse 1.5s ease-in-out infinite' : 'none',
+                                                    opacity: allDialogue.length === 0 ? 0.5 : 1
+                                                }}
+                                            >
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                    <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                                                    <path d="M2 17l10 5 10-5" />
+                                                    <path d="M2 12l10 5 10-5" />
+                                                </svg>
+                                            </button>
+
+                                            {/* Delete Button */}
+                                            <button
+                                                onClick={() => setShowDeleteConfirm(true)}
+                                                title="Удалить запись"
+                                                style={{
+                                                    width: '36px',
+                                                    height: '36px',
+                                                    padding: 0,
+                                                    backgroundColor: 'var(--surface-strong)',
+                                                    color: 'var(--text-muted)',
+                                                    border: '1px solid var(--border)',
+                                                    borderRadius: '8px',
+                                                    cursor: 'pointer',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    transition: 'all 0.2s ease'
+                                                }}
+                                            >
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                    <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+                                                </svg>
+                                            </button>
+
+                                            {/* Close Button */}
+                                            <button
+                                                onClick={() => { setSelectedSession(null); setShowShareMenu(false); setActiveTab('dialogue'); }}
+                                                title="Закрыть"
+                                                style={{
+                                                    width: '36px',
+                                                    height: '36px',
+                                                    padding: 0,
+                                                    backgroundColor: 'var(--surface-strong)',
+                                                    color: 'var(--text-muted)',
+                                                    border: '1px solid var(--border)',
+                                                    borderRadius: '8px',
+                                                    cursor: 'pointer',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    transition: 'all 0.2s ease'
+                                                }}
+                                            >
+                                                ✕
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Delete Confirmation Modal */}
+                                    {showDeleteConfirm && (
+                                        <div style={{
+                                            position: 'fixed',
+                                            inset: 0,
+                                            backgroundColor: 'rgba(0, 0, 0, 0.6)',
+                                            backdropFilter: 'blur(4px)',
                                             display: 'flex',
                                             alignItems: 'center',
                                             justifyContent: 'center',
-                                            transition: 'all 0.2s ease'
-                                        }}
-                                        onMouseEnter={e => { if (!copySuccess) { e.currentTarget.style.borderColor = '#555'; e.currentTarget.style.color = '#fff'; }}}
-                                        onMouseLeave={e => { if (!copySuccess) { e.currentTarget.style.borderColor = '#333'; e.currentTarget.style.color = '#888'; }}}
-                                    >
-                                        {copySuccess ? (
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                                <polyline points="20 6 9 17 4 12"/>
-                                            </svg>
-                                        ) : (
-                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
-                                                <polyline points="16 6 12 2 8 6"/>
-                                                <line x1="12" y1="2" x2="12" y2="15"/>
-                                            </svg>
-                                        )}
-                                    </button>
-                                    
-                                        {showShareMenu && (
+                                            zIndex: 1000
+                                        }}>
                                             <div style={{
-                                                position: 'absolute',
-                                                top: '100%',
-                                                left: '50%',
-                                                transform: 'translateX(-50%)',
-                                                marginTop: '0.5rem',
                                                 backgroundColor: 'var(--surface)',
                                                 border: '1px solid var(--border)',
-                                                borderRadius: '8px',
-                                                overflow: 'hidden',
-                                                zIndex: 100,
-                                                minWidth: '160px',
-                                                boxShadow: '0 4px 16px rgba(0,0,0,0.4)'
-                                        }}>
-                                            <button
-                                                onClick={handleCopyToClipboard}
-                                                style={{
-                                                    width: '100%',
-                                                    padding: '0.6rem 0.8rem',
-                                                    backgroundColor: 'transparent',
-                                                    border: 'none',
-                                                    color: 'var(--text-primary)',
-                                                    cursor: 'pointer',
-                                                    textAlign: 'left',
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '0.5rem',
-                                                    fontSize: '0.85rem'
-                                                }}
-                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = 'var(--surface-strong)'}
-                                                onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
-                                            >
-                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                                borderRadius: '12px',
+                                                padding: '1.5rem',
+                                                maxWidth: '400px',
+                                                width: '90%',
+                                                boxShadow: '0 20px 60px rgba(0,0,0,0.4)'
+                                            }}>
+                                                <h3 style={{ margin: '0 0 1rem', color: 'var(--text-primary)', fontSize: '1.1rem' }}>
+                                                    Удалить запись?
+                                                </h3>
+                                                <p style={{ margin: '0 0 1.5rem', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                                                    Запись "{selectedSession?.title || 'Без названия'}" будет удалена безвозвратно.
+                                                </p>
+                                                <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+                                                    <button
+                                                        onClick={() => setShowDeleteConfirm(false)}
+                                                        style={{
+                                                            padding: '0.6rem 1.2rem',
+                                                            backgroundColor: 'var(--surface-strong)',
+                                                            color: 'var(--text-primary)',
+                                                            border: '1px solid var(--border)',
+                                                            borderRadius: '8px',
+                                                            cursor: 'pointer',
+                                                            fontSize: '0.9rem'
+                                                        }}
+                                                    >
+                                                        Отмена
+                                                    </button>
+                                                    <button
+                                                        onClick={handleDeleteSession}
+                                                        style={{
+                                                            padding: '0.6rem 1.2rem',
+                                                            backgroundColor: '#dc2626',
+                                                            color: 'white',
+                                                            border: 'none',
+                                                            borderRadius: '8px',
+                                                            cursor: 'pointer',
+                                                            fontSize: '0.9rem'
+                                                        }}
+                                                    >
+                                                        Удалить
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Waveform Display */}
+                                    <WaveformDisplay
+                                        currentTime={playbackTime}
+                                        playbackOffset={playbackOffset}
+                                        totalDuration={timelineDuration}
+                                        isPlaying={!!playingAudio?.includes(selectedSession.id)}
+                                        waveformData={waveformData}
+                                        loading={spectrogramStatus === 'loading'}
+                                        error={spectrogramStatus === 'error' ? (spectrogramError || 'Не удалось загрузить аудио') : null}
+                                        channelLabels={['Mic', 'Sys']}
+                                        onSeek={(absoluteTime) => {
+                                            const el = audioRef.current;
+                                            if (!el) return;
+
+                                            const duration = el.duration || playbackDuration || 0;
+                                            const relative = absoluteTime - playbackOffsetRef.current;
+                                            const needsFullPlayback = relative < 0 || relative > duration;
+
+                                            if (needsFullPlayback && selectedSession) {
+                                                const applySeek = () => {
+                                                    if (audioRef.current) {
+                                                        const safeTime = Math.max(0, Math.min(audioRef.current.duration || 0, absoluteTime));
+                                                        audioRef.current.currentTime = safeTime;
+                                                        setPlaybackTime(safeTime);
+                                                    }
+                                                    audioRef.current?.removeEventListener('loadedmetadata', applySeek);
+                                                };
+
+                                                audioRef.current?.addEventListener('loadedmetadata', applySeek);
+                                                playFullRecording(selectedSession.id);
+                                                return;
+                                            }
+
+                                            const clamped = Math.max(0, Math.min(duration, relative));
+                                            el.currentTime = clamped;
+                                            setPlaybackTime(clamped);
+                                        }}
+                                    />
+                                </div>
+                            )}
+
+                            {/* Прогресс-бар полной ретранскрипции */}
+                            {isFullTranscribing && (
+                                <div style={{
+                                    marginBottom: '1rem',
+                                    padding: '0.75rem',
+                                    backgroundColor: '#1a2a3e',
+                                    borderRadius: '6px',
+                                    border: '1px solid #2196f3'
+                                }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+                                        <span style={{ animation: 'pulse 1s infinite' }}>🔄</span>
+                                        <span style={{ color: '#2196f3', fontWeight: 'bold' }}>Полная ретранскрипция</span>
+                                        <span style={{ color: '#888', fontSize: '0.85rem' }}>
+                                            {Math.round(fullTranscriptionProgress * 100)}%
+                                        </span>
+                                        <div style={{ flex: 1 }}></div>
+                                        <button
+                                            onClick={handleCancelFullTranscription}
+                                            title={isCancellingTranscription ? "Отмена..." : "Отменить ретранскрипцию"}
+                                            disabled={isCancellingTranscription}
+                                            style={{
+                                                padding: '0.25rem 0.5rem',
+                                                backgroundColor: isCancellingTranscription ? 'rgba(244, 67, 54, 0.1)' : 'transparent',
+                                                color: isCancellingTranscription ? '#888' : '#f44336',
+                                                border: '1px solid',
+                                                borderColor: isCancellingTranscription ? '#666' : '#f44336',
+                                                borderRadius: '4px',
+                                                cursor: isCancellingTranscription ? 'wait' : 'pointer',
+                                                fontSize: '0.75rem',
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '0.25rem',
+                                                opacity: isCancellingTranscription ? 0.7 : 1
+                                            }}
+                                        >
+                                            {isCancellingTranscription ? (
+                                                <div style={{
+                                                    width: '12px',
+                                                    height: '12px',
+                                                    border: '2px solid #888',
+                                                    borderTopColor: 'transparent',
+                                                    borderRadius: '50%',
+                                                    animation: 'spin 1s linear infinite'
+                                                }}></div>
+                                            ) : (
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                    <line x1="18" y1="6" x2="6" y2="18" />
+                                                    <line x1="6" y1="6" x2="18" y2="18" />
                                                 </svg>
-                                                Копировать
-                                            </button>
-                                            <button
-                                                onClick={handleDownloadFile}
-                                                style={{
-                                                    width: '100%',
-                                                    padding: '0.6rem 0.8rem',
-                                                    backgroundColor: 'transparent',
-                                                    border: 'none',
-                                                    borderTop: '1px solid var(--border)',
-                                                    color: 'var(--text-primary)',
-                                                    cursor: 'pointer',
-                                                    textAlign: 'left',
-                                                    display: 'flex',
-                                                    alignItems: 'center',
-                                                    gap: '0.5rem',
-                                                    fontSize: '0.85rem'
-                                                }}
-                                                onMouseEnter={e => e.currentTarget.style.backgroundColor = 'var(--surface-strong)'}
-                                                onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
-                                            >
-                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                                    <polyline points="7 10 12 15 17 10"/>
-                                                    <line x1="12" y1="15" x2="12" y2="3"/>
-                                                </svg>
-                                                Скачать .txt
-                                            </button>
+                                            )}
+                                            {isCancellingTranscription ? 'Отмена...' : 'Отмена'}
+                                        </button>
+                                    </div>
+                                    <div style={{
+                                        height: '6px',
+                                        backgroundColor: 'var(--surface-strong)',
+                                        borderRadius: '3px',
+                                        overflow: 'hidden',
+                                        marginBottom: '0.3rem'
+                                    }}>
+                                        <div style={{
+                                            width: `${fullTranscriptionProgress * 100}%`,
+                                            height: '100%',
+                                            backgroundColor: '#2196f3',
+                                            transition: 'width 0.3s ease'
+                                        }}></div>
+                                    </div>
+                                    {fullTranscriptionStatus && (
+                                        <div style={{ fontSize: '0.8rem', color: '#888' }}>
+                                            {fullTranscriptionStatus}
                                         </div>
                                     )}
                                 </div>
-                                
-                                {/* Кнопка полной ретранскрипции */}
-                                <button 
-                                    onClick={handleFullRetranscribe}
-                                    disabled={isFullTranscribing}
-                                    title="Распознать весь файл заново (более точно)"
-                                    style={{ 
-                                        width: '32px',
-                                        height: '32px',
-                                        padding: 0,
-                                        backgroundColor: isFullTranscribing ? 'rgba(255, 152, 0, 0.2)' : 'transparent',
-                                        color: isFullTranscribing ? '#ff9800' : '#888',
-                                        border: '1px solid',
-                                        borderColor: isFullTranscribing ? '#ff9800' : '#333',
-                                        borderRadius: '6px',
-                                        cursor: isFullTranscribing ? 'wait' : 'pointer',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        transition: 'all 0.2s ease',
-                                        animation: isFullTranscribing ? 'spin 1s linear infinite' : 'none'
-                                    }}
-                                    onMouseEnter={e => { if (!isFullTranscribing) { e.currentTarget.style.borderColor = '#555'; e.currentTarget.style.color = '#fff'; }}}
-                                    onMouseLeave={e => { if (!isFullTranscribing) { e.currentTarget.style.borderColor = '#333'; e.currentTarget.style.color = '#888'; }}}
-                                >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                        <path d="M23 4v6h-6"/>
-                                        <path d="M1 20v-6h6"/>
-                                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                                    </svg>
-                                </button>
+                            )}
 
-                                {/* Кнопка улучшения с AI */}
-                                <button 
-                                    onClick={handleImproveTranscription}
-                                    disabled={isImproving || isFullTranscribing || allDialogue.length === 0}
-                                    title="Улучшить транскрипцию с помощью AI (исправить ошибки, пунктуацию)"
-                                    style={{ 
-                                        width: '32px',
-                                        height: '32px',
-                                        padding: 0,
-                                        backgroundColor: isImproving ? 'rgba(156, 39, 176, 0.2)' : 'transparent',
-                                        color: isImproving ? '#9c27b0' : (allDialogue.length === 0 ? '#444' : '#888'),
-                                        border: '1px solid',
-                                        borderColor: isImproving ? '#9c27b0' : '#333',
-                                        borderRadius: '6px',
-                                        cursor: isImproving || allDialogue.length === 0 ? 'not-allowed' : 'pointer',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        transition: 'all 0.2s ease',
-                                        animation: isImproving ? 'pulse 1.5s ease-in-out infinite' : 'none'
-                                    }}
-                                    onMouseEnter={e => { if (!isImproving && allDialogue.length > 0) { e.currentTarget.style.borderColor = '#9c27b0'; e.currentTarget.style.color = '#9c27b0'; }}}
-                                    onMouseLeave={e => { if (!isImproving && allDialogue.length > 0) { e.currentTarget.style.borderColor = '#333'; e.currentTarget.style.color = '#888'; }}}
-                                >
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-                                        <path d="M2 17l10 5 10-5"/>
-                                        <path d="M2 12l10 5 10-5"/>
-                                    </svg>
-                                </button>
-                            </div>
-                            
-                            <div style={{ flex: 1 }}></div>
-                            
-                            <button 
-                                onClick={() => { setSelectedSession(null); setShowShareMenu(false); setActiveTab('dialogue'); }} 
-                                style={{ padding: '0.3rem 0.6rem', backgroundColor: '#333', border: 'none', borderRadius: '4px', color: '#888', cursor: 'pointer' }}
-                            >
-                                ✕
-                            </button>
-                        </div>
-                    )}
-
-                    {/* Прогресс-бар полной ретранскрипции */}
-                    {isFullTranscribing && (
-                        <div style={{ 
-                            marginBottom: '1rem', 
-                            padding: '0.75rem', 
-                            backgroundColor: '#1a2a3e', 
-                            borderRadius: '6px',
-                            border: '1px solid #2196f3'
-                        }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                                <span style={{ animation: 'pulse 1s infinite' }}>🔄</span>
-                                <span style={{ color: '#2196f3', fontWeight: 'bold' }}>Полная ретранскрипция</span>
-                                <span style={{ color: '#888', fontSize: '0.85rem' }}>
-                                    {Math.round(fullTranscriptionProgress * 100)}%
-                                </span>
-                                <div style={{ flex: 1 }}></div>
-                                <button
-                                    onClick={handleCancelFullTranscription}
-                                    title={isCancellingTranscription ? "Отмена..." : "Отменить ретранскрипцию"}
-                                    disabled={isCancellingTranscription}
-                                    style={{
-                                        padding: '0.25rem 0.5rem',
-                                        backgroundColor: isCancellingTranscription ? 'rgba(244, 67, 54, 0.1)' : 'transparent',
-                                        color: isCancellingTranscription ? '#888' : '#f44336',
-                                        border: '1px solid',
-                                        borderColor: isCancellingTranscription ? '#666' : '#f44336',
-                                        borderRadius: '4px',
-                                        cursor: isCancellingTranscription ? 'wait' : 'pointer',
-                                        fontSize: '0.75rem',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: '0.25rem',
-                                        opacity: isCancellingTranscription ? 0.7 : 1
-                                    }}
-                                >
-                                    {isCancellingTranscription ? (
-                                        <div style={{ 
-                                            width: '12px', 
-                                            height: '12px', 
-                                            border: '2px solid #888',
-                                            borderTopColor: 'transparent',
-                                            borderRadius: '50%',
-                                            animation: 'spin 1s linear infinite'
-                                        }}></div>
-                                    ) : (
-                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                            <line x1="18" y1="6" x2="6" y2="18"/>
-                                            <line x1="6" y1="6" x2="18" y2="18"/>
-                                        </svg>
-                                    )}
-                                    {isCancellingTranscription ? 'Отмена...' : 'Отмена'}
-                                </button>
-                            </div>
-                            <div style={{ 
-                                height: '6px', 
-                                backgroundColor: 'var(--surface-strong)', 
-                                borderRadius: '3px', 
-                                overflow: 'hidden',
-                                marginBottom: '0.3rem'
-                            }}>
-                                <div style={{ 
-                                    width: `${fullTranscriptionProgress * 100}%`, 
-                                    height: '100%', 
-                                    backgroundColor: '#2196f3',
-                                    transition: 'width 0.3s ease'
-                                }}></div>
-                            </div>
-                            {fullTranscriptionStatus && (
-                                <div style={{ fontSize: '0.8rem', color: '#888' }}>
-                                    {fullTranscriptionStatus}
+                            {/* Ошибка полной ретранскрипции */}
+                            {fullTranscriptionError && !isFullTranscribing && (
+                                <div style={{
+                                    marginBottom: '1rem',
+                                    padding: '0.75rem',
+                                    backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                                    borderRadius: '6px',
+                                    border: '1px solid rgba(244, 67, 54, 0.3)',
+                                    color: '#f44336',
+                                    fontSize: '0.85rem'
+                                }}>
+                                    ❌ Ошибка: {fullTranscriptionError}
                                 </div>
                             )}
-                        </div>
-                    )}
 
-                    {/* Ошибка полной ретранскрипции */}
-                    {fullTranscriptionError && !isFullTranscribing && (
-                        <div style={{ 
-                            marginBottom: '1rem', 
-                            padding: '0.75rem', 
-                            backgroundColor: 'rgba(244, 67, 54, 0.1)', 
-                            borderRadius: '6px',
-                            border: '1px solid rgba(244, 67, 54, 0.3)',
-                            color: '#f44336',
-                            fontSize: '0.85rem'
-                        }}>
-                            ❌ Ошибка: {fullTranscriptionError}
-                        </div>
-                    )}
+                            {/* Индикатор AI улучшения */}
+                            {isImproving && (
+                                <div style={{
+                                    marginBottom: '1rem',
+                                    padding: '0.75rem',
+                                    backgroundColor: 'rgba(156, 39, 176, 0.1)',
+                                    borderRadius: '6px',
+                                    border: '1px solid #9c27b0',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.75rem'
+                                }}>
+                                    <div style={{
+                                        width: '20px',
+                                        height: '20px',
+                                        border: '2px solid #9c27b0',
+                                        borderTopColor: 'transparent',
+                                        borderRadius: '50%',
+                                        animation: 'spin 1s linear infinite'
+                                    }}></div>
+                                    <span style={{ color: '#9c27b0', fontSize: '0.9rem' }}>
+                                        Улучшение транскрипции с помощью AI...
+                                    </span>
+                                </div>
+                            )}
 
-                    {/* Индикатор AI улучшения */}
-                    {isImproving && (
-                        <div style={{ 
-                            marginBottom: '1rem', 
-                            padding: '0.75rem', 
-                            backgroundColor: 'rgba(156, 39, 176, 0.1)', 
-                            borderRadius: '6px',
-                            border: '1px solid #9c27b0',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.75rem'
-                        }}>
-                            <div style={{ 
-                                width: '20px', 
-                                height: '20px', 
-                                border: '2px solid #9c27b0',
-                                borderTopColor: 'transparent',
-                                borderRadius: '50%',
-                                animation: 'spin 1s linear infinite'
-                            }}></div>
-                            <span style={{ color: '#9c27b0', fontSize: '0.9rem' }}>
-                                Улучшение транскрипции с помощью AI...
-                            </span>
-                        </div>
-                    )}
+                            {/* Ошибка AI улучшения */}
+                            {improveError && !isImproving && (
+                                <div style={{
+                                    marginBottom: '1rem',
+                                    padding: '0.75rem',
+                                    backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                                    borderRadius: '6px',
+                                    border: '1px solid rgba(244, 67, 54, 0.3)',
+                                    color: '#f44336',
+                                    fontSize: '0.85rem'
+                                }}>
+                                    ❌ Ошибка AI: {improveError}
+                                </div>
+                            )}
 
-                    {/* Ошибка AI улучшения */}
-                    {improveError && !isImproving && (
-                        <div style={{ 
-                            marginBottom: '1rem', 
-                            padding: '0.75rem', 
-                            backgroundColor: 'rgba(244, 67, 54, 0.1)', 
-                            borderRadius: '6px',
-                            border: '1px solid rgba(244, 67, 54, 0.3)',
-                            color: '#f44336',
-                            fontSize: '0.85rem'
-                        }}>
-                            ❌ Ошибка AI: {improveError}
-                        </div>
-                    )}
-
-                    {/* Session Tabs - показываем только если есть сессия */}
-                    {displaySession && chunks.length > 0 && (
-                        <SessionTabs
-                            activeTab={activeTab}
-                            onTabChange={setActiveTab}
-                            hasSummary={!!displaySession.summary}
-                            isGeneratingSummary={isGeneratingSummary}
-                            isRecording={isRecording}
-                        />
-                    )}
+                            {/* Session Tabs - показываем только если есть сессия */}
+                            {displaySession && chunks.length > 0 && (
+                                <SessionTabs
+                                    activeTab={activeTab}
+                                    onTabChange={setActiveTab}
+                                    hasSummary={!!displaySession.summary}
+                                    isGeneratingSummary={isGeneratingSummary}
+                                    isRecording={isRecording}
+                                />
+                            )}
                         </div>
                     )}
 
                     {/* Scrollable Content Area */}
                     <div ref={transcriptionRef} style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto' }}>
-                    {chunks.length === 0 && !isRecording && !selectedSession ? (
-                        <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
-                            <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎙</div>
-                            <div>Нажмите «Запись» чтобы начать</div>
-                        </div>
-                    ) : chunks.length === 0 && isRecording ? (
-                        <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
-                            <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🔴</div>
-                            <div>Идёт запись... Транскрипция появится после остановки</div>
-                        </div>
-                    ) : (
-                        <>
-                            {/* Tab: Dialogue */}
-                            {activeTab === 'dialogue' && (
-                                <>
-                                    {/* Full dialogue with timestamps */}
-                                    {allDialogue.length > 0 ? (
-                                <div style={{ 
-                                    marginBottom: '1.5rem', 
-                                    padding: '1rem', 
-                                    backgroundColor: 'var(--surface)', 
-                                    borderRadius: '8px', 
-                                    lineHeight: '1.9',
-                                    fontSize: '0.95rem'
-                                }}>
-                                    <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
-                                    {allDialogue.map((seg, idx) => {
-                                        const isMic = seg.speaker === 'mic';
-                                        const totalMs = seg.start;
-                                        const mins = Math.floor(totalMs / 60000);
-                                        const secs = Math.floor((totalMs % 60000) / 1000);
-                                        const ms = Math.floor((totalMs % 1000) / 100); // десятые доли секунды
-                                        const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
-                                        
-                                        // Книжный формат: [00:05.4] Вы: Текст реплики
-                                        return (
-                                            <div key={idx} style={{ 
-                                                marginBottom: '0.5rem',
-                                                paddingLeft: '0.5rem',
-                                                borderLeft: isMic ? '3px solid #4caf50' : '3px solid #2196f3'
-                                            }}>
-                                                <span style={{ 
-                                                    color: 'var(--text-muted)', 
-                                                    fontSize: '0.8rem',
-                                                    fontFamily: 'monospace'
-                                                }}>
-                                                    [{timeStr}]
-                                                </span>
-                                                {' '}
-                                                <span style={{ 
-                                                    color: isMic ? '#4caf50' : '#2196f3',
-                                                    fontWeight: 'bold'
-                                                }}>
-                                                    {isMic ? 'Вы' : 'Собеседник'}:
-                                                </span>
-                                                {' '}
-                                                <span style={{ color: 'var(--text-primary)' }}>
-                                                    {seg.text}
-                                                </span>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            ) : (
-                                // Fallback: показываем чанки по отдельности
-                                <div style={{ 
-                                    marginBottom: '1.5rem', 
-                                    padding: '1rem', 
-                                    backgroundColor: 'var(--surface)', 
-                                    borderRadius: '8px', 
-                                    lineHeight: '1.8',
-                                    fontSize: '0.95rem'
-                                }}>
-                                    {chunks
-                                        .filter(c => c.status === 'completed')
-                                        .sort((a, b) => a.index - b.index)
-                                        .map((chunk) => {
-                                            // Если есть разделение на mic/sys
-                                            if (chunk.micText || chunk.sysText) {
-                                                return (
-                                                    <div key={chunk.id} style={{ marginBottom: '1rem' }}>
-                                                        {chunk.micText && (
-                                                            <div style={{ 
-                                                                marginBottom: '0.5rem',
-                                                                borderLeft: '3px solid #4caf50',
-                                                                paddingLeft: '0.75rem',
-                                                                backgroundColor: 'rgba(76, 175, 80, 0.05)',
-                                                                padding: '0.4rem 0.75rem',
-                                                                borderRadius: '0 4px 4px 0'
-                                                            }}>
-                                                                <span style={{ color: '#4caf50', fontWeight: 'bold', fontSize: '0.85rem' }}>Вы: </span>
-                                                                <span style={{ color: 'var(--text-primary)' }}>{chunk.micText}</span>
-                                                            </div>
-                                                        )}
-                                                        {chunk.sysText && (
-                                                            <div style={{ 
-                                                                borderLeft: '3px solid #2196f3',
-                                                                paddingLeft: '0.75rem',
-                                                                backgroundColor: 'rgba(33, 150, 243, 0.05)',
-                                                                padding: '0.4rem 0.75rem',
-                                                                borderRadius: '0 4px 4px 0'
-                                                            }}>
-                                                                <span style={{ color: '#2196f3', fontWeight: 'bold', fontSize: '0.85rem' }}>Собеседник: </span>
-                                                                <span style={{ color: 'var(--text-primary)' }}>{chunk.sysText}</span>
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                );
-                                            }
-                                            // Моно режим - просто текст
-                                            if (chunk.transcription) {
-                                                return (
-                                                    <div key={chunk.id} style={{ 
-                                                        marginBottom: '0.8rem',
-                                                        padding: '0.5rem 0.75rem',
-                                                        backgroundColor: 'rgba(255, 255, 255, 0.03)',
-                                                        borderRadius: '4px',
-                                                        color: '#ccc'
-                                                    }}>
-                                                        {chunk.transcription}
-                                                    </div>
-                                                );
-                                            }
-                                            return null;
-                                        })}
-                                    {chunks.filter(c => c.status === 'completed').length === 0 && (
-                                        <div style={{ color: '#666', textAlign: 'center', padding: '2rem' }}>
-                                            Транскрипция обрабатывается...
-                                        </div>
-                                    )}
-                                </div>
-                            )}
-                                </>
-                            )}
-
-                            {/* Tab: Chunks */}
-                            {activeTab === 'chunks' && (
-                            <div style={{ fontSize: '0.85rem' }}>
-                                <h4 style={{ margin: '0 0 0.75rem 0', color: '#888' }}>Чанки ({chunks.length})</h4>
-                                {chunks.map(chunk => {
-                                    // Аудио чанков извлекается через chunk API
-                                    const chunkAudioUrl = displaySession ? 
-                                        `http://localhost:8080/api/sessions/${displaySession.id}/chunk/${chunk.index}.mp3` : '';
-                                    const isPlaying = playingAudio === chunkAudioUrl;
-                                    const isHighlighted = highlightedChunkId === chunk.id;
-                                    const isTranscribing = transcribingChunkId === chunk.id || chunk.status === 'transcribing';
-                                    
-                                    return (
-                                        <div key={chunk.id} style={{ 
-                                            padding: '0.6rem 0.8rem', 
-                                            marginBottom: '0.4rem', 
-                                            backgroundColor: isTranscribing ? '#2a2a1a' : isHighlighted ? '#1a3a2a' : '#12121f', 
-                                            borderRadius: '4px',
-                                            borderLeft: `3px solid ${chunk.status === 'completed' ? '#4caf50' : chunk.status === 'failed' ? '#f44336' : '#ff9800'}`,
-                                            transition: 'background-color 0.3s ease',
-                                            animation: isTranscribing ? 'transcribing-pulse 1s ease-in-out infinite' : isHighlighted ? 'highlight-pulse 0.5s ease-in-out 2' : 'none'
-                                        }}>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-                                                <span style={{ color: '#888' }}>
-                                                    #{chunk.index} • {(chunk.duration / 1000000000).toFixed(1)}s • 
-                                                    <span style={{ 
-                                                        marginLeft: '0.3rem',
-                                                        color: chunk.status === 'completed' ? '#4caf50' : chunk.status === 'failed' ? '#f44336' : '#ff9800'
-                                                    }}>
-                                                        {chunk.status === 'completed' ? '✓' : chunk.status === 'failed' ? '✗' : '⏳'}
-                                                    </span>
-                                                </span>
-                                                <div style={{ display: 'flex', gap: '0.3rem' }}>
-                                                    {displaySession && (
-                                                        <button 
-                                                            onClick={() => playChunk(displaySession.id, chunk.index)}
-                                                            style={{ 
-                                                                padding: '0.15rem 0.4rem', 
-                                                                fontSize: '0.7rem',
-                                                                backgroundColor: isPlaying ? '#f44336' : '#2196f3',
-                                                                color: 'white',
-                                                                border: 'none',
-                                                                borderRadius: '3px',
-                                                                cursor: 'pointer'
-                                                            }}
-                                                        >
-                                                            {isPlaying ? '⏹' : '▶'}
-                                                        </button>
-                                                    )}
-                                                    {selectedSession && (chunk.status === 'completed' || chunk.status === 'transcribing' || chunk.status === 'failed') && (
-                                                        <button 
-                                                            onClick={() => handleRetranscribe(chunk.id)} 
-                                                            title="Повторить транскрипцию"
-                                                            style={{ padding: '0.15rem 0.4rem', fontSize: '0.7rem', backgroundColor: '#333', border: 'none', borderRadius: '3px', color: '#888', cursor: 'pointer' }}
-                                                        >
-                                                            🔄
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            </div>
-                                            {/* Диалог с таймстемпами - книжный формат */}
-                                            {chunk.dialogue && chunk.dialogue.length > 0 ? (
-                                                <div style={{ marginTop: '0.4rem', lineHeight: '1.7' }}>
-                                                    {chunk.dialogue.map((seg, idx) => {
-                                                        const isMic = seg.speaker === 'mic';
-                                                        const totalMs = seg.start;
-                                                        const mins = Math.floor(totalMs / 60000);
-                                                        const secs = Math.floor((totalMs % 60000) / 1000);
-                                                        const ms = Math.floor((totalMs % 1000) / 100);
-                                                        const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
-                                                        
-                                                        // Книжный формат: [00:05.4] Вы: Текст
-                                                        return (
-                                                            <div key={idx} style={{ 
-                                                                marginBottom: '0.3rem',
-                                                                paddingLeft: '0.4rem',
-                                                                borderLeft: isMic ? '2px solid #4caf50' : '2px solid #2196f3'
-                                                            }}>
-                                                                <span style={{ 
-                                                                    color: '#666', 
-                                                                    fontSize: '0.7rem',
-                                                                    fontFamily: 'monospace'
-                                                                }}>
-                                                                    [{timeStr}]
-                                                                </span>
-                                                                {' '}
-                                                                <span style={{ 
-                                                                    color: isMic ? '#4caf50' : '#2196f3',
-                                                                    fontSize: '0.8rem',
-                                                                    fontWeight: 'bold'
-                                                                }}>
-                                                                    {isMic ? 'Вы' : 'Собеседник'}:
-                                                                </span>
-                                                                {' '}
-                                                                <span style={{ color: '#ccc' }}>
-                                                                    {seg.text}
-                                                                </span>
-                                                            </div>
-                                                        );
-                                                    })}
-                                                </div>
-                                            ) : (chunk.micText || chunk.sysText) ? (
-                                                // Fallback: старый формат без сегментов
-                                                <div style={{ marginTop: '0.4rem', lineHeight: '1.5' }}>
-                                                    {chunk.micText && (
-                                                        <div style={{ color: '#4caf50', marginBottom: '0.3rem' }}>
-                                                            <span style={{ color: '#888', fontSize: '0.8rem' }}>Вы: </span>
-                                                            {chunk.micText}
-                                                        </div>
-                                                    )}
-                                                    {chunk.sysText && (
-                                                        <div style={{ color: '#2196f3' }}>
-                                                            <span style={{ color: '#888', fontSize: '0.8rem' }}>Собеседник: </span>
-                                                            {chunk.sysText}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            ) : chunk.transcription && (
-                                                <div style={{ marginTop: '0.4rem', color: '#ccc', lineHeight: '1.5' }}>{chunk.transcription}</div>
-                                            )}
-                                            {isTranscribing && (
-                                                <div style={{ marginTop: '0.4rem', color: '#ff9800', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                                    <span style={{ animation: 'pulse 1s infinite' }}>⏳</span> Распознаётся...
-                                                </div>
-                                            )}
-                                            {chunk.error && (
-                                                <div style={{ marginTop: '0.4rem', color: '#f44336', fontSize: '0.8rem' }}>Ошибка: {chunk.error}</div>
-                                            )}
-                                        </div>
-                                    );
-                                })}
+                        {chunks.length === 0 && !isRecording && !selectedSession ? (
+                            <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
+                                <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎙</div>
+                                <div>Нажмите «Запись» чтобы начать</div>
                             </div>
-                            )}
+                        ) : chunks.length === 0 && isRecording ? (
+                            <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
+                                <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🔴</div>
+                                <div>Идёт запись... Транскрипция появится после остановки</div>
+                            </div>
+                        ) : (
+                            <>
+                                {/* Tab: Dialogue */}
+                                {activeTab === 'dialogue' && (
+                                    <>
+                                        {/* Full dialogue with timestamps */}
+                                        {allDialogue.length > 0 ? (
+                                            <div style={{
+                                                marginBottom: '1.5rem',
+                                                padding: '1rem',
+                                                backgroundColor: 'var(--surface)',
+                                                borderRadius: '8px',
+                                                lineHeight: '1.9',
+                                                fontSize: '0.95rem'
+                                            }}>
+                                                <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
+                                                {allDialogue.map((seg, idx) => {
+                                                    const isMic = seg.speaker === 'mic';
+                                                    const totalMs = seg.start;
+                                                    const mins = Math.floor(totalMs / 60000);
+                                                    const secs = Math.floor((totalMs % 60000) / 1000);
+                                                    const ms = Math.floor((totalMs % 1000) / 100); // десятые доли секунды
+                                                    const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
 
-                            {/* Tab: Summary */}
-                            {activeTab === 'summary' && displaySession && (
-                                <SummaryView
-                                    summary={displaySession.summary || null}
-                                    isGenerating={isGeneratingSummary}
-                                    error={summaryError}
-                                    onGenerate={handleGenerateSummary}
-                                    hasTranscription={chunks.some(c => c.status === 'completed' && (c.transcription || c.micText || c.sysText || c.dialogue?.length))}
-                                    sessionDate={displaySession.startTime}
-                                />
-                            )}
-                        </>
-                    )}
+                                                    // Книжный формат: [00:05.4] Вы: Текст реплики
+                                                    return (
+                                                        <div key={idx} style={{
+                                                            marginBottom: '0.5rem',
+                                                            paddingLeft: '0.5rem',
+                                                            borderLeft: isMic ? '3px solid #4caf50' : '3px solid #2196f3'
+                                                        }}>
+                                                            <span style={{
+                                                                color: 'var(--text-muted)',
+                                                                fontSize: '0.8rem',
+                                                                fontFamily: 'monospace'
+                                                            }}>
+                                                                [{timeStr}]
+                                                            </span>
+                                                            {' '}
+                                                            <span style={{
+                                                                color: isMic ? '#4caf50' : '#2196f3',
+                                                                fontWeight: 'bold'
+                                                            }}>
+                                                                {isMic ? 'Вы' : 'Собеседник'}:
+                                                            </span>
+                                                            {' '}
+                                                            <span style={{ color: 'var(--text-primary)' }}>
+                                                                {seg.text}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        ) : (
+                                            // Fallback: показываем чанки по отдельности
+                                            <div style={{
+                                                marginBottom: '1.5rem',
+                                                padding: '1rem',
+                                                backgroundColor: 'var(--surface)',
+                                                borderRadius: '8px',
+                                                lineHeight: '1.8',
+                                                fontSize: '0.95rem'
+                                            }}>
+                                                {chunks
+                                                    .filter(c => c.status === 'completed')
+                                                    .sort((a, b) => a.index - b.index)
+                                                    .map((chunk) => {
+                                                        // Если есть разделение на mic/sys
+                                                        if (chunk.micText || chunk.sysText) {
+                                                            return (
+                                                                <div key={chunk.id} style={{ marginBottom: '1rem' }}>
+                                                                    {chunk.micText && (
+                                                                        <div style={{
+                                                                            marginBottom: '0.5rem',
+                                                                            borderLeft: '3px solid #4caf50',
+                                                                            paddingLeft: '0.75rem',
+                                                                            backgroundColor: 'rgba(76, 175, 80, 0.05)',
+                                                                            padding: '0.4rem 0.75rem',
+                                                                            borderRadius: '0 4px 4px 0'
+                                                                        }}>
+                                                                            <span style={{ color: '#4caf50', fontWeight: 'bold', fontSize: '0.85rem' }}>Вы: </span>
+                                                                            <span style={{ color: 'var(--text-primary)' }}>{chunk.micText}</span>
+                                                                        </div>
+                                                                    )}
+                                                                    {chunk.sysText && (
+                                                                        <div style={{
+                                                                            borderLeft: '3px solid #2196f3',
+                                                                            paddingLeft: '0.75rem',
+                                                                            backgroundColor: 'rgba(33, 150, 243, 0.05)',
+                                                                            padding: '0.4rem 0.75rem',
+                                                                            borderRadius: '0 4px 4px 0'
+                                                                        }}>
+                                                                            <span style={{ color: '#2196f3', fontWeight: 'bold', fontSize: '0.85rem' }}>Собеседник: </span>
+                                                                            <span style={{ color: 'var(--text-primary)' }}>{chunk.sysText}</span>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            );
+                                                        }
+                                                        // Моно режим - просто текст
+                                                        if (chunk.transcription) {
+                                                            return (
+                                                                <div key={chunk.id} style={{
+                                                                    marginBottom: '0.8rem',
+                                                                    padding: '0.5rem 0.75rem',
+                                                                    backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                                                                    borderRadius: '4px',
+                                                                    color: '#ccc'
+                                                                }}>
+                                                                    {chunk.transcription}
+                                                                </div>
+                                                            );
+                                                        }
+                                                        return null;
+                                                    })}
+                                                {chunks.filter(c => c.status === 'completed').length === 0 && (
+                                                    <div style={{ color: '#666', textAlign: 'center', padding: '2rem' }}>
+                                                        Транскрипция обрабатывается...
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+
+                                {/* Tab: Chunks */}
+                                {activeTab === 'chunks' && (
+                                    <div style={{ fontSize: '0.85rem' }}>
+                                        <h4 style={{ margin: '0 0 0.75rem 0', color: '#888' }}>Чанки ({chunks.length})</h4>
+                                        {chunks.map(chunk => {
+                                            // Аудио чанков извлекается через chunk API
+                                            const chunkAudioUrl = displaySession ?
+                                                `http://localhost:8080/api/sessions/${displaySession.id}/chunk/${chunk.index}.mp3` : '';
+                                            const isPlaying = playingAudio === chunkAudioUrl;
+                                            const isHighlighted = highlightedChunkId === chunk.id;
+                                            const isTranscribing = transcribingChunkId === chunk.id || chunk.status === 'transcribing';
+
+                                            return (
+                                                <div key={chunk.id} style={{
+                                                    padding: '0.6rem 0.8rem',
+                                                    marginBottom: '0.4rem',
+                                                    backgroundColor: isTranscribing ? '#2a2a1a' : isHighlighted ? '#1a3a2a' : '#12121f',
+                                                    borderRadius: '4px',
+                                                    borderLeft: `3px solid ${chunk.status === 'completed' ? '#4caf50' : chunk.status === 'failed' ? '#f44336' : '#ff9800'}`,
+                                                    transition: 'background-color 0.3s ease',
+                                                    animation: isTranscribing ? 'transcribing-pulse 1s ease-in-out infinite' : isHighlighted ? 'highlight-pulse 0.5s ease-in-out 2' : 'none'
+                                                }}>
+                                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                                                        <span style={{ color: '#888' }}>
+                                                            #{chunk.index} • {(chunk.duration / 1000000000).toFixed(1)}s •
+                                                            <span style={{
+                                                                marginLeft: '0.3rem',
+                                                                color: chunk.status === 'completed' ? '#4caf50' : chunk.status === 'failed' ? '#f44336' : '#ff9800'
+                                                            }}>
+                                                                {chunk.status === 'completed' ? '✓' : chunk.status === 'failed' ? '✗' : '⏳'}
+                                                            </span>
+                                                        </span>
+                                                        <div style={{ display: 'flex', gap: '0.3rem' }}>
+                                                            {displaySession && (
+                                                                <button
+                                                                    onClick={() => playChunk(displaySession.id, chunk.index)}
+                                                                    style={{
+                                                                        padding: '0.15rem 0.4rem',
+                                                                        fontSize: '0.7rem',
+                                                                        backgroundColor: isPlaying ? '#f44336' : '#2196f3',
+                                                                        color: 'white',
+                                                                        border: 'none',
+                                                                        borderRadius: '3px',
+                                                                        cursor: 'pointer'
+                                                                    }}
+                                                                >
+                                                                    {isPlaying ? '⏹' : '▶'}
+                                                                </button>
+                                                            )}
+                                                            {selectedSession && (chunk.status === 'completed' || chunk.status === 'transcribing' || chunk.status === 'failed') && (
+                                                                <button
+                                                                    onClick={() => handleRetranscribe(chunk.id)}
+                                                                    title="Повторить транскрипцию"
+                                                                    style={{ padding: '0.15rem 0.4rem', fontSize: '0.7rem', backgroundColor: '#333', border: 'none', borderRadius: '3px', color: '#888', cursor: 'pointer' }}
+                                                                >
+                                                                    🔄
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    {/* Диалог с таймстемпами - книжный формат */}
+                                                    {chunk.dialogue && chunk.dialogue.length > 0 ? (
+                                                        <div style={{ marginTop: '0.4rem', lineHeight: '1.7' }}>
+                                                            {chunk.dialogue.map((seg, idx) => {
+                                                                const isMic = seg.speaker === 'mic';
+                                                                const totalMs = seg.start;
+                                                                const mins = Math.floor(totalMs / 60000);
+                                                                const secs = Math.floor((totalMs % 60000) / 1000);
+                                                                const ms = Math.floor((totalMs % 1000) / 100);
+                                                                const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
+
+                                                                // Книжный формат: [00:05.4] Вы: Текст
+                                                                return (
+                                                                    <div key={idx} style={{
+                                                                        marginBottom: '0.3rem',
+                                                                        paddingLeft: '0.4rem',
+                                                                        borderLeft: isMic ? '2px solid #4caf50' : '2px solid #2196f3'
+                                                                    }}>
+                                                                        <span style={{
+                                                                            color: '#666',
+                                                                            fontSize: '0.7rem',
+                                                                            fontFamily: 'monospace'
+                                                                        }}>
+                                                                            [{timeStr}]
+                                                                        </span>
+                                                                        {' '}
+                                                                        <span style={{
+                                                                            color: isMic ? '#4caf50' : '#2196f3',
+                                                                            fontSize: '0.8rem',
+                                                                            fontWeight: 'bold'
+                                                                        }}>
+                                                                            {isMic ? 'Вы' : 'Собеседник'}:
+                                                                        </span>
+                                                                        {' '}
+                                                                        <span style={{ color: '#ccc' }}>
+                                                                            {seg.text}
+                                                                        </span>
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    ) : (chunk.micText || chunk.sysText) ? (
+                                                        // Fallback: старый формат без сегментов
+                                                        <div style={{ marginTop: '0.4rem', lineHeight: '1.5' }}>
+                                                            {chunk.micText && (
+                                                                <div style={{ color: '#4caf50', marginBottom: '0.3rem' }}>
+                                                                    <span style={{ color: '#888', fontSize: '0.8rem' }}>Вы: </span>
+                                                                    {chunk.micText}
+                                                                </div>
+                                                            )}
+                                                            {chunk.sysText && (
+                                                                <div style={{ color: '#2196f3' }}>
+                                                                    <span style={{ color: '#888', fontSize: '0.8rem' }}>Собеседник: </span>
+                                                                    {chunk.sysText}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ) : chunk.transcription && (
+                                                        <div style={{ marginTop: '0.4rem', color: '#ccc', lineHeight: '1.5' }}>{chunk.transcription}</div>
+                                                    )}
+                                                    {isTranscribing && (
+                                                        <div style={{ marginTop: '0.4rem', color: '#ff9800', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                                            <span style={{ animation: 'pulse 1s infinite' }}>⏳</span> Распознаётся...
+                                                        </div>
+                                                    )}
+                                                    {chunk.error && (
+                                                        <div style={{ marginTop: '0.4rem', color: '#f44336', fontSize: '0.8rem' }}>Ошибка: {chunk.error}</div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                                {/* Tab: Summary */}
+                                {activeTab === 'summary' && displaySession && (
+                                    <SummaryView
+                                        summary={displaySession.summary || null}
+                                        isGenerating={isGeneratingSummary}
+                                        error={summaryError}
+                                        onGenerate={handleGenerateSummary}
+                                        hasTranscription={chunks.some(c => c.status === 'completed' && (c.transcription || c.micText || c.sysText || c.dialogue?.length))}
+                                        sessionDate={displaySession.startTime}
+                                    />
+                                )}
+                            </>
+                        )}
                     </div>
                 </main>
 
                 {/* Console - сворачиваемая */}
-                <footer style={{ 
-                    height: consoleExpanded ? '150px' : '32px', 
-                    borderTop: '1px solid #333', 
+                <footer style={{
+                    height: consoleExpanded ? '150px' : '32px',
+                    borderTop: '1px solid #333',
                     backgroundColor: '#0a0a14',
                     transition: 'height 0.2s ease-out',
                     overflow: 'hidden'
                 }}>
-                    <div 
+                    <div
                         onClick={() => setConsoleExpanded(!consoleExpanded)}
-                        style={{ 
-                            padding: '0.3rem 1rem', 
-                            backgroundColor: '#12121f', 
-                            fontSize: '0.75rem', 
+                        style={{
+                            padding: '0.3rem 1rem',
+                            backgroundColor: '#12121f',
+                            fontSize: '0.75rem',
                             color: '#666',
                             cursor: 'pointer',
                             display: 'flex',
@@ -2052,6 +2351,13 @@ function App() {
                     to { transform: rotate(360deg); }
                 }
             `}</style>
+
+            {/* Right Sidebar - Audio Meters */}
+            <AudioMeterSidebar
+                micLevel={playingAudio ? playbackMicLevel : micLevel}
+                sysLevel={playingAudio ? playbackSysLevel : systemLevel}
+                isActive={isRecording || !!playingAudio}
+            />
 
             {/* Model Manager Modal */}
             {showModelManager && (

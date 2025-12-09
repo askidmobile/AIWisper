@@ -2,11 +2,6 @@ import { app, BrowserWindow, dialog, shell, ipcMain } from 'electron';
 import path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
-import { autoUpdater } from 'electron-updater';
-import Store from 'electron-store';
-
-// Устанавливаем имя приложения для отображения в меню macOS
-app.setName('AIWisper');
 
 // Настройки приложения
 interface AppSettings {
@@ -22,29 +17,13 @@ interface StoreSchema {
     settings: AppSettings;
 }
 
-const store: any = new Store({
-    defaults: {
-        settings: {
-            language: 'ru',
-            modelId: 'ggml-large-v3-turbo',
-            echoCancel: 0.4,
-            useVoiceIsolation: true,
-            captureSystem: true,
-            theme: 'dark'
-        }
-    }
-});
-
-let mainWindow: BrowserWindow | null;
+// Глобальные переменные - инициализируются в app.whenReady()
+let store: any = null;
+let isDev = true;
+let mainWindow: BrowserWindow | null = null;
 let goProcess: ChildProcess | null = null;
-let sessionsDataDir: string = ''; // Путь к папке с записями
-let modelsDir: string = ''; // Путь к папке с моделями
-
-const isDev = !app.isPackaged;
-
-// Настройка автообновлений
-autoUpdater.autoDownload = true;
-autoUpdater.autoInstallOnAppQuit = true;
+let sessionsDataDir: string = '';
+let modelsDir: string = '';
 
 // Логирование
 function log(message: string) {
@@ -64,7 +43,7 @@ function createWindow() {
         minWidth: 800,
         minHeight: 600,
         title: 'AIWisper',
-        titleBarStyle: 'hiddenInset', // macOS стиль с кнопками в заголовке
+        titleBarStyle: 'hiddenInset',
         trafficLightPosition: { x: 15, y: 15 },
         webPreferences: {
             nodeIntegration: true,
@@ -72,12 +51,10 @@ function createWindow() {
         },
     });
 
-    // DevTools только в dev режиме
     if (isDev) {
         mainWindow.webContents.openDevTools();
     }
 
-    // В dev режиме загружаем Vite сервер, в prod - собранные файлы
     if (isDev) {
         mainWindow.loadURL('http://localhost:5173');
     } else {
@@ -88,8 +65,7 @@ function createWindow() {
         mainWindow = null;
     });
 
-    // Показываем ошибки загрузки
-    mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    mainWindow.webContents.on('did-fail-load', (event: any, errorCode: any, errorDescription: any) => {
         logError(`Failed to load: ${errorDescription} (${errorCode})`);
         if (!isDev) {
             dialog.showErrorBox('Loading Error', `Failed to load application: ${errorDescription}`);
@@ -99,17 +75,15 @@ function createWindow() {
 
 function getResourcesPath(): string {
     if (isDev) {
-        // В dev режиме ресурсы в ../build/resources
         return path.join(process.cwd(), '..', 'build', 'resources');
     } else {
-        // В prod режиме ресурсы в app.asar.unpacked или resources
         return process.resourcesPath;
     }
 }
 
 function startGoBackend() {
     const resourcesPath = getResourcesPath();
-    
+
     let backendPath: string;
     let modelPath: string;
     let dataDir: string;
@@ -117,33 +91,27 @@ function startGoBackend() {
     let cwd: string;
 
     if (isDev) {
-        // Dev: используем файлы из проекта напрямую
         const projectRoot = path.join(process.cwd(), '..');
         backendPath = path.join(projectRoot, 'backend_bin');
         modelPath = path.join(projectRoot, 'backend', 'ggml-base.bin');
         dataDir = path.join(projectRoot, 'data', 'sessions');
         modelsDirPath = path.join(projectRoot, 'data', 'models');
         cwd = projectRoot;
-        
-        // Fallback на build/resources если backend_bin не найден
+
         if (!fs.existsSync(backendPath)) {
             backendPath = path.join(resourcesPath, 'aiwisper-backend');
         }
     } else {
-        // Prod: все в resources
         backendPath = path.join(resourcesPath, 'aiwisper-backend');
         modelPath = path.join(resourcesPath, 'ggml-base.bin');
-        // Данные сохраняем в Application Support
         dataDir = path.join(app.getPath('userData'), 'sessions');
         modelsDirPath = path.join(app.getPath('userData'), 'models');
         cwd = resourcesPath;
     }
 
-    // Сохраняем пути глобально для IPC
     sessionsDataDir = dataDir;
     modelsDir = modelsDirPath;
 
-    // Создаём директории
     if (!fs.existsSync(dataDir)) {
         fs.mkdirSync(dataDir, { recursive: true });
     }
@@ -151,7 +119,6 @@ function startGoBackend() {
         fs.mkdirSync(modelsDirPath, { recursive: true });
     }
 
-    // Проверяем существование файлов
     if (!fs.existsSync(backendPath)) {
         const errorMsg = `Backend binary not found: ${backendPath}`;
         logError(errorMsg);
@@ -163,7 +130,6 @@ function startGoBackend() {
 
     if (!fs.existsSync(modelPath)) {
         log(`Default model not found: ${modelPath}, will use downloaded models`);
-        // Не выходим - модель может быть скачана позже
     }
 
     log(`Starting Go backend: ${backendPath}`);
@@ -172,10 +138,8 @@ function startGoBackend() {
     log(`Models directory: ${modelsDirPath}`);
     log(`Working directory: ${cwd}`);
 
-    // Устанавливаем переменные окружения для dylib
     const env = { ...process.env };
     if (!isDev) {
-        // В prod добавляем путь к dylib
         env.DYLD_LIBRARY_PATH = resourcesPath;
         env.DYLD_FALLBACK_LIBRARY_PATH = resourcesPath;
     }
@@ -199,7 +163,6 @@ function startGoBackend() {
 
     goProcess.stderr?.on('data', (data: Buffer) => {
         const msg = data.toString().trim();
-        // whisper.cpp логирует в stderr по умолчанию
         if (msg.toLowerCase().includes('error') || msg.toLowerCase().includes('panic')) {
             logError(`[Backend]: ${msg}`);
         } else {
@@ -223,8 +186,7 @@ function stopGoBackend() {
     if (goProcess) {
         log('Stopping Go backend...');
         goProcess.kill('SIGTERM');
-        
-        // Принудительное завершение через 3 секунды
+
         setTimeout(() => {
             if (goProcess) {
                 log('Force killing Go backend...');
@@ -235,72 +197,103 @@ function stopGoBackend() {
     }
 }
 
-// Обработчики событий автообновления
-autoUpdater.on('checking-for-update', () => {
-    log('Checking for updates...');
-});
+// Настройка автообновлений - вызывается после app.whenReady()
+function setupAutoUpdater() {
+    const { autoUpdater } = require('electron-updater');
 
-autoUpdater.on('update-available', (info: any) => {
-    log(`Update available: ${info.version}`);
-});
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
 
-autoUpdater.on('update-not-available', (info: any) => {
-    log(`No updates available. Current version: ${info.version}`);
-});
+    autoUpdater.on('checking-for-update', () => {
+        log('Checking for updates...');
+    });
 
-autoUpdater.on('error', (err: Error) => {
-    logError(`Auto-updater error: ${err.message}`);
-});
+    autoUpdater.on('update-available', (info: any) => {
+        log(`Update available: ${info.version}`);
+    });
 
-autoUpdater.on('download-progress', (progressObj: any) => {
-    let msg = `Download speed: ${progressObj.bytesPerSecond}`;
-    msg = `${msg} - Downloaded ${progressObj.percent}%`;
-    msg = `${msg} (${progressObj.transferred}/${progressObj.total})`;
-    log(msg);
-});
+    autoUpdater.on('update-not-available', (info: any) => {
+        log(`No updates available. Current version: ${info.version}`);
+    });
 
-autoUpdater.on('update-downloaded', (info: any) => {
-    log(`Update downloaded: ${info.version}`);
-    
-    // Показываем уведомление пользователю
-    if (mainWindow) {
-        dialog.showMessageBox(mainWindow, {
-            type: 'info',
-            title: 'Обновление готово',
-            message: `Версия ${info.version} загружена и будет установлена при следующем запуске приложения.`,
-            buttons: ['Перезапустить сейчас', 'Позже']
-        }).then((result) => {
-            if (result.response === 0) {
-                autoUpdater.quitAndInstall();
+    autoUpdater.on('error', (err: Error) => {
+        logError(`Auto-updater error: ${err.message}`);
+    });
+
+    autoUpdater.on('download-progress', (progressObj: any) => {
+        let msg = `Download speed: ${progressObj.bytesPerSecond}`;
+        msg = `${msg} - Downloaded ${progressObj.percent}%`;
+        msg = `${msg} (${progressObj.transferred}/${progressObj.total})`;
+        log(msg);
+    });
+
+    autoUpdater.on('update-downloaded', (info: any) => {
+        log(`Update downloaded: ${info.version}`);
+
+        if (mainWindow) {
+            dialog.showMessageBox(mainWindow, {
+                type: 'info',
+                title: 'Обновление готово',
+                message: `Версия ${info.version} загружена и будет установлена при следующем запуске приложения.`,
+                buttons: ['Перезапустить сейчас', 'Позже']
+            }).then((result) => {
+                if (result.response === 0) {
+                    autoUpdater.quitAndInstall();
+                }
+            });
+        }
+    });
+
+    return autoUpdater;
+}
+
+// Главная точка входа - используем app.whenReady() для Electron
+app.whenReady().then(async () => {
+    // Инициализируем isDev после готовности app
+    isDev = !app.isPackaged;
+
+    // Устанавливаем имя приложения
+    app.setName('AIWisper');
+
+    // Инициализируем store (динамический import для ESM модуля)
+    const { default: Store } = await import('electron-store');
+    store = new Store({
+        name: 'aiwisper-config',
+        projectName: 'aiwisper',
+        defaults: {
+            settings: {
+                language: 'ru',
+                modelId: 'ggml-large-v3-turbo',
+                echoCancel: 0.4,
+                useVoiceIsolation: true,
+                captureSystem: true,
+                theme: 'dark'
             }
-        });
-    }
-});
+        }
+    });
 
-app.on('ready', () => {
     log('Application ready');
     log(`Running in ${isDev ? 'development' : 'production'} mode`);
     log(`Platform: ${process.platform}, Arch: ${process.arch}`);
     log(`App path: ${app.getAppPath()}`);
     log(`Resources path: ${getResourcesPath()}`);
-    
+
     startGoBackend();
-    
-    // Даём backend время на запуск
+
     setTimeout(() => {
         createWindow();
-        
-        // Проверяем обновления только в production режиме
+
         if (!isDev) {
             setTimeout(() => {
-                log('Checking for updates...');
+                log('Setting up auto-updater...');
+                const autoUpdater = setupAutoUpdater();
                 autoUpdater.checkForUpdatesAndNotify();
             }, 3000);
         }
     }, isDev ? 0 : 500);
 });
 
-// IPC: открыть папку с записями
+// IPC handlers
 ipcMain.handle('open-data-folder', async () => {
     if (sessionsDataDir && fs.existsSync(sessionsDataDir)) {
         log(`Opening data folder: ${sessionsDataDir}`);
@@ -312,19 +305,19 @@ ipcMain.handle('open-data-folder', async () => {
     }
 });
 
-// IPC: получить путь к папке с записями
 ipcMain.handle('get-data-folder-path', () => {
     return sessionsDataDir;
 });
 
-// IPC: получить путь к папке с моделями
 ipcMain.handle('get-models-folder-path', () => {
     return modelsDir;
 });
 
-// IPC: сохранить настройки
 ipcMain.handle('save-settings', (_, settings: Partial<AppSettings>) => {
     try {
+        if (!store) {
+            return { success: false, error: 'Store not initialized' };
+        }
         const currentSettings = store.get('settings');
         const newSettings = { ...currentSettings, ...settings };
         store.set('settings', newSettings);
@@ -336,9 +329,11 @@ ipcMain.handle('save-settings', (_, settings: Partial<AppSettings>) => {
     }
 });
 
-// IPC: загрузить настройки
 ipcMain.handle('load-settings', () => {
     try {
+        if (!store) {
+            return null;
+        }
         const settings = store.get('settings');
         log(`Settings loaded: ${JSON.stringify(settings)}`);
         return settings;
@@ -370,7 +365,6 @@ app.on('activate', () => {
     }
 });
 
-// Обработка uncaught exceptions
 process.on('uncaughtException', (error) => {
     logError(`Uncaught exception: ${error.message}`);
     logError(error.stack || '');

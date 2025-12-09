@@ -83,11 +83,12 @@ func (model *model) NewContext() (Context, error) {
 		return nil, ErrInternalAppError
 	}
 
-	// Create new context
-	params := model.ctx.Whisper_full_default_params(SAMPLING_GREEDY)
+	// Create new context with BEAM_SEARCH strategy for better quality
+	// ВАЖНО: Используем BEAM_SEARCH, т.к. в whisper.go устанавливается beam_size > 1
+	params := model.ctx.Whisper_full_default_params(SAMPLING_BEAM_SEARCH)
 	params.SetTranslate(false)
 	params.SetPrintSpecial(false)
-	params.SetPrintProgress(false)
+	params.SetPrintProgress(true) // Включаем для отладки
 	params.SetPrintRealtime(false)
 	params.SetPrintTimestamps(false)
 	params.SetThreads(runtime.NumCPU())

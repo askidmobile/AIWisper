@@ -135,9 +135,19 @@ func (e *WhisperEngine) TranscribeWithSegments(samples []float32) ([]TranscriptS
 
 	log.Printf("TranscribeWithSegments: samples=%d duration=%.1fs lang=%s", len(samples), float64(len(samples))/16000, e.language)
 
-	if err := ctx.Process(norm, nil, nil, nil); err != nil {
+	// Callback для отслеживания прогресса
+	progressCb := func(progress int) {
+		if progress%10 == 0 { // Логируем каждые 10%
+			log.Printf("TranscribeWithSegments progress: %d%%", progress)
+		}
+	}
+
+	log.Printf("TranscribeWithSegments: starting ctx.Process...")
+	if err := ctx.Process(norm, nil, nil, progressCb); err != nil {
+		log.Printf("TranscribeWithSegments: ctx.Process error: %v", err)
 		return nil, err
 	}
+	log.Printf("TranscribeWithSegments: ctx.Process completed")
 
 	// Собираем сегменты с таймстемпами и словами
 	var segments []TranscriptSegment
