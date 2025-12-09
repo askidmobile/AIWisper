@@ -1,7 +1,5 @@
-// Простой тест записи системного аудио через ScreenCaptureKit
-// Запуск: go run ./cmd/testrecord
-// Остановка: Ctrl+C
-
+// Test: запись аудио через Go (чтение из screencapture-audio pipe)
+// Запуск: go run ./cmd/testrecord/main.go
 package main
 
 import (
@@ -13,196 +11,211 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 )
 
 const (
-	sampleRate    = 48000
-	channels      = 1 // mono от ScreenCaptureKit
-	bitsPerSample = 16
-	outputFile    = "test_recording.wav"
+	sampleRate = 24000
+	channels   = 1
+	outputPath = "/tmp/go_pipe_test.wav"
 )
 
-func main() {
-	log.Println("=== Тест записи системного аудио ===")
-	log.Printf("Выходной файл: %s", outputFile)
-	log.Printf("Формат: %dHz, %d каналов, %d бит", sampleRate, channels, bitsPerSample)
-	log.Println("Нажмите Ctrl+C для остановки...")
-
-	// Находим screencapture-audio binary
-	binaryPath := findBinary()
-	if binaryPath == "" {
-		log.Fatal("screencapture-audio не найден. Соберите: cd backend/audio/screencapture && swift build -c release")
-	}
-	log.Printf("Используем: %s", binaryPath)
-
-	// Создаём WAV файл
-	file, err := os.Create(outputFile)
-	if err != nil {
-		log.Fatalf("Ошибка создания файла: %v", err)
-	}
-	defer file.Close()
-
-	// Пишем placeholder header
-	var samplesWritten int64
-	writeWAVHeader(file, samplesWritten)
-
-	// Запускаем screencapture-audio
-	cmd := exec.Command(binaryPath)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		log.Fatalf("Ошибка получения stdout: %v", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		log.Fatalf("Ошибка получения stderr: %v", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		log.Fatalf("Ошибка запуска: %v", err)
-	}
-
-	// Читаем stderr для логов
-	go func() {
-		scanner := bufio.NewScanner(stderr)
-		for scanner.Scan() {
-			log.Printf("[ScreenCaptureKit] %s", scanner.Text())
-		}
-	}()
-
-	// Обработка сигнала остановки
-	stopChan := make(chan os.Signal, 1)
-	signal.Notify(stopChan, syscall.SIGINT, syscall.SIGTERM)
-
-	var mu sync.Mutex
-	done := make(chan struct{})
-
-	// Горутина для чтения аудио данных
-	go func() {
-		defer close(done)
-
-		buf := make([]byte, 4*4800) // 100ms при 48kHz
-		var totalBytes int64
-		startTime := time.Now()
-
-		for {
-			n, err := stdout.Read(buf)
-			if err != nil {
-				if err != io.EOF {
-					log.Printf("Ошибка чтения: %v", err)
-				}
-				return
-			}
-
-			if n == 0 {
-				continue
-			}
-
-			// Конвертируем float32 в int16 и пишем
-			numSamples := n / 4
-			pcmData := make([]byte, numSamples*2)
-
-			for i := 0; i < numSamples; i++ {
-				bits := binary.LittleEndian.Uint32(buf[i*4 : (i+1)*4])
-				floatVal := float32frombits(bits)
-
-				// Clamp
-				if floatVal > 1.0 {
-					floatVal = 1.0
-				} else if floatVal < -1.0 {
-					floatVal = -1.0
-				}
-
-				sample := int16(floatVal * 32767)
-				binary.LittleEndian.PutUint16(pcmData[i*2:], uint16(sample))
-			}
-
-			mu.Lock()
-			file.Write(pcmData)
-			samplesWritten += int64(numSamples)
-			totalBytes += int64(len(pcmData))
-			mu.Unlock()
-
-			// Логируем прогресс каждые 5 секунд
-			elapsed := time.Since(startTime)
-			if int(elapsed.Seconds())%5 == 0 && elapsed.Seconds() > 0 {
-				expectedBytes := int64(elapsed.Seconds()) * sampleRate * 2
-				ratio := float64(totalBytes) / float64(expectedBytes) * 100
-				log.Printf("Записано: %.1f сек, %d байт (%.1f%% от ожидаемого)",
-					elapsed.Seconds(), totalBytes, ratio)
-			}
-		}
-	}()
-
-	// Ждём сигнал остановки
-	<-stopChan
-	log.Println("\nОстановка записи...")
-
-	// Останавливаем процесс
-	cmd.Process.Signal(syscall.SIGTERM)
-	cmd.Wait()
-
-	// Ждём завершения чтения
-	<-done
-
-	// Обновляем WAV header
-	mu.Lock()
-	file.Seek(0, 0)
-	writeWAVHeader(file, samplesWritten)
-	mu.Unlock()
-
-	duration := float64(samplesWritten) / float64(sampleRate)
-	log.Printf("Готово! Записано %.1f секунд (%d семплов)", duration, samplesWritten)
-	log.Printf("Файл: %s", outputFile)
+// WAVWriter для записи float32 в WAV (PCM16)
+type WAVWriter struct {
+	file           *os.File
+	samplesWritten int64
 }
 
-func writeWAVHeader(file *os.File, samples int64) {
+func NewWAVWriter(path string) (*WAVWriter, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	w := &WAVWriter{file: f}
+	w.writeHeader() // placeholder
+	return w, nil
+}
+
+func (w *WAVWriter) writeHeader() {
+	w.file.Seek(0, 0)
+
+	bitsPerSample := 16
 	byteRate := sampleRate * channels * bitsPerSample / 8
 	blockAlign := channels * bitsPerSample / 8
-	dataSize := uint32(samples * int64(bitsPerSample/8))
+	dataSize := uint32(w.samplesWritten * 2)
 
-	file.WriteString("RIFF")
-	binary.Write(file, binary.LittleEndian, uint32(36+dataSize))
-	file.WriteString("WAVE")
+	// RIFF header
+	w.file.WriteString("RIFF")
+	binary.Write(w.file, binary.LittleEndian, uint32(36+dataSize))
+	w.file.WriteString("WAVE")
 
-	file.WriteString("fmt ")
-	binary.Write(file, binary.LittleEndian, uint32(16))
-	binary.Write(file, binary.LittleEndian, uint16(1)) // PCM
-	binary.Write(file, binary.LittleEndian, uint16(channels))
-	binary.Write(file, binary.LittleEndian, uint32(sampleRate))
-	binary.Write(file, binary.LittleEndian, uint32(byteRate))
-	binary.Write(file, binary.LittleEndian, uint16(blockAlign))
-	binary.Write(file, binary.LittleEndian, uint16(bitsPerSample))
+	// fmt chunk
+	w.file.WriteString("fmt ")
+	binary.Write(w.file, binary.LittleEndian, uint32(16))
+	binary.Write(w.file, binary.LittleEndian, uint16(1)) // PCM
+	binary.Write(w.file, binary.LittleEndian, uint16(channels))
+	binary.Write(w.file, binary.LittleEndian, uint32(sampleRate))
+	binary.Write(w.file, binary.LittleEndian, uint32(byteRate))
+	binary.Write(w.file, binary.LittleEndian, uint16(blockAlign))
+	binary.Write(w.file, binary.LittleEndian, uint16(bitsPerSample))
 
-	file.WriteString("data")
-	binary.Write(file, binary.LittleEndian, dataSize)
+	// data chunk
+	w.file.WriteString("data")
+	binary.Write(w.file, binary.LittleEndian, dataSize)
+}
+
+func (w *WAVWriter) Write(samples []float32) error {
+	for _, s := range samples {
+		if s > 1.0 {
+			s = 1.0
+		} else if s < -1.0 {
+			s = -1.0
+		}
+		sample := int16(s * 32767)
+		if err := binary.Write(w.file, binary.LittleEndian, sample); err != nil {
+			return err
+		}
+		w.samplesWritten++
+	}
+	return nil
+}
+
+func (w *WAVWriter) Close() error {
+	w.writeHeader() // update with final size
+	duration := float64(w.samplesWritten) / float64(sampleRate)
+	log.Printf("WAV closed: samples=%d, duration=%.2fs", w.samplesWritten, duration)
+	return w.file.Close()
 }
 
 func float32frombits(b uint32) float32 {
 	return math.Float32frombits(b)
 }
 
-func findBinary() string {
-	paths := []string{
-		"audio/screencapture/.build/release/screencapture-audio",
-		"backend/audio/screencapture/.build/release/screencapture-audio",
-		"../audio/screencapture/.build/release/screencapture-audio",
+func main() {
+	log.Println("=== GO PIPE TEST ===")
+	log.Printf("Output: %s", outputPath)
+	log.Println("Recording for 5 seconds...")
+	log.Println(">>> SPEAK NOW! <<<")
+
+	// Запускаем screencapture-audio
+	screenCapturePath := "/Users/askid/Projects/AIWisper/backend/audio/screencapture/.build/release/screencapture-audio"
+	cmd := exec.Command(screenCapturePath, "mic")
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Fatalf("Failed to get stdout: %v", err)
 	}
 
-	// Получаем директорию исполняемого файла
-	if exe, err := os.Executable(); err == nil {
-		dir := filepath.Dir(exe)
-		paths = append(paths, filepath.Join(dir, "screencapture-audio"))
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		log.Fatalf("Failed to get stderr: %v", err)
 	}
 
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return p
+	if err := cmd.Start(); err != nil {
+		log.Fatalf("Failed to start: %v", err)
+	}
+
+	// Логируем stderr
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			log.Printf("[Swift] %s", scanner.Text())
 		}
+	}()
+
+	// Создаём WAV writer
+	wavWriter, err := NewWAVWriter(outputPath)
+	if err != nil {
+		log.Fatalf("Failed to create WAV: %v", err)
 	}
 
-	return ""
+	// Читаем данные из pipe
+	reader := bufio.NewReader(stdout)
+	header := make([]byte, 5)
+
+	done := make(chan struct{})
+	var totalSamples int
+
+	startTime := time.Now()
+
+	go func() {
+		defer close(done)
+		for {
+			// Таймаут по времени
+			if time.Since(startTime) > 5*time.Second {
+				return
+			}
+
+			// Читаем заголовок: [marker 1 byte][size 4 bytes]
+			_, err := io.ReadFull(reader, header)
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("Error reading header: %v", err)
+				}
+				return
+			}
+
+			marker := header[0]
+			sampleCount := binary.LittleEndian.Uint32(header[1:5])
+
+			if sampleCount == 0 || sampleCount > 1000000 {
+				log.Printf("Invalid sample count: %d", sampleCount)
+				continue
+			}
+
+			// Читаем данные
+			dataSize := int(sampleCount) * 4
+			data := make([]byte, dataSize)
+			_, err = io.ReadFull(reader, data)
+			if err != nil {
+				if err != io.EOF {
+					log.Printf("Error reading data: %v", err)
+				}
+				return
+			}
+
+			// Конвертируем bytes в float32
+			samples := make([]float32, sampleCount)
+			for i := uint32(0); i < sampleCount; i++ {
+				bits := binary.LittleEndian.Uint32(data[i*4 : (i+1)*4])
+				samples[i] = float32frombits(bits)
+			}
+
+			// Пишем в WAV
+			if marker == 0x4D { // 'M' = микрофон
+				if err := wavWriter.Write(samples); err != nil {
+					log.Printf("Error writing WAV: %v", err)
+				}
+				totalSamples += len(samples)
+			}
+		}
+	}()
+
+	// Ждём сигнал или таймаут
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case <-time.After(6 * time.Second): // чуть больше чтобы дождаться всех данных
+		log.Println("Timeout reached, stopping...")
+	case <-sigChan:
+		log.Println("Signal received, stopping...")
+	}
+
+	// Останавливаем screencapture
+	cmd.Process.Signal(syscall.SIGINT)
+	time.Sleep(500 * time.Millisecond)
+	<-done
+
+	wavWriter.Close()
+	cmd.Wait()
+
+	log.Printf("Total samples received: %d", totalSamples)
+	expectedSamples := 5 * sampleRate
+	log.Printf("Expected samples (5 sec): %d", expectedSamples)
+	log.Printf("Ratio: %.2f%%", float64(totalSamples)/float64(expectedSamples)*100)
+	log.Println("=== Test Complete ===")
+	log.Printf("Check file: %s", outputPath)
+	log.Printf("Play with: afplay %s", outputPath)
 }

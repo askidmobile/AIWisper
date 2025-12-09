@@ -316,12 +316,18 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			SystemDevice:  msg.SystemDevice,
 			CaptureSystem: msg.CaptureSystem,
 			UseNative:     msg.UseNative,
+			DisableVAD:    msg.DisableVAD,
 		}
 
 		// Echo Cancel default 0.4
 		ec := float32(0.4)
 		if msg.EchoCancel > 0 {
 			ec = float32(msg.EchoCancel)
+		}
+
+		// Сбрасываем состояние диаризации (спикеров) перед новой сессией
+		if s.TranscriptionService != nil {
+			s.TranscriptionService.ResetDiarizationState()
 		}
 
 		sess, err := s.RecordingService.StartSession(config, ec, msg.UseVoiceIsolation)
@@ -365,6 +371,42 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			s.SessionMgr.SetSessionSummary(msg.SessionID, summary)
 			s.broadcast(Message{Type: "summary_completed", SessionID: msg.SessionID, Summary: summary})
 		}()
+
+	case "set_auto_improve":
+		// Включение/отключение автоматического улучшения транскрипции через LLM
+		if s.TranscriptionService == nil {
+			conn.WriteJSON(Message{Type: "error", Data: "Transcription service not available"})
+			return
+		}
+		if msg.AutoImproveEnabled {
+			url := msg.OllamaUrl
+			if url == "" {
+				url = "http://localhost:11434"
+			}
+			model := msg.OllamaModel
+			if model == "" {
+				model = "llama3.2"
+			}
+			s.TranscriptionService.EnableAutoImprove(url, model)
+			conn.WriteJSON(Message{Type: "auto_improve_status", AutoImproveEnabled: true, OllamaModel: model, OllamaUrl: url})
+		} else {
+			s.TranscriptionService.DisableAutoImprove()
+			conn.WriteJSON(Message{Type: "auto_improve_status", AutoImproveEnabled: false})
+		}
+		log.Printf("Auto-improve: enabled=%v, model=%s, url=%s", msg.AutoImproveEnabled, msg.OllamaModel, msg.OllamaUrl)
+
+	case "get_auto_improve_status":
+		// Получить текущий статус автоулучшения
+		if s.TranscriptionService == nil {
+			conn.WriteJSON(Message{Type: "auto_improve_status", AutoImproveEnabled: false})
+			return
+		}
+		conn.WriteJSON(Message{
+			Type:               "auto_improve_status",
+			AutoImproveEnabled: s.TranscriptionService.AutoImproveWithLLM,
+			OllamaModel:        s.TranscriptionService.OllamaModel,
+			OllamaUrl:          s.TranscriptionService.OllamaURL,
+		})
 
 	case "get_ollama_models":
 		if s.LLMService == nil {
@@ -469,8 +511,8 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 		}()
 
 	case "retranscribe_full":
-		log.Printf("Received retranscribe_full: sessionId=%s, model=%s, language=%s",
-			msg.SessionID, msg.Model, msg.Language)
+		log.Printf("Received retranscribe_full: sessionId=%s, model=%s, language=%s, diarization=%v",
+			msg.SessionID, msg.Model, msg.Language, msg.DiarizationEnabled)
 
 		if msg.SessionID == "" {
 			conn.WriteJSON(Message{Type: "error", Data: "sessionId is required"})
@@ -492,8 +534,16 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			}
 		}
 
+		// Сохраняем флаг использования диаризации для ретранскрибации
+		useDiarization := msg.DiarizationEnabled && s.TranscriptionService.IsDiarizationEnabled()
+
+		// Сбрасываем состояние диаризации (спикеров) перед полной ретранскрипцией
+		if useDiarization {
+			s.TranscriptionService.ResetDiarizationState()
+		}
+
 		// Отправляем через broadcast для всех клиентов
-		log.Printf("Sending full_transcription_started for session %s", msg.SessionID)
+		log.Printf("Sending full_transcription_started for session %s (diarization=%v)", msg.SessionID, useDiarization)
 		s.broadcast(Message{Type: "full_transcription_started", SessionID: msg.SessionID})
 
 		go func() {
@@ -511,7 +561,7 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 				return
 			}
 
-			log.Printf("Full retranscription: processing %d chunks", totalChunks)
+			log.Printf("Full retranscription: processing %d chunks (diarization=%v)", totalChunks, useDiarization)
 
 			for i, chunk := range sess.Chunks {
 				// Отправляем прогресс
@@ -524,8 +574,9 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 					Data:      fmt.Sprintf("Обработка чанка %d из %d...", i+1, totalChunks),
 				})
 
-				log.Printf("Retranscribing chunk %d/%d (id=%s)", i+1, totalChunks, chunk.ID)
-				s.TranscriptionService.HandleChunk(chunk)
+				log.Printf("Retranscribing chunk %d/%d (id=%s, diarization=%v)", i+1, totalChunks, chunk.ID, useDiarization)
+				// Используем синхронный метод с явным флагом диаризации
+				s.TranscriptionService.HandleChunkSyncWithDiarization(chunk, useDiarization)
 			}
 
 			// Финальный прогресс 100%

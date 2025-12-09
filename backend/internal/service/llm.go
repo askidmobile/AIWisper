@@ -112,8 +112,13 @@ func (s *LLMService) ImproveTranscriptionWithLLM(dialogue []session.TranscriptSe
 	var dialogueText strings.Builder
 	for _, seg := range dialogue {
 		speaker := "Вы"
-		if seg.Speaker == "sys" {
-			speaker = "Собеседник"
+		if seg.Speaker != "" && seg.Speaker != "mic" {
+			// Поддержка "sys", "Собеседник", "Собеседник 1", "Собеседник 2" и т.д.
+			if strings.HasPrefix(seg.Speaker, "Собеседник") {
+				speaker = seg.Speaker
+			} else {
+				speaker = "Собеседник"
+			}
 		}
 		dialogueText.WriteString(fmt.Sprintf("[%s] %s\n", speaker, seg.Text))
 	}
@@ -123,11 +128,30 @@ func (s *LLMService) ImproveTranscriptionWithLLM(dialogue []session.TranscriptSe
 		text = text[:12000] + "\n...[trimmed]..."
 	}
 
-	systemPrompt := `Ты — эксперт по редактированию транскрипций речи.
-Исправляй ошибки распознавания, пунктуацию и регистр.
-НЕ меняй смысл. Отвечай ТОЛЬКО исправленным текстом в формате:
-[Вы] Исправленный текст
-[Собеседник] Исправленный текст`
+	systemPrompt := `Ты — эксперт по редактированию транскрипций русской речи.
+
+ТВОИ ЗАДАЧИ (в порядке приоритета):
+1. РАЗДЕЛЯЙ СКЛЕЕННЫЕ СЛОВА: "вопросеянеможо" → "вопросе я не могу", "какомсостояни" → "каком состоянии"
+2. Добавляй пунктуацию: точки, запятые, вопросительные и восклицательные знаки
+3. Исправляй регистр: начало предложения с заглавной буквы
+4. Исправляй очевидные ошибки распознавания (опечатки, пропущенные буквы)
+5. РАЗБИВАЙ длинные реплики (больше 2-3 предложений) на отдельные строки с тем же спикером
+
+ФОРМАТ ВХОДА:
+[Вы] текст реплики
+[Собеседник] текст реплики
+
+ФОРМАТ ВЫХОДА (строго такой же):
+[Вы] Исправленный текст.
+[Собеседник] Исправленный текст.
+
+СТРОГИЕ ПРАВИЛА:
+- НЕ меняй смысл и порядок слов
+- НЕ удаляй и НЕ добавляй реплики
+- НЕ объединяй реплики разных спикеров
+- Сохраняй порядок реплик
+- Если реплика длинная — разбей на несколько строк с ТЕМ ЖЕ спикером
+- Отвечай ТОЛЬКО исправленным текстом, без комментариев`
 
 	userPrompt := fmt.Sprintf("Улучши эту транскрипцию:\n\n%s", text)
 
@@ -152,7 +176,8 @@ func (s *LLMService) ImproveTranscriptionWithLLM(dialogue []session.TranscriptSe
 func (s *LLMService) parseImprovedDialogue(improvedText string, originalDialogue []session.TranscriptSegment) []session.TranscriptSegment {
 	lines := strings.Split(improvedText, "\n")
 	var improved []session.TranscriptSegment
-	lineIdx := 0
+	origIdx := 0 // Индекс в оригинальном диалоге для timestamps
+	var lastSpeaker string
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -161,19 +186,32 @@ func (s *LLMService) parseImprovedDialogue(improvedText string, originalDialogue
 		}
 
 		var speaker, text string
-		if strings.HasPrefix(line, "[Вы]") {
+
+		// Парсим разные форматы спикеров
+		switch {
+		case strings.HasPrefix(line, "[Вы]"):
 			speaker = "mic"
 			text = strings.TrimPrefix(line, "[Вы]")
-		} else if strings.HasPrefix(line, "[Собеседник]") {
+		case strings.HasPrefix(line, "[Собеседник"):
+			// Поддержка [Собеседник], [Собеседник 1], [Собеседник 2] и т.д.
 			speaker = "sys"
-			text = strings.TrimPrefix(line, "[Собеседник]")
-		} else if strings.HasPrefix(line, "Вы:") {
+			idx := strings.Index(line, "]")
+			if idx > 0 {
+				text = line[idx+1:]
+			}
+		case strings.HasPrefix(line, "Вы:"):
 			speaker = "mic"
 			text = strings.TrimPrefix(line, "Вы:")
-		} else if strings.HasPrefix(line, "Собеседник:") {
+		case strings.HasPrefix(line, "Собеседник"):
+			// Поддержка Собеседник:, Собеседник 1:, Собеседник 2: и т.д.
 			speaker = "sys"
-			text = strings.TrimPrefix(line, "Собеседник:")
-		} else {
+			idx := strings.Index(line, ":")
+			if idx > 0 {
+				text = line[idx+1:]
+			}
+		default:
+			// Если строка без префикса - это продолжение предыдущей реплики
+			// или мусор от LLM - пропускаем
 			continue
 		}
 
@@ -182,16 +220,38 @@ func (s *LLMService) parseImprovedDialogue(improvedText string, originalDialogue
 			continue
 		}
 
+		// Определяем timestamps
 		var start, end int64
-		if lineIdx < len(originalDialogue) {
-			start = originalDialogue[lineIdx].Start
-			end = originalDialogue[lineIdx].End
+
+		// Если спикер сменился - берём следующий оригинальный сегмент
+		// Если тот же спикер (разбитая реплика) - интерполируем время
+		if speaker != lastSpeaker {
+			// Новый спикер - синхронизируем с оригиналом
+			if origIdx < len(originalDialogue) {
+				start = originalDialogue[origIdx].Start
+				end = originalDialogue[origIdx].End
+				origIdx++
+			}
+		} else {
+			// Тот же спикер - это разбитая реплика от LLM
+			// Используем время предыдущего сегмента (примерно)
+			if len(improved) > 0 {
+				prev := improved[len(improved)-1]
+				start = prev.End
+				end = start + 2000 // +2 секунды по умолчанию
+				// Если есть следующий оригинальный сегмент с тем же спикером - подтягиваем
+				if origIdx < len(originalDialogue) && originalDialogue[origIdx].Speaker == speaker {
+					end = originalDialogue[origIdx].End
+					origIdx++
+				}
+			}
 		}
+
+		lastSpeaker = speaker
 
 		improved = append(improved, session.TranscriptSegment{
 			Start: start, End: end, Text: text, Speaker: speaker,
 		})
-		lineIdx++
 	}
 
 	if len(improved) == 0 {

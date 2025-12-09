@@ -403,122 +403,273 @@ func mergeSegmentsToDialogue(micSegments, sysSegments []TranscriptSegment) []Tra
 		return mergeWordsToDialogue(micSegments, sysSegments)
 	}
 
-	// Fallback: используем сегменты как раньше
+	// Fallback: используем сегменты, но с группировкой
+	// Группируем сегменты каждого канала в фразы (чтобы не было разрывов при наложении)
+	const maxPauseMs = 2000 // 2 секунды паузы разрывают фразу
+
+	micPhrases := groupSegmentsToPhrases(micSegments, maxPauseMs, "mic")
+	sysPhrases := groupSegmentsToPhrases(sysSegments, maxPauseMs, "sys")
+
+	// Объединяем фразы
 	var dialogue []TranscriptSegment
-
-	// Добавляем сегменты микрофона
-	for i, seg := range micSegments {
-		log.Printf("  mic[%d]: start=%dms end=%dms text=%q", i, seg.Start, seg.End, seg.Text)
-		dialogue = append(dialogue, TranscriptSegment{
-			Start:   seg.Start,
-			End:     seg.End,
-			Text:    seg.Text,
-			Speaker: "mic",
-		})
-	}
-
-	// Добавляем сегменты системы
-	for i, seg := range sysSegments {
-		log.Printf("  sys[%d]: start=%dms end=%dms text=%q", i, seg.Start, seg.End, seg.Text)
-		dialogue = append(dialogue, TranscriptSegment{
-			Start:   seg.Start,
-			End:     seg.End,
-			Text:    seg.Text,
-			Speaker: "sys",
-		})
-	}
+	dialogue = append(dialogue, micPhrases...)
+	dialogue = append(dialogue, sysPhrases...)
 
 	// Сортируем по времени начала
 	sort.Slice(dialogue, func(i, j int) bool {
 		return dialogue[i].Start < dialogue[j].Start
 	})
 
-	log.Printf("mergeSegmentsToDialogue: result=%d segments (segment-level)", len(dialogue))
-	for i, seg := range dialogue {
-		log.Printf("  dialogue[%d]: start=%dms speaker=%s text=%q", i, seg.Start, seg.Speaker, seg.Text)
-	}
-
+	log.Printf("mergeSegmentsToDialogue: result=%d segments (grouped segment-level)", len(dialogue))
 	return dialogue
 }
 
-// mergeWordsToDialogue создаёт диалог на основе word-level timestamps
-// Группирует последовательные слова одного спикера в фразы
-func mergeWordsToDialogue(micSegments, sysSegments []TranscriptSegment) []TranscriptSegment {
-	// Собираем все слова из всех сегментов
-	var allWords []TranscriptWord
-
-	for _, seg := range micSegments {
-		for _, word := range seg.Words {
-			w := word
-			w.Speaker = "mic"
-			allWords = append(allWords, w)
-		}
-	}
-
-	for _, seg := range sysSegments {
-		for _, word := range seg.Words {
-			w := word
-			w.Speaker = "sys"
-			allWords = append(allWords, w)
-		}
-	}
-
-	log.Printf("mergeWordsToDialogue: total %d words from both channels", len(allWords))
-
-	if len(allWords) == 0 {
+// groupSegmentsToPhrases группирует сегменты одного канала в фразы
+func groupSegmentsToPhrases(segments []TranscriptSegment, maxPauseMs int64, defaultSpeaker string) []TranscriptSegment {
+	if len(segments) == 0 {
 		return nil
 	}
 
-	// Сортируем все слова по времени начала
-	sort.Slice(allWords, func(i, j int) bool {
-		return allWords[i].Start < allWords[j].Start
+	var phrases []TranscriptSegment
+	var currentPhrase TranscriptSegment
+	var phraseTexts []string
+
+	for i, seg := range segments {
+		speaker := seg.Speaker
+		if speaker == "" {
+			speaker = defaultSpeaker
+		}
+
+		if i == 0 {
+			currentPhrase = TranscriptSegment{
+				Start:   seg.Start,
+				End:     seg.End,
+				Speaker: speaker,
+			}
+			phraseTexts = []string{seg.Text}
+			continue
+		}
+
+		prevSeg := segments[i-1]
+		pause := seg.Start - prevSeg.End
+
+		// Если спикер сменился (в рамках одного канала это может быть при диаризации sys канала)
+		// или пауза слишком большая -> новая фраза
+		speakerChanged := speaker != currentPhrase.Speaker
+		longPause := pause > maxPauseMs
+
+		if speakerChanged || longPause {
+			// Сохраняем текущую
+			currentPhrase.Text = strings.Join(phraseTexts, " ")
+			phrases = append(phrases, currentPhrase)
+
+			// Начинаем новую
+			currentPhrase = TranscriptSegment{
+				Start:   seg.Start,
+				End:     seg.End,
+				Speaker: speaker,
+			}
+			phraseTexts = []string{seg.Text}
+		} else {
+			// Продолжаем
+			currentPhrase.End = seg.End
+			phraseTexts = append(phraseTexts, seg.Text)
+		}
+	}
+
+	// Последняя фраза
+	if len(phraseTexts) > 0 {
+		currentPhrase.Text = strings.Join(phraseTexts, " ")
+		phrases = append(phrases, currentPhrase)
+	}
+
+	return phrases
+}
+
+// mergeWordsToDialogue создаёт диалог на основе word-level timestamps
+// Группирует слова в фразы с учётом максимальной длины и интерливинга спикеров
+func mergeWordsToDialogue(micSegments, sysSegments []TranscriptSegment) []TranscriptSegment {
+	// 1. Группируем слова микрофона в фразы (с ограничением длины)
+	micPhrases := groupWordsToPhrases(collectWords(micSegments, "mic"), defaultMaxPauseMs)
+
+	// 2. Группируем слова системы в фразы
+	// В sysSegments могут быть разные спикеры (после диаризации)
+	sysPhrases := groupWordsToPhrases(collectWords(sysSegments, "sys"), defaultMaxPauseMs)
+
+	// 3. Интерливинг: объединяем фразы с учётом перекрытий по времени
+	allPhrases := interleaveDialogue(micPhrases, sysPhrases)
+
+	log.Printf("mergeWordsToDialogue: mic=%d, sys=%d, result=%d phrases",
+		len(micPhrases), len(sysPhrases), len(allPhrases))
+	return allPhrases
+}
+
+// interleaveDialogue создаёт естественный диалог с правильным чередованием спикеров
+// Обрабатывает перекрытия по времени и разбивает длинные сегменты
+func interleaveDialogue(micPhrases, sysPhrases []TranscriptSegment) []TranscriptSegment {
+	// Объединяем все фразы
+	var allPhrases []TranscriptSegment
+	allPhrases = append(allPhrases, micPhrases...)
+	allPhrases = append(allPhrases, sysPhrases...)
+
+	if len(allPhrases) == 0 {
+		return nil
+	}
+
+	// Сортируем по времени начала
+	sort.Slice(allPhrases, func(i, j int) bool {
+		if allPhrases[i].Start == allPhrases[j].Start {
+			// При одинаковом времени начала - mic первым (тот кто задаёт вопрос)
+			return allPhrases[i].Speaker == "mic"
+		}
+		return allPhrases[i].Start < allPhrases[j].Start
 	})
 
-	// Группируем последовательные слова одного спикера в фразы
-	// Также разбиваем на фразы при паузе > 1 секунды
-	const maxPauseMs = 1000 // Максимальная пауза внутри фразы
+	// Обрабатываем перекрытия: если фразы перекрываются, разбиваем их
+	result := make([]TranscriptSegment, 0, len(allPhrases))
 
-	var dialogue []TranscriptSegment
+	for i, phrase := range allPhrases {
+		if i == 0 {
+			result = append(result, phrase)
+			continue
+		}
+
+		prev := &result[len(result)-1]
+
+		// Проверяем перекрытие с предыдущей фразой
+		// Перекрытие: текущая фраза начинается до конца предыдущей
+		if phrase.Start < prev.End && phrase.Speaker != prev.Speaker {
+			// Есть перекрытие разных спикеров
+			// Вариант: обрезаем предыдущую фразу до начала текущей
+			// чтобы создать естественное чередование
+			if phrase.Start > prev.Start+minPhraseDurationMs {
+				// Обрезаем предыдущую только если остаётся достаточная длина
+				prev.End = phrase.Start
+				// Обрезаем текст пропорционально (приблизительно)
+				if len(prev.Words) > 0 {
+					cutWords := make([]TranscriptWord, 0)
+					var cutTexts []string
+					for _, w := range prev.Words {
+						if w.End <= phrase.Start {
+							cutWords = append(cutWords, w)
+							cutTexts = append(cutTexts, w.Text)
+						}
+					}
+					if len(cutWords) > 0 {
+						prev.Words = cutWords
+						prev.Text = strings.Join(cutTexts, " ")
+					}
+				}
+			}
+		}
+
+		result = append(result, phrase)
+	}
+
+	return result
+}
+
+// collectWords извлекает все слова из сегментов и проставляет спикера по умолчанию
+func collectWords(segments []TranscriptSegment, defaultSpeaker string) []TranscriptWord {
+	var words []TranscriptWord
+	for _, seg := range segments {
+		segSpeaker := seg.Speaker
+		if segSpeaker == "" {
+			segSpeaker = defaultSpeaker
+		}
+		for _, w := range seg.Words {
+			word := w
+			// Если у слова нет спикера, берем из сегмента
+			if word.Speaker == "" {
+				word.Speaker = segSpeaker
+			}
+			words = append(words, word)
+		}
+	}
+	return words
+}
+
+// Константы для группировки диалога
+const (
+	defaultMaxPauseMs   = 2000  // Пауза для разделения фраз (2 сек)
+	maxPhraseDurationMs = 10000 // Максимальная длина фразы (10 сек)
+	minPhraseDurationMs = 1000  // Минимальная длина фразы (1 сек)
+	shortPauseMs        = 300   // Короткая пауза для поиска точки разбиения
+)
+
+// groupWordsToPhrases группирует поток слов в фразы с учетом пауз, смены спикера
+// и максимальной длины фразы для создания естественного диалога
+func groupWordsToPhrases(words []TranscriptWord, maxPauseMs int64) []TranscriptSegment {
+	if len(words) == 0 {
+		return nil
+	}
+
+	// Сортируем слова (на всякий случай)
+	sort.Slice(words, func(i, j int) bool {
+		return words[i].Start < words[j].Start
+	})
+
+	var phrases []TranscriptSegment
 	var currentPhrase TranscriptSegment
 	var currentWords []TranscriptWord
 	var phraseTexts []string
 
-	for i, word := range allWords {
-		// Первое слово - начинаем новую фразу
+	// Вспомогательная функция для завершения текущей фразы
+	finishPhrase := func(endTime int64) {
+		if len(phraseTexts) > 0 {
+			currentPhrase.End = endTime
+			currentPhrase.Text = strings.Join(phraseTexts, " ")
+			currentPhrase.Words = currentWords
+			phrases = append(phrases, currentPhrase)
+		}
+	}
+
+	// Вспомогательная функция для начала новой фразы
+	startNewPhrase := func(word TranscriptWord) {
+		currentPhrase = TranscriptSegment{
+			Start:   word.Start,
+			End:     word.End,
+			Speaker: word.Speaker,
+		}
+		phraseTexts = []string{word.Text}
+		currentWords = []TranscriptWord{word}
+	}
+
+	for i, word := range words {
 		if i == 0 {
-			currentPhrase = TranscriptSegment{
-				Start:   word.Start,
-				End:     word.End,
-				Speaker: word.Speaker,
-			}
-			phraseTexts = []string{word.Text}
-			currentWords = []TranscriptWord{word}
+			startNewPhrase(word)
 			continue
 		}
 
-		// Проверяем нужно ли начать новую фразу:
-		// 1. Сменился спикер
-		// 2. Пауза больше maxPauseMs
-		prevWord := allWords[i-1]
-		pauseMs := word.Start - prevWord.End
+		prevWord := words[i-1]
+		pause := word.Start - prevWord.End
+		phraseDuration := word.End - currentPhrase.Start
+
 		speakerChanged := word.Speaker != currentPhrase.Speaker
-		longPause := pauseMs > maxPauseMs
+		longPause := pause > maxPauseMs
+		phraseTooLong := phraseDuration > maxPhraseDurationMs
 
-		if speakerChanged || longPause {
-			// Сохраняем текущую фразу
-			currentPhrase.End = prevWord.End
-			currentPhrase.Text = strings.Join(phraseTexts, " ")
-			currentPhrase.Words = currentWords
-			dialogue = append(dialogue, currentPhrase)
+		// Условия для разбиения фразы
+		shouldSplit := speakerChanged || longPause
 
-			// Начинаем новую фразу
-			currentPhrase = TranscriptSegment{
-				Start:   word.Start,
-				End:     word.End,
-				Speaker: word.Speaker,
+		// Если фраза слишком длинная - ищем хорошую точку для разбиения
+		if phraseTooLong && !shouldSplit {
+			// Проверяем есть ли хоть какая-то пауза для разбиения
+			if pause > shortPauseMs {
+				shouldSplit = true
+			} else {
+				// Принудительное разбиение при очень длинной фразе (>15 сек)
+				if phraseDuration > maxPhraseDurationMs*3/2 {
+					shouldSplit = true
+				}
 			}
-			phraseTexts = []string{word.Text}
-			currentWords = []TranscriptWord{word}
+		}
+
+		if shouldSplit {
+			// Завершаем фразу
+			finishPhrase(prevWord.End)
+			// Начинаем новую
+			startNewPhrase(word)
 		} else {
 			// Продолжаем текущую фразу
 			currentPhrase.End = word.End
@@ -527,20 +678,12 @@ func mergeWordsToDialogue(micSegments, sysSegments []TranscriptSegment) []Transc
 		}
 	}
 
-	// Добавляем последнюю фразу
+	// Последняя фраза
 	if len(phraseTexts) > 0 {
-		currentPhrase.Text = strings.Join(phraseTexts, " ")
-		currentPhrase.Words = currentWords
-		dialogue = append(dialogue, currentPhrase)
+		finishPhrase(currentPhrase.End)
 	}
 
-	log.Printf("mergeWordsToDialogue: result=%d phrases (word-level)", len(dialogue))
-	for i, seg := range dialogue {
-		log.Printf("  dialogue[%d]: start=%dms end=%dms speaker=%s words=%d text=%q",
-			i, seg.Start, seg.End, seg.Speaker, len(seg.Words), seg.Text)
-	}
-
-	return dialogue
+	return phrases
 }
 
 // formatDialogue форматирует диалог для отображения

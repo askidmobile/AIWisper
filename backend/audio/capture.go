@@ -296,7 +296,7 @@ func (c *Capture) startMicrophoneCapture() error {
 	deviceConfig := malgo.DefaultDeviceConfig(malgo.Capture)
 	deviceConfig.Capture.Format = malgo.FormatF32
 	deviceConfig.Capture.Channels = 1
-	deviceConfig.SampleRate = 48000 // 48kHz для синхронизации с ScreenCaptureKit
+	deviceConfig.SampleRate = 24000 // 24kHz - native rate для Voice Isolation
 	deviceConfig.Alsa.NoMMap = 1
 
 	if c.micDeviceID != nil {
@@ -340,7 +340,7 @@ func (c *Capture) startSystemCapture() error {
 	deviceConfig := malgo.DefaultDeviceConfig(malgo.Capture)
 	deviceConfig.Capture.Format = malgo.FormatF32
 	deviceConfig.Capture.Channels = 2 // Стерео для системного звука
-	deviceConfig.SampleRate = 48000   // 48kHz для синхронизации
+	deviceConfig.SampleRate = 24000   // 24kHz
 	deviceConfig.Alsa.NoMMap = 1
 
 	if c.systemDeviceID != nil {

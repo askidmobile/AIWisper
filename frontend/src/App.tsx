@@ -233,6 +233,7 @@ function App() {
     const [devices, setDevices] = useState<AudioDevice[]>([]);
     const [micDevice, setMicDevice] = useState<string>('');
     const [captureSystem, setCaptureSystem] = useState(true);
+    const [disableVAD, setDisableVAD] = useState(false);
     const [screenCaptureKitAvailable, setScreenCaptureKitAvailable] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [echoCancel, setEchoCancel] = useState(0.4); // Эхоподавление 0-1
@@ -316,6 +317,12 @@ function App() {
     const [diarizationProvider, setDiarizationProvider] = useState('');
     const [diarizationLoading, setDiarizationLoading] = useState(false);
     const [diarizationError, setDiarizationError] = useState<string | null>(null);
+    // Сохранённые настройки диаризации (для авто-включения)
+    const [savedDiarizationSegModelId, setSavedDiarizationSegModelId] = useState<string>('');
+    const [savedDiarizationEmbModelId, setSavedDiarizationEmbModelId] = useState<string>('');
+    const [savedDiarizationProvider, setSavedDiarizationProvider] = useState<string>('auto');
+    const [savedDiarizationEnabled, setSavedDiarizationEnabled] = useState(false);
+    const diarizationAutoEnableAttempted = useRef(false);
 
     const transcriptionRef = useRef<HTMLDivElement | null>(null);
 
@@ -345,11 +352,28 @@ function App() {
                     setActiveModelId(settings.modelId || 'ggml-large-v3-turbo');
                     setEchoCancel(settings.echoCancel ?? 0.4);
                     setUseVoiceIsolation(settings.useVoiceIsolation ?? false);
+                    setDisableVAD(settings.disableVAD ?? false);
                     setCaptureSystem(settings.captureSystem ?? true);
                     setOllamaModel(settings.ollamaModel || 'llama3.2');
                     setOllamaUrl(settings.ollamaUrl || 'http://localhost:11434');
                     setTheme((settings as any).theme || 'dark');
+                    // Загружаем настройки диаризации
+                    if (settings.diarizationEnabled !== undefined) {
+                        setSavedDiarizationEnabled(settings.diarizationEnabled);
+                    }
+                    if (settings.diarizationSegModelId) {
+                        setSavedDiarizationSegModelId(settings.diarizationSegModelId);
+                    }
+                    if (settings.diarizationEmbModelId) {
+                        setSavedDiarizationEmbModelId(settings.diarizationEmbModelId);
+                    }
+                    if (settings.diarizationProvider) {
+                        setSavedDiarizationProvider(settings.diarizationProvider);
+                    }
                     addLog('Settings loaded');
+                    if (settings.diarizationEnabled) {
+                        addLog(`Diarization settings: enabled=${settings.diarizationEnabled}, seg=${settings.diarizationSegModelId}, emb=${settings.diarizationEmbModelId}`);
+                    }
                 }
                 setSettingsLoaded(true);
             } catch (err) {
@@ -370,17 +394,23 @@ function App() {
                     modelId: activeModelId,
                     echoCancel,
                     useVoiceIsolation,
+                    disableVAD,
                     captureSystem,
                     ollamaModel,
                     ollamaUrl,
-                    theme
+                    theme,
+                    // Сохраняем настройки диаризации
+                    diarizationEnabled: savedDiarizationEnabled,
+                    diarizationSegModelId: savedDiarizationSegModelId,
+                    diarizationEmbModelId: savedDiarizationEmbModelId,
+                    diarizationProvider: savedDiarizationProvider
                 });
             } catch (err) {
                 console.error('Failed to save settings:', err);
             }
         };
         saveSettings();
-    }, [language, activeModelId, echoCancel, useVoiceIsolation, captureSystem, ollamaModel, ollamaUrl, theme, settingsLoaded]);
+    }, [language, activeModelId, echoCancel, useVoiceIsolation, disableVAD, captureSystem, ollamaModel, ollamaUrl, theme, settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider]);
 
     // Применяем тему к корню документа
     useEffect(() => {
@@ -536,6 +566,12 @@ function App() {
                             if (msg.session) {
                                 setSelectedSession(msg.session);
                             }
+                            break;
+
+                        case 'session_deleted':
+                            // Удаляем сессию из списка
+                            setSessions(prev => prev.filter(s => s.id !== msg.sessionId));
+                            addLog(`Session deleted: ${msg.sessionId?.substring(0, 8)}...`);
                             break;
 
                         case 'chunk_created':
@@ -809,6 +845,60 @@ function App() {
         };
     }, [addLog]);
 
+    // Автоматическое включение диаризации при старте, если была включена ранее
+    useEffect(() => {
+        // Проверяем условия для авто-включения
+        if (!settingsLoaded) return;
+        if (!savedDiarizationEnabled) return;
+        if (diarizationAutoEnableAttempted.current) return;
+        if (!savedDiarizationSegModelId || !savedDiarizationEmbModelId) return;
+        if (models.length === 0) return;
+        if (status !== 'Connected') return;
+
+        // Находим модели
+        const segModel = models.find(m => m.id === savedDiarizationSegModelId);
+        const embModel = models.find(m => m.id === savedDiarizationEmbModelId);
+
+        if (!segModel || !embModel) {
+            console.log('[Diarization] Auto-enable skipped: models not found in registry');
+            return;
+        }
+
+        // Проверяем что модели скачаны
+        const segReady = segModel.status === 'downloaded' || segModel.status === 'active';
+        const embReady = embModel.status === 'downloaded' || embModel.status === 'active';
+
+        if (!segReady || !embReady) {
+            console.log('[Diarization] Auto-enable skipped: models not downloaded', { segStatus: segModel.status, embStatus: embModel.status });
+            return;
+        }
+
+        if (!segModel.path || !embModel.path) {
+            console.log('[Diarization] Auto-enable skipped: model paths missing');
+            return;
+        }
+
+        // Отмечаем что попытка была
+        diarizationAutoEnableAttempted.current = true;
+
+        console.log('[Diarization] Auto-enabling with saved settings:', {
+            segModelId: savedDiarizationSegModelId,
+            embModelId: savedDiarizationEmbModelId,
+            provider: savedDiarizationProvider
+        });
+        addLog(`Auto-enabling diarization (${savedDiarizationProvider})...`);
+
+        setDiarizationLoading(true);
+        setDiarizationError(null);
+
+        wsRef.current?.send(JSON.stringify({
+            type: 'enable_diarization',
+            segmentationModelPath: segModel.path,
+            embeddingModelPath: embModel.path,
+            diarizationProvider: savedDiarizationProvider
+        }));
+    }, [settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider, models, status, addLog]);
+
     const handleStartStop = () => {
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -852,6 +942,7 @@ function App() {
                 model: modelId,
                 micDevice,
                 captureSystem,
+                disableVAD,
                 useNativeCapture: screenCaptureKitAvailable && captureSystem,
                 useVoiceIsolation: screenCaptureKitAvailable && captureSystem && useVoiceIsolation,
                 echoCancel: captureSystem && !useVoiceIsolation ? echoCancel : 0
@@ -943,6 +1034,12 @@ function App() {
         setDiarizationLoading(true);
         setDiarizationError(null);
 
+        // Сохраняем настройки для авто-включения при перезапуске
+        setSavedDiarizationEnabled(true);
+        setSavedDiarizationSegModelId(segModelId);
+        setSavedDiarizationEmbModelId(embModelId);
+        setSavedDiarizationProvider(provider);
+
         wsRef.current.send(JSON.stringify({
             type: 'enable_diarization',
             segmentationModelPath: segModel.path,
@@ -956,6 +1053,8 @@ function App() {
         if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
         setDiarizationLoading(true);
+        // Сохраняем что диаризация выключена (но сохраняем модели для удобства)
+        setSavedDiarizationEnabled(false);
         wsRef.current.send(JSON.stringify({ type: 'disable_diarization' }));
         addLog('Disabling diarization...');
     }, [addLog]);
@@ -999,9 +1098,10 @@ function App() {
             type: 'retranscribe_full',
             sessionId: selectedSession.id,
             model: modelId,
-            language: language
+            language: language,
+            diarizationEnabled: diarizationEnabled  // Передаём текущее состояние диаризации
         }));
-        addLog(`Starting full retranscription with model: ${activeModel?.name || 'default'}`);
+        addLog(`Starting full retranscription with model: ${activeModel?.name || 'default'}${diarizationEnabled ? ' (with diarization)' : ''}`);
     }, [selectedSession, models, activeModelId, language, addLog]);
 
     // Отмена полной ретранскрипции (с debounce)
@@ -1031,6 +1131,12 @@ function App() {
         setSelectedSession(null);
         setShowDeleteConfirm(false);
     }, [selectedSession, addLog]);
+
+    // Обновление списка сессий
+    const refreshSessions = useCallback(() => {
+        wsRef.current?.send(JSON.stringify({ type: 'get_sessions' }));
+        addLog('Обновление списка сессий...');
+    }, [addLog]);
 
     // Воспроизведение аудио
     const playAudio = (url: string) => {
@@ -1471,6 +1577,18 @@ function App() {
                     </h2>
                     <button
                         className="btn-icon btn-icon-sm"
+                        onClick={refreshSessions}
+                        title="Обновить список"
+                        style={{ width: '32px', height: '32px' }}
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M23 4v6h-6"/>
+                            <path d="M1 20v-6h6"/>
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                        </svg>
+                    </button>
+                    <button
+                        className="btn-icon btn-icon-sm"
                         onClick={openDataFolder}
                         title="Открыть папку с записями"
                         style={{ width: '32px', height: '32px' }}
@@ -1711,6 +1829,8 @@ function App() {
                     setMicDevice={setMicDevice}
                     captureSystem={captureSystem}
                     setCaptureSystem={setCaptureSystem}
+                    disableVAD={disableVAD}
+                    setDisableVAD={setDisableVAD}
                     screenCaptureKitAvailable={screenCaptureKitAvailable}
                     useVoiceIsolation={useVoiceIsolation}
                     setUseVoiceIsolation={setUseVoiceIsolation}
@@ -1740,7 +1860,7 @@ function App() {
                 />
 
                 {/* Transcription Area */}
-                <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
                     {/* Sticky Header: Session info + Tabs */}
                     {(selectedSession || isRecording) && (
                         <div style={{
@@ -2227,7 +2347,7 @@ function App() {
                     )}
 
                     {/* Scrollable Content Area */}
-                    <div ref={transcriptionRef} style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto' }}>
+                    <div ref={transcriptionRef} style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto', overflowX: 'hidden', minWidth: 0 }}>
                         {chunks.length === 0 && !isRecording && !selectedSession ? (
                             <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
                                 <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎙</div>

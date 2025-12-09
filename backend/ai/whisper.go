@@ -168,6 +168,12 @@ func (e *WhisperEngine) TranscribeWithSegments(samples []float32) ([]TranscriptS
 			continue
 		}
 
+		// Проверяем, что в сегменте действительно есть звук (фильтрация галлюцинаций на тишине)
+		if isSegmentSilence(samples, segment.Start.Milliseconds(), segment.End.Milliseconds()) {
+			log.Printf("Filtered silence hallucination: %q at %v-%v", text, segment.Start, segment.End)
+			continue
+		}
+
 		// Извлекаем слова из токенов
 		words := extractWordsFromTokens(segment.Tokens)
 
@@ -284,6 +290,12 @@ func isHallucination(text string) bool {
 		"конец записи",
 		"субтитры",
 		"subtitles",
+		"редактор субтитров",
+		"корректор",
+		"а.семкин",
+		"а.егорова",
+		"семкин",
+		"егорова",
 		"thank you for watching",
 		"please subscribe",
 		"www.",
@@ -359,7 +371,7 @@ func hasSignificantAudio(samples []float32) bool {
 
 	const minRMS = 0.005
 	if rms < minRMS {
-		log.Printf("Audio RMS %.4f below threshold %.4f", rms, minRMS)
+		// log.Printf("Audio RMS %.4f below threshold %.4f", rms, minRMS) // Too noisy for segments
 		return false
 	}
 
@@ -373,11 +385,34 @@ func hasSignificantAudio(samples []float32) bool {
 	}
 
 	if maxAbs < 0.01 {
-		log.Printf("Audio max amplitude %.4f too low", maxAbs)
+		// log.Printf("Audio max amplitude %.4f too low", maxAbs) // Too noisy
 		return false
 	}
 
 	return true
+}
+
+// isSegmentSilence проверяет, является ли сегмент тишиной
+func isSegmentSilence(samples []float32, startMs, endMs int64) bool {
+	startIdx := int(startMs * 16) // 16 samples per ms
+	endIdx := int(endMs * 16)
+
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if endIdx > len(samples) {
+		endIdx = len(samples)
+	}
+	if startIdx >= endIdx {
+		return true
+	}
+
+	// Для очень коротких сегментов (< 0.1s) проверка может быть ненадежной,
+	// но Whisper редко выдает такие короткие сегменты с речью.
+	// Если сегмент очень короткий, лучше его оставить (или проверить контекст?)
+	// Пока проверяем как обычно.
+	segSamples := samples[startIdx:endIdx]
+	return !hasSignificantAudio(segSamples)
 }
 
 // TranscribeHighQuality выполняет высококачественную транскрипцию для полных файлов
@@ -483,6 +518,13 @@ func (e *WhisperEngine) TranscribeHighQuality(samples []float32) ([]TranscriptSe
 		if isHallucination(text) {
 			hallucinationCount++
 			log.Printf("Filtered hallucination: %q", text)
+			continue
+		}
+
+		// Проверяем, что в сегменте действительно есть звук (фильтрация галлюцинаций на тишине)
+		if isSegmentSilence(samples, segment.Start.Milliseconds(), segment.End.Milliseconds()) {
+			hallucinationCount++
+			log.Printf("Filtered silence hallucination: %q at %v-%v", text, segment.Start, segment.End)
 			continue
 		}
 

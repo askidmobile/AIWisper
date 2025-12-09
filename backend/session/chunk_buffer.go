@@ -158,38 +158,61 @@ func (b *ChunkBuffer) tryEmitChunk() {
 		return
 	}
 
-	minChunkSamples := int64(b.config.MinChunkDuration.Seconds() * float64(b.sampleRate))
-	maxChunkSamples := int64(b.config.MaxChunkDuration.Seconds() * float64(b.sampleRate))
+	var splitPoint int64
 
-	// Недостаточно данных для минимального чанка
-	if availableSamples < minChunkSamples {
-		return
-	}
+	// Режим с отключённым VAD - фиксированные интервалы
+	if b.config.DisableVAD {
+		fixedChunkSamples := int64(b.config.FixedChunkDuration.Seconds() * float64(b.sampleRate))
+		maxChunkSamples := int64(b.config.MaxChunkDuration.Seconds() * float64(b.sampleRate))
 
-	// Ищем паузу после минимальной длины чанка
-	searchStart := b.emittedSamples + minChunkSamples
-	searchEnd := b.emittedSamples + availableSamples
-	if searchEnd > b.emittedSamples+maxChunkSamples {
-		searchEnd = b.emittedSamples + maxChunkSamples
-	}
-
-	splitPoint := b.findSilenceGap(searchStart, searchEnd)
-
-	// Если не нашли паузу
-	if splitPoint == -1 {
-		// Если достигли максимума - режем принудительно
-		if availableSamples >= maxChunkSamples {
-			splitPoint = b.emittedSamples + maxChunkSamples
-			log.Printf("Forced chunk split at max duration (5 min)")
-		} else {
-			// Ждём паузу
+		// Недостаточно данных для фиксированного чанка
+		if availableSamples < fixedChunkSamples {
 			return
+		}
+
+		// Используем фиксированный размер, но не больше максимума
+		chunkSize := fixedChunkSamples
+		if chunkSize > maxChunkSamples {
+			chunkSize = maxChunkSamples
+		}
+		splitPoint = b.emittedSamples + chunkSize
+		log.Printf("Fixed interval chunk: %.1f seconds", b.config.FixedChunkDuration.Seconds())
+	} else {
+		// Стандартный режим с VAD
+		minChunkSamples := int64(b.config.MinChunkDuration.Seconds() * float64(b.sampleRate))
+		maxChunkSamples := int64(b.config.MaxChunkDuration.Seconds() * float64(b.sampleRate))
+
+		// Недостаточно данных для минимального чанка
+		if availableSamples < minChunkSamples {
+			return
+		}
+
+		// Ищем паузу после минимальной длины чанка
+		searchStart := b.emittedSamples + minChunkSamples
+		searchEnd := b.emittedSamples + availableSamples
+		if searchEnd > b.emittedSamples+maxChunkSamples {
+			searchEnd = b.emittedSamples + maxChunkSamples
+		}
+
+		splitPoint = b.findSilenceGap(searchStart, searchEnd)
+
+		// Если не нашли паузу
+		if splitPoint == -1 {
+			// Если достигли максимума - режем принудительно
+			if availableSamples >= maxChunkSamples {
+				splitPoint = b.emittedSamples + maxChunkSamples
+				log.Printf("Forced chunk split at max duration (5 min)")
+			} else {
+				// Ждём паузу
+				return
+			}
 		}
 	}
 
 	// Выделяем чанк
+	minChunkSamples := int64(b.config.MinChunkDuration.Seconds() * float64(b.sampleRate))
 	chunkSize := splitPoint - b.emittedSamples
-	if chunkSize < minChunkSamples {
+	if chunkSize < minChunkSamples && !b.config.DisableVAD {
 		return
 	}
 

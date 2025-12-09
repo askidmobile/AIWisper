@@ -101,7 +101,7 @@ func TestHannWindow(t *testing.T) {
 }
 
 func TestLoadGigaAMVocab(t *testing.T) {
-	// Создаём временный файл словаря
+	// Создаём временный файл словаря (формат v3_ctc - character-based)
 	content := `▁ 0
 а 1
 б 2
@@ -119,7 +119,7 @@ func TestLoadGigaAMVocab(t *testing.T) {
 	}
 	tmpFile.Close()
 
-	vocab, blankID, err := loadGigaAMVocab(tmpFile.Name())
+	vocab, blankID, spaceID, err := loadGigaAMVocab(tmpFile.Name())
 	if err != nil {
 		t.Fatalf("Failed to load vocab: %v", err)
 	}
@@ -132,7 +132,86 @@ func TestLoadGigaAMVocab(t *testing.T) {
 		t.Errorf("Expected blank_id=4, got %d", blankID)
 	}
 
+	if spaceID != 0 {
+		t.Errorf("Expected space_id=0, got %d", spaceID)
+	}
+
 	if vocab[0] != "▁" {
 		t.Errorf("Expected first token '▁', got %q", vocab[0])
+	}
+}
+
+func TestLoadGigaAMVocab_V3CTC(t *testing.T) {
+	// Создаём временный файл словаря (формат v3_vocab.txt - 34 токена)
+	content := `▁ 0
+а 1
+б 2
+в 3
+г 4
+д 5
+е 6
+ж 7
+з 8
+и 9
+й 10
+к 11
+л 12
+м 13
+н 14
+о 15
+п 16
+р 17
+с 18
+т 19
+у 20
+ф 21
+х 22
+ц 23
+ч 24
+ш 25
+щ 26
+ъ 27
+ы 28
+ь 29
+э 30
+ю 31
+я 32
+<blk> 33
+`
+	tmpFile, err := os.CreateTemp("", "vocab_v3*.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	tmpFile.Close()
+
+	vocab, blankID, spaceID, err := loadGigaAMVocab(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("Failed to load vocab: %v", err)
+	}
+
+	if len(vocab) != 34 {
+		t.Errorf("Expected 34 tokens, got %d", len(vocab))
+	}
+
+	if blankID != 33 {
+		t.Errorf("Expected blank_id=33, got %d", blankID)
+	}
+
+	if spaceID != 0 {
+		t.Errorf("Expected space_id=0, got %d", spaceID)
+	}
+
+	// Проверяем несколько букв
+	if vocab[1] != "а" {
+		t.Errorf("Expected token 1 'а', got %q", vocab[1])
+	}
+
+	if vocab[32] != "я" {
+		t.Errorf("Expected token 32 'я', got %q", vocab[32])
 	}
 }

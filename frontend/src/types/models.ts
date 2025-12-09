@@ -53,10 +53,16 @@ export interface AppSettings {
     echoCancel: number;
     useVoiceIsolation: boolean;
     captureSystem: boolean;
+    disableVAD?: boolean;
     theme?: 'light' | 'dark';
     // Ollama settings for summary
     ollamaModel: string;  // e.g., 'llama3.2', 'qwen2.5', 'mistral'
     ollamaUrl: string;    // e.g., 'http://localhost:11434'
+    // Diarization settings
+    diarizationEnabled?: boolean;
+    diarizationSegModelId?: string;
+    diarizationEmbModelId?: string;
+    diarizationProvider?: string;
 }
 
 // Модель Ollama для summary

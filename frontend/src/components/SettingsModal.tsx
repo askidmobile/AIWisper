@@ -9,6 +9,8 @@ interface SettingsModalProps {
     setMicDevice: (id: string) => void;
     captureSystem: boolean;
     setCaptureSystem: (v: boolean) => void;
+    disableVAD: boolean;
+    setDisableVAD: (v: boolean) => void;
     screenCaptureKitAvailable: boolean;
     useVoiceIsolation: boolean;
     setUseVoiceIsolation: (v: boolean) => void;
@@ -45,6 +47,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setMicDevice,
     captureSystem,
     setCaptureSystem,
+    disableVAD,
+    setDisableVAD,
     screenCaptureKitAvailable,
     useVoiceIsolation,
     setUseVoiceIsolation,
@@ -360,6 +364,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 </span>
                             </label>
                         )}
+
+                        <label
+                            style={{
+                                display: 'flex',
+                                alignItems: 'flex-start', // Align top for multiline text
+                                gap: '0.6rem',
+                                fontSize: '0.85rem',
+                                color: 'var(--text-primary)',
+                                cursor: 'pointer',
+                                marginTop: '0.5rem',
+                            }}
+                        >
+                            <input
+                                type="checkbox"
+                                checked={disableVAD}
+                                onChange={(e) => setDisableVAD(e.target.checked)}
+                                style={{
+                                    width: '18px',
+                                    height: '18px',
+                                    accentColor: 'var(--primary)',
+                                    marginTop: '2px', // Align with first line of text
+                                }}
+                            />
+                            <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                <span>Отключить VAD (Voice Activity Detection)</span>
+                                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', lineHeight: '1.3', marginTop: '2px' }}>
+                                    Использовать фиксированные чанки (30с) вместо нарезки по паузам.
+                                    Помогает, если начало фраз обрезается.
+                                </span>
+                            </div>
+                        </label>
                     </div>
 
                     {/* Echo Cancellation Slider */}

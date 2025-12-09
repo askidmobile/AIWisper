@@ -5,6 +5,195 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2025-12-10
+
+### Added
+- **GigaAM Dialogue Improvement**: Major update to speech recognition quality
+  - **Phase 1: Smart Dialogue Structure**
+    - `maxPhraseDurationMs = 10000` - breaks long monologues into natural phrases
+    - `interleaveDialogue()` - properly interleaves mic/sys segments by timestamp
+    - Handles overlapping speech with segment trimming
+  - **Phase 2: LLM Auto-Improvement**
+    - Enhanced prompt for splitting glued words ("вопросеянеможо" → "вопросе я не могу")
+    - Support for numbered speakers (Собеседник 1, 2, ...)
+    - WebSocket commands: `set_auto_improve`, `get_auto_improve_status`
+    - Config flags: `--auto-improve`, `--ollama-url`, `--ollama-model`
+  - **Phase 3: VAD Preprocessing**
+    - `CompressSpeech()` removes silence from audio before transcription
+    - Speeds up processing by ~30-50%
+    - `RestoreSegmentTimestamps()` maps compressed timestamps back to original
+  - **Phase 4: CTC Decoder Heuristics**
+    - Confidence drop detection (`confidenceDropThreshold = 0.4`)
+    - Pause detection via blank token sequences (`minBlankSequenceForPause = 2`)
+    - Better word boundary detection for reduced word gluing
+
+### Technical
+- `backend/ai/gigaam.go`: CTC decoder with confidence and pause heuristics
+- `backend/session/manager.go`: Dialogue interleaving and phrase segmentation
+- `backend/session/vad.go`: VAD-based audio compression with timestamp mapping
+- `backend/internal/service/llm.go`: Enhanced LLM prompt and response parser
+- `backend/internal/service/transcription.go`: VAD integration and auto-improve
+- `backend/internal/api/server.go`: WebSocket commands for auto-improve
+- `docs/plan_gigaam_dialogue_improvement_2025-12-10.md`: Implementation plan
+
+## [1.17.20] - 2025-12-10
+
+### Changed
+- **GigaAM v3 CTC**: Switched from slow v3_e2e_ctc to fast v3_ctc model
+  - **5x Faster**: Basic CTC model without E2E overhead runs much faster
+  - **Better Accuracy**: WER 9.1% vs 12% for E2E model (E2E accuracy is worse due to punctuation overhead)
+  - **Simpler Decoder**: Character-based vocabulary (34 tokens) instead of BPE (500+ tokens)
+  - **Trade-off**: No punctuation in output (lowercase text without punctuation marks)
+
+### Technical
+- `backend/models/registry.go`: Changed model URL to `v3_ctc.int8.onnx`, vocab to `v3_vocab.txt`
+- `backend/ai/gigaam.go`:
+  - Simplified CTC decoder for character-based vocabulary
+  - Replaced `unkID` with `spaceID` for space token tracking
+  - Removed BPE/punctuation handling logic
+- `backend/ai/gigaam_test.go`: Updated tests for v3_ctc vocabulary format
+
+## [1.17.19] - 2025-12-10
+
+### Changed
+- **GigaAM v3 E2E CTC (reverted in 1.17.20)**: Attempted upgrade to v3 E2E CTC model
+  - Model was too slow for practical use
+  - Rolled back to basic CTC in next version
+
+## [1.17.12] - 2025-12-09
+
+### Fixed
+- **Robotic/Computerized Audio Recording**: Restored original v1.7.2 audio mixing logic
+  - **Root Cause**: Regression after v1.7.2 refactoring - changed `min(micBuffer, systemBuffer)` to `max(micLen, sysLen)` 
+  - Using `max()` created "holes" of zero samples when one buffer was empty, causing robotic sound
+  - **Solution**: Restored `minLen` logic - write audio only when BOTH channels have data
+- **Diarization Settings Persistence**: Settings now saved to localStorage and auto-restored on app start
+- **Retranscription with Diarization**: Added `diarizationEnabled` flag to retranscribe_full request
+
+### Added
+- **Refresh Sessions Button**: Added circular arrows button to manually refresh sessions list
+
+### Technical
+- `backend/internal/service/recording.go`: Restored `minLen := min(micBuffer, systemBuffer)` logic
+- `frontend/src/context/DiarizationContext.tsx`: Save/restore diarization settings from localStorage
+- `frontend/src/App.tsx`: Added `refreshSessions` callback and UI button
+
+## [1.17.7] - 2025-12-09
+
+### Fixed
+- **Audio Buffer Underrun - queueDepth Fix**: Added critical ScreenCaptureKit buffer configuration
+  - **Root Cause**: Missing `queueDepth` parameter in `SCStreamConfiguration` caused buffer underruns
+  - Apple's documentation and examples recommend `queueDepth = 6` minimum ("or it becomes very stuttery")
+  - Our code had no queueDepth set, defaulting to a small value causing dropped audio frames
+  - **Solution**:
+    1. Added `queueDepth = 8` for both system and microphone streams
+    2. Created dedicated `DispatchQueue` for each audio stream instead of shared `.global()` queue
+    3. Changed audio output from async to sync to prevent backpressure and data loss
+
+### Technical
+- `backend/audio/screencapture/Sources/main.swift`:
+  - Added `sysConfig.queueDepth = 8` for system audio capture
+  - Added `micConfig.queueDepth = 8` for microphone capture
+  - Created `DispatchQueue(label: "system.audio.capture")` for system audio
+  - Created `DispatchQueue(label: "mic.audio.capture")` for microphone
+  - Changed `outputQueue.async` to synchronous `writeChannelData()` call
+
+## [1.17.6] - 2025-12-09
+
+### Fixed
+- **Audio Duration Mismatch - Root Cause Found**: Fixed 1.43x audio stretching ("robot voice")
+  - **Root Cause**: Microphone outputs 24 kHz, system audio outputs 48 kHz. Linear interpolation resampling in Swift (24→48 kHz) created timing desync - recorded audio was 1.43x longer than real time!
+  - **Evidence**: 54 sec recording → 77 sec WAV file (meta.totalDuration vs actual file duration)
+  - **Solution**: 
+    1. Removed all resampling in Swift - output native sample rate
+    2. Changed system-wide SampleRate to 24 kHz (Voice Isolation native rate)
+    3. Both mic and system audio now at same rate - no desync
+  - 24 kHz is sufficient for speech (Whisper downsamples to 16 kHz anyway)
+
+### Technical
+- `backend/audio/screencapture/Sources/main.swift`:
+  - Removed resampling code - now outputs native sample rate
+  - Changed `targetSampleRate` default to 24000
+  - Stream configs now request 24 kHz
+- `backend/session/types.go`: `SampleRate = 24000`
+- `backend/audio/capture.go`: Device configs use 24 kHz
+
+## [1.17.5] - 2025-12-09
+
+### Fixed
+- **Audio Quality - Fundamental Architecture Fix**: Reverted to WAV-first recording approach
+  - **Root Cause**: Any real-time encoding (FFmpeg pipe or shine-mp3) creates CPU load and buffer timing issues
+  - **Solution**: Write raw WAV during recording, convert to MP3 only after recording stops
+  - This is the original proven architecture that worked reliably
+  - WAV writing is simple sequential I/O with no encoding overhead
+  - MP3 conversion happens once at the end, not competing with audio capture
+  - Restored 48 kHz sample rate (will be resampled by ScreenCaptureKit if needed)
+
+### Technical
+- `backend/internal/service/recording.go`:
+  - Now uses `WAVWriter` instead of any MP3 writer during recording
+  - Calls `ConvertWAVToMP3()` after recording stops
+- `backend/session/mp3_writer.go`: Added `ConvertWAVToMP3()` function
+- Restored `SampleRate = 48000` in all components
+- Recording flow: Audio → WAV (real-time) → MP3 (post-processing)
+
+## [1.17.4] - 2025-12-09
+
+### Fixed
+- **CPU Overload from FFmpeg**: Replaced FFmpeg-based MP3 encoding with pure Go implementation
+  - **Root Cause**: FFmpeg process was consuming 100% CPU during recording, causing audio buffer underruns and distorted "robotic" voice
+  - **Solution**: Replaced FFmpeg pipe with [shine-mp3](https://github.com/braheezy/shine-mp3) - a pure Go MP3 encoder
+  - No external processes, no pipe overhead, no FFmpeg dependency for recording
+  - Much lower CPU usage and stable audio quality
+
+### Technical
+- Added `github.com/braheezy/shine-mp3` dependency
+- New `backend/session/mp3_writer_shine.go`: Pure Go MP3 writer implementation
+- `backend/internal/service/recording.go`: Now uses `ShineMP3Writer` instead of `MP3Writer`
+- FFmpeg is still used for audio extraction during retranscription (reading MP3 files)
+
+## [1.17.3] - 2025-12-09
+
+### Fixed
+- **Audio Quality "Robot Voice" Issue**: Fixed distorted/robotic audio recording quality
+  - **Root Cause**: Voice Isolation microphone on macOS outputs audio at 24 kHz, but we were requesting 48 kHz and using linear interpolation resampling which created artifacts
+  - **Solution**: Changed recording sample rate from 48 kHz to 24 kHz (native rate for Voice Isolation)
+  - Now both microphone and system audio streams run at 24 kHz without resampling
+  - 24 kHz is sufficient for speech recognition (Whisper downsamples to 16 kHz anyway)
+
+### Technical
+- `backend/session/types.go`: Changed `SampleRate` constant from 48000 to 24000
+- `backend/audio/capture.go`: Updated device configs to use 24 kHz
+- `backend/audio/screencapture/Sources/main.swift`:
+  - Changed `targetSampleRate` default from 48000 to 24000
+  - Updated stream configurations to request 24 kHz
+  - No more resampling needed (resample=false in logs)
+
+## [1.17.2] - 2025-12-09
+
+### Fixed
+- **Empty Session Display**: Fixed dark screen when opening sessions without transcription chunks
+  - Now shows informative message instead of blank screen
+  - Explains that recording may have been interrupted before creating chunks
+
+- **Session Deletion UI Sync**: Sessions now immediately disappear from list after deletion
+  - Added `session_deleted` WebSocket handler to update session list in real-time
+  - Previously required page refresh to see changes
+
+- **Retranscription Progress & Completion**: Fixed retranscription not updating UI during processing
+  - **Problem**: `HandleChunk` was async, so `full_transcription_completed` was sent before chunks finished processing
+  - **Solution**: Added `HandleChunkSync` method for synchronous chunk processing during retranscription
+  - Progress now updates correctly, and UI refreshes only after all chunks are complete
+
+### Technical
+- `frontend/src/App.tsx`:
+  - Added condition for `chunks.length === 0 && selectedSession` to show empty session message
+  - Added `session_deleted` case in WebSocket handler to filter deleted sessions from list
+- `backend/internal/service/transcription.go`:
+  - Added `HandleChunkSync()` method for synchronous transcription (used in retranscription)
+- `backend/internal/api/server.go`:
+  - Changed retranscription to use `HandleChunkSync` instead of async `HandleChunk`
+
 ## [1.7.2] - 2025-12-08
 
 ### Fixed

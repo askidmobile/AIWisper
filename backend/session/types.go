@@ -106,6 +106,7 @@ type SessionConfig struct {
 	SystemDevice  string
 	CaptureSystem bool
 	UseNative     bool
+	DisableVAD    bool // Отключить VAD (фиксированные интервалы)
 }
 
 // VADConfig конфигурация Voice Activity Detection
@@ -116,6 +117,8 @@ type VADConfig struct {
 	MaxChunkDuration   time.Duration // Максимальная длина чанка (default: 5min)
 	PreRollDuration    time.Duration // Буфер до начала речи (default: 500ms)
 	ChunkingStartDelay time.Duration // Задержка перед началом нарезки (default: 60s)
+	DisableVAD         bool          // Отключить VAD и использовать фиксированные интервалы
+	FixedChunkDuration time.Duration // Фиксированная длина чанка (когда DisableVAD=true, default: 30s)
 }
 
 // DefaultVADConfig возвращает конфигурацию VAD по умолчанию
@@ -127,11 +130,30 @@ func DefaultVADConfig() VADConfig {
 		MaxChunkDuration:   5 * time.Minute,  // Максимум 5 минут
 		PreRollDuration:    500 * time.Millisecond,
 		ChunkingStartDelay: 60 * time.Second, // Начинаем нарезку после 1 минуты
+		DisableVAD:         false,
+		FixedChunkDuration: 30 * time.Second, // Фиксированный интервал по умолчанию
 	}
 }
 
-// SampleRate константа частоты дискретизации для записи (48kHz)
-const SampleRate = 48000
+// FixedIntervalConfig возвращает конфигурацию с фиксированными интервалами (без VAD)
+// Используется для stereo режима где разделение по тишине не нужно
+func FixedIntervalConfig() VADConfig {
+	return VADConfig{
+		SilenceThreshold:   0.008,
+		SilenceDuration:    1 * time.Second,
+		MinChunkDuration:   30 * time.Second,
+		MaxChunkDuration:   5 * time.Minute,
+		PreRollDuration:    500 * time.Millisecond,
+		ChunkingStartDelay: 60 * time.Second, // Первый чанк через 1 минуту
+		DisableVAD:         true,
+		FixedChunkDuration: 30 * time.Second, // Фиксированные чанки по 30 секунд
+	}
+}
+
+// SampleRate константа частоты дискретизации для записи
+// Используем 24kHz - это native rate Voice Isolation микрофона на macOS.
+// При 48kHz требуется ресемплинг, который создаёт рассинхронизацию и артефакты.
+const SampleRate = 24000
 
 // WhisperSampleRate частота для Whisper (16kHz)
 const WhisperSampleRate = 16000

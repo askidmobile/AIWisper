@@ -53,7 +53,7 @@ class AudioCaptureDelegate: NSObject, SCStreamDelegate, SCStreamOutput {
     private let targetSampleRate: Int
     private var sourceSampleRate: Int = 0
     
-    init(marker: UInt8, streamName: String, targetSampleRate: Int = 48000) {
+    init(marker: UInt8, streamName: String, targetSampleRate: Int = 24000) {
         self.marker = marker
         self.streamName = streamName
         self.targetSampleRate = targetSampleRate
@@ -112,7 +112,8 @@ class AudioCaptureDelegate: NSObject, SCStreamDelegate, SCStreamOutput {
         if !formatLogged {
             sourceSampleRate = sampleRate
             let needsResample = sampleRate != targetSampleRate
-            fputs("[\(streamName)] Audio: \(sampleRate)Hz, \(channels)ch, float=\(isFloat), resample=\(needsResample)\n", stderr)
+            fputs("[\(streamName)] Audio: \(sampleRate)Hz -> \(targetSampleRate)Hz, \(channels)ch, float=\(isFloat), resample=\(needsResample)\n", stderr)
+            fputs("[\(streamName)] Format flags: 0x\(String(formatFlags, radix: 16)), bits=\(asbd.pointee.mBitsPerChannel), nonInterleaved=\(isNonInterleaved)\n", stderr)
             formatLogged = true
         }
         
@@ -156,17 +157,13 @@ class AudioCaptureDelegate: NSObject, SCStreamDelegate, SCStreamOutput {
                 }
             }
             
-            // Ресемплинг если нужно (например, микрофон 24000 -> 48000)
-            let outputSamples: [Float]
-            if sourceSampleRate != targetSampleRate && sourceSampleRate > 0 {
-                outputSamples = resample(monoSamples, fromRate: sourceSampleRate, toRate: targetSampleRate)
-            } else {
-                outputSamples = monoSamples
-            }
+            // НЕ делаем ресемплинг - пишем в native sample rate источника
+            // Ресемплинг создаёт артефакты ("роботный" голос)
+            // Go сторона должна обрабатывать разные sample rates
             
-            outputQueue.async { [self] in
-                writeChannelData(marker: self.marker, samples: outputSamples)
-            }
+            // ВАЖНО: Пишем СИНХРОННО чтобы гарантировать порядок и избежать потери данных
+            // Асинхронная запись может создавать backpressure и потерю буферов
+            writeChannelData(marker: self.marker, samples: monoSamples)
         }
     }
     
@@ -330,8 +327,12 @@ struct ScreenCaptureAudio {
                 let sysConfig = SCStreamConfiguration()
                 sysConfig.capturesAudio = true
                 sysConfig.excludesCurrentProcessAudio = false
-                sysConfig.sampleRate = 48000
+                sysConfig.sampleRate = 24000
                 sysConfig.channelCount = 2
+                
+                // ВАЖНО: увеличиваем глубину очереди буферов для стабильного захвата
+                // Минимум 4, рекомендуется 6-8 для аудио
+                sysConfig.queueDepth = 8
                 
                 // Минимальные настройки видео
                 sysConfig.width = 2
@@ -342,9 +343,11 @@ struct ScreenCaptureAudio {
                 systemDelegate = AudioCaptureDelegate(marker: 0x53, streamName: "System")
                 systemStream = SCStream(filter: filter, configuration: sysConfig, delegate: systemDelegate)
                 
-                try systemStream?.addStreamOutput(systemDelegate!, type: .audio, sampleHandlerQueue: .global(qos: .userInteractive))
+                // Используем выделенную очередь для обработки аудио буферов
+                let audioQueue = DispatchQueue(label: "system.audio.capture", qos: .userInteractive)
+                try systemStream?.addStreamOutput(systemDelegate!, type: .audio, sampleHandlerQueue: audioQueue)
                 try await systemStream?.startCapture()
-                fputs("System audio stream started\n", stderr)
+                fputs("System audio stream started (queueDepth=8)\n", stderr)
             }
             
             // Запускаем микрофон (для режимов mic и both) - требует macOS 15+
@@ -358,9 +361,12 @@ struct ScreenCaptureAudio {
                         micConfig.capturesAudio = false  // Не захватываем системный звук
                         micConfig.captureMicrophone = true
                         micConfig.microphoneCaptureDeviceID = defaultMic.uniqueID
-                        // Примечание: микрофон может игнорировать sampleRate и возвращать свой (часто 24000Hz)
-                        micConfig.sampleRate = 48000
+                        // Микрофон Voice Isolation выдаёт 24000Hz
+                        micConfig.sampleRate = 24000
                         micConfig.channelCount = 1  // Микрофон обычно моно
+                        
+                        // ВАЖНО: увеличиваем глубину очереди буферов для стабильного захвата
+                        micConfig.queueDepth = 8
                         
                         // Минимальные настройки видео
                         micConfig.width = 2
@@ -371,10 +377,11 @@ struct ScreenCaptureAudio {
                         micDelegate = AudioCaptureDelegate(marker: 0x4D, streamName: "Mic")
                         micStream = SCStream(filter: filter, configuration: micConfig, delegate: micDelegate)
                         
-                        // Для микрофона используем тип .microphone (macOS 15+)
-                        try micStream?.addStreamOutput(micDelegate!, type: .microphone, sampleHandlerQueue: .global(qos: .userInteractive))
+                        // Используем выделенную очередь для обработки аудио буферов
+                        let micAudioQueue = DispatchQueue(label: "mic.audio.capture", qos: .userInteractive)
+                        try micStream?.addStreamOutput(micDelegate!, type: .microphone, sampleHandlerQueue: micAudioQueue)
                         try await micStream?.startCapture()
-                        fputs("Microphone stream started (Voice Isolation)\n", stderr)
+                        fputs("Microphone stream started (Voice Isolation, queueDepth=8)\n", stderr)
                     } else {
                         fputs("WARNING: No microphone found\n", stderr)
                     }

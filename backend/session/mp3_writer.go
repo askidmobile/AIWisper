@@ -229,6 +229,33 @@ func (w *MP3Writer) FilePath() string {
 	return w.filePath
 }
 
+// ConvertWAVToMP3 конвертирует WAV файл в MP3 используя FFmpeg
+// Вызывается после завершения записи
+func ConvertWAVToMP3(wavPath, mp3Path string) error {
+	if !fileExists(wavPath) {
+		return fmt.Errorf("WAV file not found: %s", wavPath)
+	}
+
+	ffmpegBin := getFFmpegPath()
+	log.Printf("Converting WAV to MP3: ffmpeg=%s, wav=%s, mp3=%s", ffmpegBin, wavPath, mp3Path)
+
+	cmd := exec.Command(ffmpegBin,
+		"-y",          // перезаписать
+		"-i", wavPath, // вход
+		"-c:a", "libmp3lame",
+		"-b:a", "128k", // битрейт
+		mp3Path,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ffmpeg conversion failed: %w, output: %s", err, string(output))
+	}
+
+	log.Printf("WAV to MP3 conversion complete: %s", mp3Path)
+	return nil
+}
+
 // ExtractSegment извлекает фрагмент из MP3 файла и возвращает PCM samples
 // startMs, endMs - время в миллисекундах
 func ExtractSegment(mp3Path string, startMs, endMs int64, targetSampleRate int) ([]float32, error) {
@@ -355,4 +382,48 @@ func float32frombits(b uint32) float32 {
 // FileExists проверяет существование файла (экспортируемая версия)
 func FileExists(path string) bool {
 	return fileExists(path)
+}
+
+// ExtractChannelToWAV extracts a single channel from MP3 to a WAV file
+// channel: 0 for left, 1 for right
+func ExtractChannelToWAV(mp3Path, outPath string, channel int, startMs, endMs int64) error {
+	startSec := float64(startMs) / 1000.0
+	endSec := float64(endMs) / 1000.0
+	duration := endSec - startSec
+
+	if duration <= 0 {
+		return fmt.Errorf("invalid duration: start=%v end=%v", startMs, endMs)
+	}
+
+	if !fileExists(mp3Path) {
+		return fmt.Errorf("mp3 file not found: %s", mp3Path)
+	}
+
+	// Determine filter for channel selection
+	// pan=mono|c0=c0 selects FL (Left)
+	// pan=mono|c0=c1 selects FR (Right)
+	filter := fmt.Sprintf("pan=mono|c0=c%d", channel)
+
+	ffmpegBin := getFFmpegPath()
+	log.Printf("ExtractChannelToWAV: ffmpeg=%s, mp3=%s, out=%s, ch=%d, dur=%.1f",
+		ffmpegBin, mp3Path, outPath, channel, duration)
+
+	cmd := exec.Command(ffmpegBin,
+		"-y", // overwrite
+		"-ss", fmt.Sprintf("%.3f", startSec),
+		"-i", mp3Path,
+		"-t", fmt.Sprintf("%.3f", duration),
+		"-ar", "16000", // 16kHz for Whisper
+		"-af", filter,
+		"-ac", "1", // mono output
+		"-c:a", "pcm_s16le", // standard 16-bit PCM WAV
+		outPath,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ffmpeg extract failed: %w, output: %s", err, string(output))
+	}
+
+	return nil
 }

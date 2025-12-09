@@ -62,7 +62,19 @@ func (s *RecordingService) StartSession(config session.SessionConfig, echoCancel
 	}
 
 	// 4. Create Chunk Buffer
-	chunkBuffer := session.NewChunkBuffer(session.DefaultVADConfig(), session.SampleRate)
+	// Для stereo режима (captureSystem=true) ИЛИ если отключен VAD используем фиксированные интервалы
+	var vadConfig session.VADConfig
+	if config.CaptureSystem || config.DisableVAD {
+		vadConfig = session.FixedIntervalConfig()
+		if config.DisableVAD {
+			log.Println("VAD disabled by user setting (fixed interval chunking)")
+		} else {
+			log.Println("Using fixed interval chunking for stereo mode (no VAD)")
+		}
+	} else {
+		vadConfig = session.DefaultVADConfig()
+	}
+	chunkBuffer := session.NewChunkBuffer(vadConfig, session.SampleRate)
 
 	s.currentSession = sess
 	s.mp3Writer = mp3Writer
@@ -86,11 +98,26 @@ func (s *RecordingService) StartSession(config session.SessionConfig, echoCancel
 		return nil, err
 	}
 
-	// Предпочитаем Core Audio tap для системного звука, чтобы избежать Screen Recording prompt.
-	preferCoreAudio := config.CaptureSystem && config.UseNative && audio.CoreAudioTapAvailable()
-	useVoiceIsolation := voiceIsolation && audio.VoiceIsolationAvailable() && !preferCoreAudio
-	if voiceIsolation && preferCoreAudio {
-		log.Println("Voice Isolation requested, but Core Audio tap available - using tap for stability")
+	// Определяем режим захвата
+	// Voice Isolation имеет приоритет - это даёт разделение mic/sys для диаризации
+	voiceIsolationAvailable := audio.VoiceIsolationAvailable()
+	useVoiceIsolation := voiceIsolation && voiceIsolationAvailable
+
+	// Core Audio tap используем только если Voice Isolation НЕ запрошен
+	// (CoreAudio tap не поддерживает разделение каналов)
+	coreAudioAvailable := audio.CoreAudioTapAvailable()
+	preferCoreAudio := config.CaptureSystem && config.UseNative && coreAudioAvailable && !voiceIsolation
+
+	log.Printf("Recording config: voiceIsolation=%v, voiceIsolationAvailable=%v, useVoiceIsolation=%v",
+		voiceIsolation, voiceIsolationAvailable, useVoiceIsolation)
+	log.Printf("Recording config: captureSystem=%v, useNative=%v, coreAudioAvailable=%v, preferCoreAudio=%v",
+		config.CaptureSystem, config.UseNative, coreAudioAvailable, preferCoreAudio)
+
+	if voiceIsolation && !voiceIsolationAvailable {
+		log.Println("Voice Isolation requested but not available on this system")
+	}
+	if useVoiceIsolation {
+		log.Println("Voice Isolation enabled: mic/sys channels will be separated (isStereo=true)")
 	}
 
 	// Настройка устройств
@@ -144,8 +171,10 @@ func (s *RecordingService) StartSession(config session.SessionConfig, echoCancel
 	}
 
 	// 6. Start Goroutines
+	// isStereo = true когда захватываем системный звук (даёт разделение "Вы" / "Собеседник")
+	isStereo := config.CaptureSystem
 	go s.processAudio(sess, echoCancel, useVoiceIsolation)
-	go s.processChunks(sess, useVoiceIsolation)
+	go s.processChunks(sess, isStereo)
 
 	return sess, nil
 }
@@ -260,101 +289,46 @@ func (s *RecordingService) processAudio(sess *session.Session, echoCancel float3
 			s.mu.Lock()
 			writer := s.mp3Writer
 			chunkBuf := s.chunkBuffer
-			systemEnabled := s.Capture != nil && s.Capture.IsSystemCaptureEnabled()
 			if writer == nil {
 				s.mu.Unlock()
 				return
 			}
 
-			micLen := len(micBuffer)
-			sysLen := len(systemBuffer)
-
-			if useVoiceIsolation {
-				pairLen := micLen
-				if sysLen < pairLen {
-					pairLen = sysLen
-				}
-
-				if pairLen > 0 && chunkBuf != nil {
-					chunkBuf.ProcessStereo(micBuffer[:pairLen], systemBuffer[:pairLen])
-				}
-
-				mixLen := micLen
-				if sysLen > mixLen {
-					mixLen = sysLen
-				}
-
-				if mixLen > 0 {
-					stereo := make([]float32, mixLen*2)
-					for i := 0; i < mixLen; i++ {
-						var micSample, sysSample float32
-						if i < micLen {
-							micSample = micBuffer[i]
-						}
-						if i < sysLen {
-							sysSample = systemBuffer[i]
-						}
-						stereo[i*2] = micSample
-						stereo[i*2+1] = sysSample
-					}
-
-					if err := writer.Write(stereo); err != nil {
-						log.Printf("Failed to write stereo audio: %v", err)
-					}
-					micBuffer = consume(micBuffer, mixLen)
-					systemBuffer = consume(systemBuffer, mixLen)
-				}
-
-				s.mu.Unlock()
-				continue
+			// Используем минимум из двух буферов (как в оригинальной версии 1.7.2)
+			// Это гарантирует что мы записываем только когда есть данные из обоих каналов
+			minLen := len(micBuffer)
+			if len(systemBuffer) < minLen {
+				minLen = len(systemBuffer)
 			}
 
-			mixLen := micLen
-			if sysLen > mixLen {
-				mixLen = sysLen
-			}
-
-			if mixLen > 0 {
-				stereo := make([]float32, mixLen*2)
-				mono := make([]float32, mixLen)
-
-				for i := 0; i < mixLen; i++ {
-					var micSample, sysSample float32
-					if i < micLen {
-						micSample = micBuffer[i]
-					}
-					if systemEnabled && i < sysLen {
-						sysSample = systemBuffer[i]
-					}
-
-					stereo[i*2] = micSample
-					stereo[i*2+1] = sysSample
-
-					micClean := micSample - sysSample*echoCancel
-					if micClean > 1.0 {
-						micClean = 1.0
-					} else if micClean < -1.0 {
-						micClean = -1.0
-					}
-					mono[i] = (micClean + sysSample) / 2
+			if minLen > 0 {
+				// Interleave mic и sys в стерео
+				stereo := make([]float32, minLen*2)
+				for i := 0; i < minLen; i++ {
+					stereo[i*2] = micBuffer[i]
+					stereo[i*2+1] = systemBuffer[i]
 				}
 
 				if err := writer.Write(stereo); err != nil {
 					log.Printf("Failed to write audio: %v", err)
 				}
+
+				// Обработка для VAD/chunks
+				// ВСЕГДА используем ProcessStereo когда захватываем системный звук
+				// Это даёт разделение "Вы" / "Собеседник" при транскрипции
 				if chunkBuf != nil {
-					chunkBuf.Process(mono)
+					chunkBuf.ProcessStereo(micBuffer[:minLen], systemBuffer[:minLen])
 				}
 
-				micBuffer = consume(micBuffer, mixLen)
-				systemBuffer = consume(systemBuffer, mixLen)
+				micBuffer = consume(micBuffer, minLen)
+				systemBuffer = consume(systemBuffer, minLen)
 			}
 			s.mu.Unlock()
 		}
 	}
 }
 
-func (s *RecordingService) processChunks(sess *session.Session, useVoiceIsolation bool) {
+func (s *RecordingService) processChunks(sess *session.Session, isStereo bool) {
 	// Need to access chunkBuffer safely.
 	// But chunkBuffer.Output() returns a channel. We can just read from it.
 	// NOTE: chunkBuffer is closed when StopSession calls it.
@@ -369,7 +343,7 @@ func (s *RecordingService) processChunks(sess *session.Session, useVoiceIsolatio
 	}
 
 	for event := range cb.Output() {
-		s.saveChunk(sess, &event, useVoiceIsolation)
+		s.saveChunk(sess, &event, isStereo)
 	}
 }
 

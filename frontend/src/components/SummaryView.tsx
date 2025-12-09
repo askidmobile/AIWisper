@@ -143,7 +143,11 @@ export default function SummaryView({
                 padding: '1rem',
                 backgroundColor: '#1a1a2e',
                 borderRadius: '8px',
-                lineHeight: '1.8'
+                lineHeight: '1.8',
+                maxWidth: '100%',
+                overflow: 'hidden',
+                wordWrap: 'break-word',
+                overflowWrap: 'break-word'
             }}>
                 <div style={{
                     display: 'flex',

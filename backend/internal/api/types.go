@@ -20,6 +20,7 @@ type Message struct {
 	CaptureSystem     bool    `json:"captureSystem,omitempty"`
 	UseNative         bool    `json:"useNativeCapture,omitempty"`
 	UseVoiceIsolation bool    `json:"useVoiceIsolation,omitempty"`
+	DisableVAD        bool    `json:"disableVAD,omitempty"`
 	EchoCancel        float64 `json:"echoCancel,omitempty"`
 
 	// Responses
@@ -55,6 +56,9 @@ type Message struct {
 	DiarizationProvider   string `json:"diarizationProvider,omitempty"` // cpu, coreml, cuda, auto
 	SegmentationModelPath string `json:"segmentationModelPath,omitempty"`
 	EmbeddingModelPath    string `json:"embeddingModelPath,omitempty"`
+
+	// Auto-improve with LLM
+	AutoImproveEnabled bool `json:"autoImproveEnabled,omitempty"`
 }
 
 type OllamaModel struct {

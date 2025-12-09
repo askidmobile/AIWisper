@@ -56,6 +56,12 @@ func main() {
 	recordingService := service.NewRecordingService(sessionMgr, capture)
 	llmService := service.NewLLMService()
 
+	// Настраиваем LLM для автоулучшения транскрипции
+	transcriptionService.SetLLMService(llmService)
+	if cfg.AutoImproveWithLLM {
+		transcriptionService.EnableAutoImprove(cfg.OllamaURL, cfg.OllamaModel)
+	}
+
 	// 4. Initialize API Server
 	server := api.NewServer(cfg, sessionMgr, engineMgr, modelMgr, capture, transcriptionService, recordingService, llmService)
 

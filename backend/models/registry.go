@@ -148,19 +148,19 @@ var Registry = []ModelInfo{
 
 	// ===== ONNX модели (GigaAM) =====
 	{
-		ID:          "gigaam-v2-ctc",
-		Name:        "GigaAM V2 CTC",
+		ID:          "gigaam-v3-ctc",
+		Name:        "GigaAM V3 CTC",
 		Type:        ModelTypeONNX,
 		Engine:      EngineTypeGigaAM,
-		Size:        "236 MB",
-		SizeBytes:   236_457_697,
-		Description: "Лучшая модель для русского языка (Sber)",
+		Size:        "225 MB",
+		SizeBytes:   225_000_000,
+		Description: "Быстрая модель для русского языка (Sber GigaAM v3)",
 		Languages:   []string{"ru"},
-		WER:         "3.5%",
-		Speed:       "~30x",
+		WER:         "9.1%",
+		Speed:       "~50x",
 		Recommended: true,
-		DownloadURL: "https://huggingface.co/istupakov/gigaam-v2-onnx/resolve/main/v2_ctc.int8.onnx",
-		VocabURL:    "https://huggingface.co/istupakov/gigaam-v2-onnx/resolve/main/v2_vocab.txt",
+		DownloadURL: "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_ctc.int8.onnx",
+		VocabURL:    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_vocab.txt",
 	},
 
 	// ===== Модели диаризации (Diarization) =====

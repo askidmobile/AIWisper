@@ -371,3 +371,101 @@ func MapWhisperTimeToRealTime(whisperMs int64, speechRegions []SpeechRegion) int
 
 	return realTimeMs
 }
+
+// CompressSpeechResult результат сжатия аудио
+type CompressSpeechResult struct {
+	CompressedSamples  []float32      // Сжатое аудио (только речь)
+	Regions            []SpeechRegion // Регионы речи для маппинга timestamps
+	TotalSpeechMs      int64          // Общая длительность речи в мс
+	OriginalDurationMs int64          // Оригинальная длительность в мс
+}
+
+// CompressSpeech удаляет тишину из аудио и возвращает результат с маппингом
+// Это позволяет транскрибировать только участки с речью, а потом восстановить timestamps
+func CompressSpeech(samples []float32, sampleRate int) *CompressSpeechResult {
+	if len(samples) == 0 {
+		return &CompressSpeechResult{}
+	}
+
+	// Определяем регионы речи
+	regions := DetectSpeechRegions(samples, sampleRate)
+
+	if len(regions) == 0 {
+		// Нет речи - возвращаем пустой результат
+		return &CompressSpeechResult{
+			OriginalDurationMs: int64(len(samples)) * 1000 / int64(sampleRate),
+		}
+	}
+
+	// Вычисляем общую длительность речи
+	var totalSpeechMs int64
+	for _, r := range regions {
+		totalSpeechMs += r.EndMs - r.StartMs
+	}
+
+	// Извлекаем только участки с речью
+	totalSpeechSamples := int(totalSpeechMs * int64(sampleRate) / 1000)
+	compressed := make([]float32, 0, totalSpeechSamples)
+
+	for _, region := range regions {
+		startSample := int(region.StartMs * int64(sampleRate) / 1000)
+		endSample := int(region.EndMs * int64(sampleRate) / 1000)
+
+		if startSample < 0 {
+			startSample = 0
+		}
+		if endSample > len(samples) {
+			endSample = len(samples)
+		}
+
+		if startSample < endSample {
+			compressed = append(compressed, samples[startSample:endSample]...)
+		}
+	}
+
+	log.Printf("CompressSpeech: %d samples -> %d samples (%.1f%% speech), %d regions",
+		len(samples), len(compressed),
+		float64(len(compressed))*100/float64(len(samples)),
+		len(regions))
+
+	return &CompressSpeechResult{
+		CompressedSamples:  compressed,
+		Regions:            regions,
+		TotalSpeechMs:      totalSpeechMs,
+		OriginalDurationMs: int64(len(samples)) * 1000 / int64(sampleRate),
+	}
+}
+
+// RestoreSegmentTimestamps восстанавливает оригинальные timestamps для сегментов
+// после транскрипции сжатого аудио
+func RestoreSegmentTimestamps(segments []TranscriptSegment, regions []SpeechRegion) []TranscriptSegment {
+	if len(regions) == 0 {
+		return segments
+	}
+
+	restored := make([]TranscriptSegment, len(segments))
+	for i, seg := range segments {
+		restored[i] = TranscriptSegment{
+			Start:   MapWhisperTimeToRealTime(seg.Start, regions),
+			End:     MapWhisperTimeToRealTime(seg.End, regions),
+			Text:    seg.Text,
+			Speaker: seg.Speaker,
+		}
+
+		// Восстанавливаем timestamps для слов
+		if len(seg.Words) > 0 {
+			restored[i].Words = make([]TranscriptWord, len(seg.Words))
+			for j, word := range seg.Words {
+				restored[i].Words[j] = TranscriptWord{
+					Start:   MapWhisperTimeToRealTime(word.Start, regions),
+					End:     MapWhisperTimeToRealTime(word.End, regions),
+					Text:    word.Text,
+					P:       word.P,
+					Speaker: word.Speaker,
+				}
+			}
+		}
+	}
+
+	return restored
+}

@@ -188,8 +188,15 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                                 // Извлекаем номер спикера (Speaker 0 -> Собеседник 1)
                                                 const speakerNum = parseInt(seg.speaker.replace('Speaker ', ''), 10) || 0;
                                                 speakerName = `Собеседник ${speakerNum + 1}`;
-                                                // Разные цвета для разных спикеров
-                                                const colors = ['#2196f3', '#e91e63', '#ff9800', '#9c27b0', '#00bcd4', '#8bc34a'];
+                                                // Разные цвета для разных спикеров (оттенки синего/голубого/фиолетового)
+                                                const colors = [
+                                                    '#2196f3', // Blue
+                                                    '#00bcd4', // Cyan
+                                                    '#3f51b5', // Indigo
+                                                    '#03a9f4', // Light Blue
+                                                    '#673ab7', // Deep Purple
+                                                    '#5c6bc0'  // Indigo Light
+                                                ];
                                                 speakerColor = colors[Math.abs(speakerNum) % colors.length];
                                             } else if (seg.speaker === 'sys') {
                                                 speakerName = 'Собеседник';

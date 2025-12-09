@@ -11,6 +11,13 @@ require (
 )
 
 require (
+	github.com/braheezy/shine-mp3 v0.1.0 // indirect
+	github.com/go-audio/audio v1.0.0 // indirect
+	github.com/go-audio/riff v1.0.0 // indirect
+	github.com/go-audio/wav v1.1.0 // indirect
+)
+
+require (
 	github.com/k2-fsa/sherpa-onnx-go-linux v1.12.19 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-macos v1.12.19 // indirect
 	github.com/k2-fsa/sherpa-onnx-go-windows v1.12.19 // indirect

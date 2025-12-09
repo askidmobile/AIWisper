@@ -200,7 +200,7 @@ class CoreAudioTap: NSObject {
             mElement: kAudioObjectPropertyElementMain
         )
 
-        let status = AudioObjectSetPropertyData(aggregateDeviceID, &address, 0, nil, &size, &rate)
+        let status = AudioObjectSetPropertyData(aggregateDeviceID, &address, 0, nil, size, &rate)
         if status != noErr {
             fputs("Warning: Failed to set aggregate sample rate to \(rate): \(status)\n", stderr)
         } else {

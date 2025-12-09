@@ -22,6 +22,20 @@ const (
 	gigaamNFFT       = 400   // Размер FFT
 )
 
+// Константы для эвристик CTC декодера
+const (
+	// Порог падения confidence для определения границы слова
+	// Если confidence падает больше чем на этот порог, вероятна граница слова
+	confidenceDropThreshold = 0.4
+
+	// Минимальное количество blank токенов подряд для определения паузы
+	// GigaAM выдаёт ~25 фреймов/сек, 2 blank = ~80ms пауза
+	minBlankSequenceForPause = 2
+
+	// Минимальная длина слова (символов) для применения эвристик разбиения
+	minWordLengthForSplit = 6
+)
+
 // CoreML флаги (из coreml_provider_factory.h)
 const (
 	coremlFlagUseNone                    uint32 = 0x000 // Использовать все доступные устройства
@@ -41,6 +55,7 @@ type GigaAMEngine struct {
 	vocabPath    string
 	vocab        []string
 	blankID      int
+	spaceID      int // ID токена ▁ (пробел/начало слова)
 	melProcessor *MelProcessor
 	mu           sync.Mutex
 	initialized  bool
@@ -85,12 +100,13 @@ func NewGigaAMEngineWithOptions(modelPath, vocabPath string, useCoreML bool) (*G
 	}
 
 	// Загружаем словарь
-	vocab, blankID, err := loadGigaAMVocab(vocabPath)
+	vocab, blankID, spaceID, err := loadGigaAMVocab(vocabPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load vocabulary: %w", err)
 	}
 	engine.vocab = vocab
 	engine.blankID = blankID
+	engine.spaceID = spaceID
 
 	// Инициализируем MelProcessor
 	melConfig := MelConfig{
@@ -163,8 +179,8 @@ func NewGigaAMEngineWithOptions(modelPath, vocabPath string, useCoreML bool) (*G
 	engine.useCoreML = coreMLEnabled
 	engine.computeUnits = computeUnits
 
-	log.Printf("GigaAM engine initialized: vocab=%d tokens, blank_id=%d, compute=%s",
-		len(vocab), blankID, computeUnits)
+	log.Printf("GigaAM engine initialized: vocab=%d tokens, blank_id=%d, space_id=%d, compute=%s",
+		len(vocab), blankID, spaceID, computeUnits)
 	return engine, nil
 }
 
@@ -410,6 +426,10 @@ func (e *GigaAMEngine) computeLogMelSpectrogram(samples []float32) ([][]float32,
 }
 
 // decodeCTCWithTimestamps выполняет CTC декодирование с timestamps
+// Для character-based словаря v3_ctc: ▁ = пробел, остальные = буквы
+// Включает эвристики для улучшения определения границ слов:
+// - Детекция паузы по последовательности blank токенов
+// - Детекция границы по резкому падению confidence
 func (e *GigaAMEngine) decodeCTCWithTimestamps(logits [][]float32, audioDuration float64) []TranscriptSegment {
 	if len(logits) == 0 {
 		return nil
@@ -420,10 +440,13 @@ func (e *GigaAMEngine) decodeCTCWithTimestamps(logits [][]float32, audioDuration
 	frameMs := audioDuration * 1000 / float64(len(logits))
 
 	var segments []TranscriptSegment
-	var currentText strings.Builder
+	var currentWord strings.Builder
 	var currentWords []TranscriptWord
 	var wordStart int64 = -1
+	var lastConfidence float32 = 0.9
+	var prevConfidence float32 = 0.9
 	prevToken := e.blankID
+	blankCount := 0 // Счётчик последовательных blank токенов
 
 	for t, frame := range logits {
 		// Находим токен с максимальной вероятностью
@@ -437,44 +460,83 @@ func (e *GigaAMEngine) decodeCTCWithTimestamps(logits [][]float32, audioDuration
 		}
 
 		frameTime := int64(float64(t) * frameMs)
+		currentConfidence := softmaxMax(frame)
+
+		// Эвристика 1: Детекция паузы по blank sequence
+		if maxIdx == e.blankID {
+			blankCount++
+			// Если накопилось достаточно blank токенов - это пауза между словами
+			if blankCount >= minBlankSequenceForPause && currentWord.Len() > 0 && wordStart >= 0 {
+				word := TranscriptWord{
+					Start: wordStart,
+					End:   frameTime,
+					Text:  currentWord.String(),
+					P:     lastConfidence,
+				}
+				currentWords = append(currentWords, word)
+				currentWord.Reset()
+				wordStart = -1
+			}
+		} else {
+			blankCount = 0
+		}
+
+		// Эвристика 2: Детекция границы по падению confidence
+		// Резкое падение confidence может указывать на начало нового слова
+		confidenceDrop := prevConfidence - currentConfidence
+		if confidenceDrop > confidenceDropThreshold && currentWord.Len() >= minWordLengthForSplit && wordStart >= 0 {
+			// Сохраняем текущее слово перед резким падением confidence
+			word := TranscriptWord{
+				Start: wordStart,
+				End:   frameTime,
+				Text:  currentWord.String(),
+				P:     lastConfidence,
+			}
+			currentWords = append(currentWords, word)
+			currentWord.Reset()
+			wordStart = frameTime
+		}
 
 		// CTC правило: пропускаем blank и повторяющиеся токены
 		if maxIdx != e.blankID && maxIdx != prevToken {
 			if maxIdx < len(e.vocab) {
 				token := e.vocab[maxIdx]
+				lastConfidence = currentConfidence
 
-				// Пробел означает конец слова
-				if token == "▁" {
-					// Сохраняем предыдущее слово
-					if currentText.Len() > 0 && wordStart >= 0 {
+				// ▁ = пробел = начало нового слова
+				if maxIdx == e.spaceID {
+					// Сохраняем предыдущее слово если есть
+					if currentWord.Len() > 0 && wordStart >= 0 {
 						word := TranscriptWord{
 							Start: wordStart,
 							End:   frameTime,
-							Text:  currentText.String(),
-							P:     softmaxMax(frame),
+							Text:  currentWord.String(),
+							P:     lastConfidence,
 						}
 						currentWords = append(currentWords, word)
-						currentText.Reset()
+						currentWord.Reset()
 					}
 					wordStart = frameTime
 				} else {
+					// Обычный символ - добавляем к текущему слову
 					if wordStart < 0 {
 						wordStart = frameTime
 					}
-					currentText.WriteString(token)
+					currentWord.WriteString(token)
 				}
 			}
 		}
 		prevToken = maxIdx
+		prevConfidence = currentConfidence
 	}
 
 	// Добавляем последнее слово
-	if currentText.Len() > 0 && wordStart >= 0 {
+	if currentWord.Len() > 0 && wordStart >= 0 {
 		word := TranscriptWord{
 			Start: wordStart,
 			End:   int64(audioDuration * 1000),
-			Text:  currentText.String(),
-			P:     0.9, // default confidence
+			Text:  currentWord.String(),
+			P:     lastConfidence,
 		}
 		currentWords = append(currentWords, word)
 	}
@@ -524,15 +586,17 @@ func softmaxMax(logits []float32) float32 {
 }
 
 // loadGigaAMVocab загружает словарь из файла
-func loadGigaAMVocab(path string) ([]string, int, error) {
+// Возвращает: vocab, blankID, spaceID, error
+func loadGigaAMVocab(path string) ([]string, int, int, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, -1, err
 	}
 	defer file.Close()
 
 	var vocab []string
 	blankID := -1
+	spaceID := -1
 	scanner := bufio.NewScanner(file)
 
 	for scanner.Scan() {
@@ -546,11 +610,16 @@ func loadGigaAMVocab(path string) ([]string, int, error) {
 			if token == "<blk>" || token == "<blank>" || token == "[blank]" {
 				blankID = len(vocab) - 1
 			}
+
+			// Ищем space токен (▁)
+			if token == "▁" {
+				spaceID = len(vocab) - 1
+			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, 0, err
+		return nil, 0, -1, err
 	}
 
 	// Если blank не найден, предполагаем последний токен
@@ -558,5 +627,5 @@ func loadGigaAMVocab(path string) ([]string, int, error) {
 		blankID = len(vocab) - 1
 	}
 
-	return vocab, blankID, nil
+	return vocab, blankID, spaceID, nil
 }
