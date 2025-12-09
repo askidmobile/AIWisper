@@ -11,7 +11,8 @@ interface WebSocketHook {
 
 export const useWebSocket = (url?: string): WebSocketHook => {
     const [isConnected, setIsConnected] = useState(false);
-    const [resolvedAddr, setResolvedAddr] = useState<string | undefined>(url);
+    const initialAddr = url && url.trim().length > 0 ? url : undefined;
+    const [resolvedAddr, setResolvedAddr] = useState<string | undefined>(initialAddr);
     const wsRef = useRef<RpcSocketLike | null>(null);
     const handlersRef = useRef<Map<string, Set<MessageHandler>>>(new Map());
     const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -55,6 +56,9 @@ export const useWebSocket = (url?: string): WebSocketHook => {
     }, [url]);
 
     const connect = useCallback(() => {
+        if (!resolvedAddr || resolvedAddr.trim().length === 0) {
+            return;
+        }
         const socket = createGrpcSocket(resolvedAddr);
 
         socket.onopen = () => {
@@ -89,9 +93,7 @@ export const useWebSocket = (url?: string): WebSocketHook => {
     }, [resolvedAddr]);
 
     useEffect(() => {
-        if (resolvedAddr !== undefined) {
-            connect();
-        }
+        connect();
         return () => {
             if (wsRef.current) {
                 wsRef.current.close();

@@ -10,7 +10,11 @@ interface WebSocketContextType {
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
 
 export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const targetAddr = typeof process !== 'undefined' ? (process.env.AIWISPER_GRPC_ADDR || '') : '';
+    const targetAddr = typeof process !== 'undefined'
+        ? (process.env.AIWISPER_GRPC_ADDR && process.env.AIWISPER_GRPC_ADDR.trim().length > 0
+            ? process.env.AIWISPER_GRPC_ADDR
+            : undefined)
+        : undefined;
     const ws = useWebSocket(targetAddr);
 
     return (
