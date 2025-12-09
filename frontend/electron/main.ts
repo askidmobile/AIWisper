@@ -24,6 +24,7 @@ let mainWindow: BrowserWindow | null = null;
 let goProcess: ChildProcess | null = null;
 let sessionsDataDir: string = '';
 let modelsDir: string = '';
+let grpcAddressValue: string = '';
 
 // Логирование
 function log(message: string) {
@@ -92,6 +93,10 @@ function getGrpcAddress(): string {
 function startGoBackend() {
     const resourcesPath = getResourcesPath();
     const grpcAddress = getGrpcAddress();
+    grpcAddressValue = grpcAddress;
+
+    // Прокидываем адрес gRPC сокета и в дочерний backend, и в renderer (process.env)
+    process.env.AIWISPER_GRPC_ADDR = grpcAddress;
 
     let backendPath: string;
     let modelPath: string;
@@ -354,6 +359,8 @@ ipcMain.handle('load-settings', () => {
         return null;
     }
 });
+
+ipcMain.handle('get-grpc-address', () => grpcAddressValue || getGrpcAddress());
 
 app.on('window-all-closed', () => {
     log('All windows closed');

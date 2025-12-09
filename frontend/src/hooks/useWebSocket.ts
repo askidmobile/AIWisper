@@ -9,8 +9,9 @@ interface WebSocketHook {
     subscribe: (type: string, handler: MessageHandler) => () => void;
 }
 
-export const useWebSocket = (url: string): WebSocketHook => {
+export const useWebSocket = (url?: string): WebSocketHook => {
     const [isConnected, setIsConnected] = useState(false);
+    const [resolvedAddr, setResolvedAddr] = useState<string | undefined>(url);
     const wsRef = useRef<RpcSocketLike | null>(null);
     const handlersRef = useRef<Map<string, Set<MessageHandler>>>(new Map());
     const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -33,8 +34,28 @@ export const useWebSocket = (url: string): WebSocketHook => {
         }
     };
 
+    useEffect(() => {
+        if (url && url.trim().length > 0) {
+            setResolvedAddr(url);
+            return;
+        }
+        try {
+            // Пробуем получить адрес gRPC через IPC из main (Electron)
+            const { ipcRenderer } = window.require?.('electron') || {};
+            if (ipcRenderer?.invoke) {
+                ipcRenderer.invoke('get-grpc-address')
+                    .then((addr: string) => setResolvedAddr(addr))
+                    .catch(() => setResolvedAddr(undefined));
+                return;
+            }
+        } catch {
+            // игнорируем, fallback ниже
+        }
+        setResolvedAddr(undefined);
+    }, [url]);
+
     const connect = useCallback(() => {
-        const socket = createGrpcSocket(url);
+        const socket = createGrpcSocket(resolvedAddr);
 
         socket.onopen = () => {
             setIsConnected(true);
@@ -65,10 +86,12 @@ export const useWebSocket = (url: string): WebSocketHook => {
         };
 
         wsRef.current = socket;
-    }, [url]);
+    }, [resolvedAddr]);
 
     useEffect(() => {
-        connect();
+        if (resolvedAddr !== undefined) {
+            connect();
+        }
         return () => {
             if (wsRef.current) {
                 wsRef.current.close();
@@ -77,7 +100,7 @@ export const useWebSocket = (url: string): WebSocketHook => {
                 clearTimeout(reconnectTimeoutRef.current);
             }
         };
-    }, [connect]);
+    }, [connect, resolvedAddr]);
 
     const sendMessage = useCallback((msg: any) => {
         if (wsRef.current?.readyState === RPC_READY_STATE.OPEN) {
