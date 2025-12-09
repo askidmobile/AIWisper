@@ -314,7 +314,7 @@ struct ScreenCaptureAudio {
             exit(0)
         }
         sigtermSource.resume()
-        
+
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
             

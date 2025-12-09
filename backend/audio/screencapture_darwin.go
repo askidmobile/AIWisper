@@ -55,6 +55,35 @@ func ScreenCaptureKitAvailable() bool {
 	return err == nil
 }
 
+// VoiceIsolationAvailable проверяет доступность Voice Isolation микрофона (macOS 15+)
+func VoiceIsolationAvailable() bool {
+	// Проверяем наличие binary
+	path := getScreenCaptureBinaryPath()
+	if _, err := os.Stat(path); err != nil {
+		return false
+	}
+
+	// Проверяем версию macOS через sw_vers
+	// Voice Isolation микрофон через ScreenCaptureKit требует macOS 15+
+	cmd := exec.Command("sw_vers", "-productVersion")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	version := strings.TrimSpace(string(output))
+	parts := strings.Split(version, ".")
+	if len(parts) < 1 {
+		return false
+	}
+
+	major := 0
+	fmt.Sscanf(parts[0], "%d", &major)
+
+	// macOS 15+ = Sequoia
+	return major >= 15
+}
+
 // StartScreenCaptureKitAudio запускает захват аудио через ScreenCaptureKit
 // mode: "system" - только системный звук, "mic" - только микрофон, "both" - оба с voice isolation
 func (c *Capture) StartScreenCaptureKitAudio() error {

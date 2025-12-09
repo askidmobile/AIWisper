@@ -405,13 +405,10 @@ func (c *Capture) Stop() error {
 		c.systemDevice = nil
 	}
 
-	// Останавливаем системный захват в зависимости от метода
-	switch c.systemCaptureMethod {
-	case SystemCaptureCoreAudioTap:
-		c.StopCoreAudioTap()
-	case SystemCaptureScreenKit:
-		c.StopScreenCaptureKitAudio()
-	}
+	// Останавливаем все возможные методы захвата
+	// (могут работать одновременно: Core Audio Tap для системы + ScreenCaptureKit для микрофона)
+	c.StopCoreAudioTap()
+	c.StopScreenCaptureKitAudio()
 
 	c.running = false
 	log.Println("Audio capture stopped")
@@ -440,7 +437,9 @@ func (c *Capture) ClearBuffers() {
 
 // IsSystemCaptureEnabled возвращает true если захват системного звука включен
 func (c *Capture) IsSystemCaptureEnabled() bool {
-	return c.captureSystem && c.systemDeviceID != nil
+	// systemDeviceID используется только для BlackHole/loopback.
+	// Для ScreenCaptureKit/CoreAudioTap устройство не требуется, поэтому учитываем флаг.
+	return c.captureSystem
 }
 
 // Close освобождает ресурсы

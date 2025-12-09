@@ -70,47 +70,82 @@ func (s *RecordingService) StartSession(config session.SessionConfig, echoCancel
 	s.stopChan = make(chan struct{})
 
 	// 5. Configure Capture
-	if voiceIsolation {
-		// Voice Isolation требует ScreenCaptureKit с режимом "both"
-		s.Capture.EnableScreenCaptureKit(true)
+	cleanupOnError := func(err error) (*session.Session, error) {
+		log.Printf("Failed to start session: %v", err)
+		s.Capture.Stop()
+		if s.chunkBuffer != nil {
+			s.chunkBuffer.Close()
+		}
+		if s.mp3Writer != nil {
+			s.mp3Writer.Close()
+		}
+		s.currentSession = nil
+		s.mp3Writer = nil
+		s.chunkBuffer = nil
+		s.stopChan = nil
+		return nil, err
+	}
+
+	// Предпочитаем Core Audio tap для системного звука, чтобы избежать Screen Recording prompt.
+	preferCoreAudio := config.CaptureSystem && config.UseNative && audio.CoreAudioTapAvailable()
+	useVoiceIsolation := voiceIsolation && audio.VoiceIsolationAvailable() && !preferCoreAudio
+	if voiceIsolation && preferCoreAudio {
+		log.Println("Voice Isolation requested, but Core Audio tap available - using tap for stability")
+	}
+
+	// Настройка устройств
+	if config.MicDevice != "" {
+		if err := s.Capture.SetMicrophoneDevice(config.MicDevice); err != nil {
+			return cleanupOnError(fmt.Errorf("failed to set microphone device: %w", err))
+		}
+	}
+
+	systemCaptureConfigured := false
+	if config.CaptureSystem {
 		s.Capture.EnableSystemCapture(true)
-		if err := s.Capture.StartScreenCaptureKitAudioWithMode("both"); err != nil {
-			log.Printf("Failed to start Voice Isolation mode: %v, falling back", err)
-			voiceIsolation = false
-		}
-	} else {
-		if config.MicDevice != "" {
-			s.Capture.SetMicrophoneDevice(config.MicDevice)
-		}
-		if config.CaptureSystem {
-			s.Capture.EnableSystemCapture(true)
-			// Выбираем метод захвата системного звука:
-			// 1. Core Audio tap (macOS 14.2+) - предпочтительный, меньше конфликтов
-			// 2. ScreenCaptureKit (macOS 13+) - fallback
-			// 3. BlackHole/loopback - legacy fallback
-			if config.UseNative {
-				if audio.CoreAudioTapAvailable() {
-					log.Println("Using Core Audio tap for system audio (macOS 14.2+)")
-					s.Capture.SetSystemCaptureMethod(audio.SystemCaptureCoreAudioTap)
-				} else if audio.ScreenCaptureKitAvailable() {
-					log.Println("Using ScreenCaptureKit for system audio (macOS 13+)")
-					s.Capture.SetSystemCaptureMethod(audio.SystemCaptureScreenKit)
-				} else if config.SystemDevice != "" {
-					log.Println("Using BlackHole/loopback for system audio")
-					s.Capture.SetSystemCaptureMethod(audio.SystemCaptureBlackHole)
-					s.Capture.SetSystemDeviceByName(config.SystemDevice)
-				}
-			} else if config.SystemDevice != "" {
-				s.Capture.SetSystemCaptureMethod(audio.SystemCaptureBlackHole)
-				s.Capture.SetSystemDeviceByName(config.SystemDevice)
+		switch {
+		case preferCoreAudio:
+			log.Println("Using Core Audio Tap for system audio (macOS 14.2+)")
+			s.Capture.SetSystemCaptureMethod(audio.SystemCaptureCoreAudioTap)
+			systemCaptureConfigured = true
+		case config.UseNative && audio.ScreenCaptureKitAvailable():
+			log.Println("Using ScreenCaptureKit for system audio (macOS 13+)")
+			s.Capture.SetSystemCaptureMethod(audio.SystemCaptureScreenKit)
+			systemCaptureConfigured = true
+		case config.SystemDevice != "":
+			log.Println("Using BlackHole/loopback for system audio")
+			s.Capture.SetSystemCaptureMethod(audio.SystemCaptureBlackHole)
+			if err := s.Capture.SetSystemDeviceByName(config.SystemDevice); err != nil {
+				log.Printf("Failed to set system device %s: %v", config.SystemDevice, err)
+			} else {
+				systemCaptureConfigured = true
 			}
 		}
-		s.Capture.Start(0)
+	}
+
+	if config.CaptureSystem && !systemCaptureConfigured {
+		log.Println("System capture requested but no method configured, continuing with microphone only")
+		s.Capture.EnableSystemCapture(false)
+	}
+
+	// Стартуем выбранный метод захвата
+	if useVoiceIsolation {
+		log.Println("Voice Isolation: Using ScreenCaptureKit for mic+system (macOS 15+)")
+		if err := s.Capture.StartScreenCaptureKitAudioWithMode("both"); err != nil {
+			log.Printf("Failed to start Voice Isolation mode: %v, falling back to standard capture", err)
+			useVoiceIsolation = false
+		}
+	}
+
+	if !useVoiceIsolation {
+		if err := s.Capture.Start(0); err != nil {
+			return cleanupOnError(fmt.Errorf("failed to start audio capture: %w", err))
+		}
 	}
 
 	// 6. Start Goroutines
-	go s.processAudio(sess, echoCancel, voiceIsolation)
-	go s.processChunks(sess, voiceIsolation)
+	go s.processAudio(sess, echoCancel, useVoiceIsolation)
+	go s.processChunks(sess, useVoiceIsolation)
 
 	return sess, nil
 }
@@ -188,6 +223,12 @@ func (s *RecordingService) processAudio(sess *session.Session, echoCancel float3
 
 	var micBuffer []float32
 	var systemBuffer []float32
+	consume := func(buf []float32, n int) []float32 {
+		if n >= len(buf) {
+			return buf[:0]
+		}
+		return buf[n:]
+	}
 
 	for {
 		select {
@@ -217,48 +258,96 @@ func (s *RecordingService) processAudio(sess *session.Session, echoCancel float3
 			}
 
 			s.mu.Lock()
-			// If session stopped while waiting for lock
-			if s.mp3Writer == nil {
+			writer := s.mp3Writer
+			chunkBuf := s.chunkBuffer
+			systemEnabled := s.Capture != nil && s.Capture.IsSystemCaptureEnabled()
+			if writer == nil {
 				s.mu.Unlock()
 				return
 			}
 
-			minLen := len(micBuffer)
-			if len(systemBuffer) < minLen {
-				minLen = len(systemBuffer)
+			micLen := len(micBuffer)
+			sysLen := len(systemBuffer)
+
+			if useVoiceIsolation {
+				pairLen := micLen
+				if sysLen < pairLen {
+					pairLen = sysLen
+				}
+
+				if pairLen > 0 && chunkBuf != nil {
+					chunkBuf.ProcessStereo(micBuffer[:pairLen], systemBuffer[:pairLen])
+				}
+
+				mixLen := micLen
+				if sysLen > mixLen {
+					mixLen = sysLen
+				}
+
+				if mixLen > 0 {
+					stereo := make([]float32, mixLen*2)
+					for i := 0; i < mixLen; i++ {
+						var micSample, sysSample float32
+						if i < micLen {
+							micSample = micBuffer[i]
+						}
+						if i < sysLen {
+							sysSample = systemBuffer[i]
+						}
+						stereo[i*2] = micSample
+						stereo[i*2+1] = sysSample
+					}
+
+					if err := writer.Write(stereo); err != nil {
+						log.Printf("Failed to write stereo audio: %v", err)
+					}
+					micBuffer = consume(micBuffer, mixLen)
+					systemBuffer = consume(systemBuffer, mixLen)
+				}
+
+				s.mu.Unlock()
+				continue
 			}
 
-			if minLen > 0 {
-				// Interleave
-				stereo := make([]float32, minLen*2)
-				for i := 0; i < minLen; i++ {
-					stereo[i*2] = micBuffer[i]
-					stereo[i*2+1] = systemBuffer[i]
-				}
-				s.mp3Writer.Write(stereo)
+			mixLen := micLen
+			if sysLen > mixLen {
+				mixLen = sysLen
+			}
 
-				if useVoiceIsolation {
-					if s.chunkBuffer != nil {
-						s.chunkBuffer.ProcessStereo(micBuffer[:minLen], systemBuffer[:minLen])
+			if mixLen > 0 {
+				stereo := make([]float32, mixLen*2)
+				mono := make([]float32, mixLen)
+
+				for i := 0; i < mixLen; i++ {
+					var micSample, sysSample float32
+					if i < micLen {
+						micSample = micBuffer[i]
 					}
-				} else {
-					mono := make([]float32, minLen)
-					for i := 0; i < minLen; i++ {
-						micClean := micBuffer[i] - systemBuffer[i]*echoCancel
-						if micClean > 1.0 {
-							micClean = 1.0
-						} else if micClean < -1.0 {
-							micClean = -1.0
-						}
-						mono[i] = (micClean + systemBuffer[i]) / 2
+					if systemEnabled && i < sysLen {
+						sysSample = systemBuffer[i]
 					}
-					if s.chunkBuffer != nil {
-						s.chunkBuffer.Process(mono)
+
+					stereo[i*2] = micSample
+					stereo[i*2+1] = sysSample
+
+					micClean := micSample - sysSample*echoCancel
+					if micClean > 1.0 {
+						micClean = 1.0
+					} else if micClean < -1.0 {
+						micClean = -1.0
 					}
+					mono[i] = (micClean + sysSample) / 2
 				}
 
-				micBuffer = micBuffer[minLen:]
-				systemBuffer = systemBuffer[minLen:]
+				if err := writer.Write(stereo); err != nil {
+					log.Printf("Failed to write audio: %v", err)
+				}
+				if chunkBuf != nil {
+					chunkBuf.Process(mono)
+				}
+
+				micBuffer = consume(micBuffer, mixLen)
+				systemBuffer = consume(systemBuffer, mixLen)
 			}
 			s.mu.Unlock()
 		}

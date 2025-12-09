@@ -106,12 +106,12 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                             color: 'var(--text-muted)',
                         }}
                     >
-                        {new Date(session.startTime).toLocaleDateString('ru-RU', {
+                        {session.startTime ? new Date(session.startTime).toLocaleDateString('ru-RU', {
                             day: 'numeric',
                             month: 'short',
                             hour: '2-digit',
                             minute: '2-digit',
-                        })}
+                        }) : 'Дата неизвестна'}
                     </span>
                 </div>
                 <button
@@ -255,12 +255,12 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                     }}
                 >
                     {(session.chunks || []).length > 0
-                        ? session.chunks.map((c, i) => {
-                              const isPast = (i / session.chunks.length) * 100 < progress;
+                        ? (session.chunks || []).filter(c => c).map((c, i, arr) => {
+                              const isPast = (i / arr.length) * 100 < progress;
                               const height = 30 + ((c.transcription || '').length % 60);
                               return (
                                   <div
-                                      key={c.id}
+                                      key={c.id || i}
                                       style={{
                                           flex: 1,
                                           height: `${height}%`,

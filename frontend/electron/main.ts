@@ -265,7 +265,7 @@ app.whenReady().then(async () => {
                 language: 'ru',
                 modelId: 'ggml-large-v3-turbo',
                 echoCancel: 0.4,
-                useVoiceIsolation: true,
+                useVoiceIsolation: false,
                 captureSystem: true,
                 theme: 'dark'
             }

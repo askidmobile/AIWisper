@@ -68,21 +68,25 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
         }
     }, [shouldAutoScroll]);
 
-    // Compute Dialogue
-    const allDialogue: TranscriptSegment[] = chunks
-        .filter(c => c.status === 'completed')
-        .sort((a, b) => a.index - b.index)
+    // Compute Dialogue with defensive null checks
+    const allDialogue: TranscriptSegment[] = (chunks || [])
+        .filter(c => c && c.status === 'completed')
+        .sort((a, b) => (a.index || 0) - (b.index || 0))
         .flatMap((c) => {
-            if (c.dialogue && c.dialogue.length > 0) {
-                const chunkOffset = chunks
-                    .filter(prev => prev.index < c.index)
-                    .reduce((sum, prev) => sum + (prev.duration / 1000000), 0);
+            if (c.dialogue && Array.isArray(c.dialogue) && c.dialogue.length > 0) {
+                const chunkOffset = (chunks || [])
+                    .filter(prev => prev && (prev.index || 0) < (c.index || 0))
+                    .reduce((sum, prev) => sum + ((prev.duration || 0) / 1000000), 0);
 
-                return c.dialogue.map(seg => ({
-                    ...seg,
-                    start: seg.start + chunkOffset,
-                    end: seg.end + chunkOffset
-                }));
+                return c.dialogue
+                    .filter(seg => seg && typeof seg.start === 'number')
+                    .map(seg => ({
+                        ...seg,
+                        start: (seg.start || 0) + chunkOffset,
+                        end: (seg.end || 0) + chunkOffset,
+                        text: seg.text || '',
+                        speaker: seg.speaker || 'unknown'
+                    }));
             }
             return [];
         });
@@ -168,10 +172,10 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                         <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
                                         {allDialogue.map((seg, idx) => {
                                             const isMic = seg.speaker === 'mic';
-                                            const totalMs = seg.start;
-                                            const mins = Math.floor(totalMs / 60000);
-                                            const secs = Math.floor((totalMs % 60000) / 1000);
-                                            const ms = Math.floor((totalMs % 1000) / 100);
+                                            const totalMs = seg.start || 0;
+                                            const mins = Math.floor(totalMs / 60000) || 0;
+                                            const secs = Math.floor((totalMs % 60000) / 1000) || 0;
+                                            const ms = Math.floor((totalMs % 1000) / 100) || 0;
                                             const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
 
                                             // Определяем имя спикера и цвет
@@ -182,11 +186,11 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                                 speakerColor = '#4caf50';
                                             } else if (seg.speaker?.startsWith('Speaker ')) {
                                                 // Извлекаем номер спикера (Speaker 0 -> Собеседник 1)
-                                                const speakerNum = parseInt(seg.speaker.replace('Speaker ', ''), 10);
+                                                const speakerNum = parseInt(seg.speaker.replace('Speaker ', ''), 10) || 0;
                                                 speakerName = `Собеседник ${speakerNum + 1}`;
                                                 // Разные цвета для разных спикеров
                                                 const colors = ['#2196f3', '#e91e63', '#ff9800', '#9c27b0', '#00bcd4', '#8bc34a'];
-                                                speakerColor = colors[speakerNum % colors.length];
+                                                speakerColor = colors[Math.abs(speakerNum) % colors.length];
                                             } else if (seg.speaker === 'sys') {
                                                 speakerName = 'Собеседник';
                                                 speakerColor = '#2196f3';
@@ -199,16 +203,16 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                                 <div key={idx} style={{ marginBottom: '0.5rem', paddingLeft: '0.5rem', borderLeft: `3px solid ${speakerColor}` }}>
                                                     <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontFamily: 'monospace' }}>[{timeStr}]</span>{' '}
                                                     <span style={{ color: speakerColor, fontWeight: 'bold' }}>{speakerName}:</span>{' '}
-                                                    <span style={{ color: 'var(--text-primary)' }}>{seg.text}</span>
+                                                    <span style={{ color: 'var(--text-primary)' }}>{seg.text || ''}</span>
                                                 </div>
                                             );
                                         })}
                                     </div>
                                 ) : (
                                     // Fallback text (chunk based)
-                                    chunks.map(chunk => (
-                                        <div key={chunk.id} style={{ marginBottom: '0.8rem', padding: '0.5rem 0.75rem', backgroundColor: 'rgba(255, 255, 255, 0.03)', borderRadius: '4px', color: '#ccc' }}>
-                                            {chunk.transcription}
+                                    (chunks || []).filter(chunk => chunk).map(chunk => (
+                                        <div key={chunk.id || Math.random()} style={{ marginBottom: '0.8rem', padding: '0.5rem 0.75rem', backgroundColor: 'rgba(255, 255, 255, 0.03)', borderRadius: '4px', color: '#ccc' }}>
+                                            {chunk.transcription || ''}
                                         </div>
                                     ))
                                 )}
@@ -218,24 +222,24 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                         {/* Tab: Chunks */}
                         {activeTab === 'chunks' && (
                             <div>
-                                {chunks.map(chunk => (
-                                    <div key={chunk.id} style={{
+                                {(chunks || []).filter(chunk => chunk).map(chunk => (
+                                    <div key={chunk.id || Math.random()} style={{
                                         padding: '0.6rem 0.8rem', marginBottom: '0.4rem',
                                         backgroundColor: transcribingChunkId === chunk.id ? '#2a2a1a' : highlightedChunkId === chunk.id ? '#1a3a2a' : '#12121f',
                                         borderRadius: '4px', borderLeft: `3px solid ${chunk.status === 'completed' ? '#4caf50' : chunk.status === 'error' ? '#f44336' : '#ff9800'}`
                                     }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                            <span style={{ color: '#888' }}>#{chunk.index} • {(chunk.duration / 1e9).toFixed(1)}s</span>
+                                            <span style={{ color: '#888' }}>#{chunk.index ?? 0} • {((chunk.duration || 0) / 1e9).toFixed(1)}s</span>
                                             <div style={{ display: 'flex', gap: '5px' }}>
                                                 {displaySession && (
-                                                    <button onClick={() => onPlayChunk(`http://localhost:8080/api/sessions/${displaySession.id}/chunk/${chunk.index}.mp3`)}>
-                                                        {playingUrl?.includes(`chunk/${chunk.index}.mp3`) ? '⏹' : '▶'}
+                                                    <button onClick={() => onPlayChunk(`http://localhost:8080/api/sessions/${displaySession.id}/chunk/${chunk.index ?? 0}.mp3`)}>
+                                                        {playingUrl?.includes(`chunk/${chunk.index ?? 0}.mp3`) ? '⏹' : '▶'}
                                                     </button>
                                                 )}
-                                                <button onClick={() => handleRetranscribe(chunk.id)}>🔄</button>
+                                                <button onClick={() => chunk.id && handleRetranscribe(chunk.id)}>🔄</button>
                                             </div>
                                         </div>
-                                        <div style={{ marginTop: '0.4rem', color: '#ccc' }}>{chunk.transcription}</div>
+                                        <div style={{ marginTop: '0.4rem', color: '#ccc' }}>{chunk.transcription || ''}</div>
                                     </div>
                                 ))}
                             </div>

@@ -247,6 +247,8 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 				conn.WriteJSON(Message{Type: "error", Data: err.Error()})
 				return
 			}
+			// Обновляем transcriber в Pipeline если диаризация включена
+			s.updatePipelineTranscriber()
 		}
 		conn.WriteJSON(Message{Type: "active_model_changed", ModelID: msg.ModelID})
 		conn.WriteJSON(Message{Type: "models_list", Models: s.ModelMgr.GetAllModelsState()})
@@ -290,6 +292,8 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 					return
 				}
 				log.Printf("start_session: model %s activated successfully", msg.Model)
+				// Обновляем transcriber в Pipeline если диаризация включена
+				s.updatePipelineTranscriber()
 			} else {
 				// Если модель не указана, проверяем есть ли активный движок
 				if s.EngineMgr.GetActiveEngine() == nil {
@@ -432,6 +436,9 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			if msg.Model != "" {
 				if err := s.EngineMgr.SetActiveModel(msg.Model); err != nil {
 					log.Printf("Failed to set model: %v", err)
+				} else {
+					// Обновляем transcriber в Pipeline если диаризация включена
+					s.updatePipelineTranscriber()
 				}
 			}
 		}
@@ -478,6 +485,9 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			if msg.Model != "" {
 				if err := s.EngineMgr.SetActiveModel(msg.Model); err != nil {
 					log.Printf("Failed to set model: %v", err)
+				} else {
+					// Обновляем transcriber в Pipeline если диаризация включена
+					s.updatePipelineTranscriber()
 				}
 			}
 		}
@@ -686,4 +696,21 @@ func (s *Server) handleSessionsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.ServeFile(w, r, filePath)
+}
+
+// updatePipelineTranscriber обновляет transcriber в Pipeline после смены модели
+// Это необходимо потому что Pipeline хранит ссылку на engine, который закрывается при смене модели
+func (s *Server) updatePipelineTranscriber() {
+	if s.TranscriptionService == nil || s.TranscriptionService.Pipeline == nil {
+		return
+	}
+	if s.EngineMgr == nil {
+		return
+	}
+	newEngine := s.EngineMgr.GetActiveEngine()
+	if newEngine == nil {
+		return
+	}
+	s.TranscriptionService.Pipeline.SetTranscriber(newEngine)
+	log.Printf("Pipeline transcriber updated to new engine")
 }

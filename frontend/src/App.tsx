@@ -236,7 +236,7 @@ function App() {
     const [screenCaptureKitAvailable, setScreenCaptureKitAvailable] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [echoCancel, setEchoCancel] = useState(0.4); // Эхоподавление 0-1
-    const [useVoiceIsolation, setUseVoiceIsolation] = useState(true); // Voice Isolation (macOS 15+)
+    const [useVoiceIsolation, setUseVoiceIsolation] = useState(false); // Voice Isolation (macOS 15+)
     const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
 
 
@@ -344,7 +344,7 @@ function App() {
                     setLanguage(settings.language || 'ru');
                     setActiveModelId(settings.modelId || 'ggml-large-v3-turbo');
                     setEchoCancel(settings.echoCancel ?? 0.4);
-                    setUseVoiceIsolation(settings.useVoiceIsolation ?? true);
+                    setUseVoiceIsolation(settings.useVoiceIsolation ?? false);
                     setCaptureSystem(settings.captureSystem ?? true);
                     setOllamaModel(settings.ollamaModel || 'llama3.2');
                     setOllamaUrl(settings.ollamaUrl || 'http://localhost:11434');
@@ -2237,6 +2237,14 @@ function App() {
                             <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
                                 <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🔴</div>
                                 <div>Идёт запись... Транскрипция появится после остановки</div>
+                            </div>
+                        ) : chunks.length === 0 && selectedSession ? (
+                            <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
+                                <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📭</div>
+                                <div>Эта запись не содержит транскрипции</div>
+                                <div style={{ fontSize: '0.85rem', marginTop: '0.5rem', opacity: 0.7 }}>
+                                    Возможно, запись была прервана до создания чанков
+                                </div>
                             </div>
                         ) : (
                             <>

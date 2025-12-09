@@ -50,6 +50,8 @@ class CoreAudioTap: NSObject {
     private let outputQueue = DispatchQueue(label: "audio.output", qos: .userInteractive)
     private var tapDescription: CATapDescription?
     private var realChannelCount: UInt32 = 2
+    private let targetSampleRate: Double = 48_000
+    private var deviceSampleRate: Double = 48_000
 
     override init() {
         super.init()
@@ -95,6 +97,11 @@ class CoreAudioTap: NSObject {
 
         // Создаём aggregate device с tap
         try createAggregateDevice(tapUUID: tapUUID)
+
+        // Принудительно ставим 48 kHz чтобы совпадать с микрофоном/FFmpeg
+        setAggregateDeviceSampleRate(targetSampleRate)
+        deviceSampleRate = readAggregateSampleRate()
+        fputs("Aggregate device sample rate: \(deviceSampleRate) Hz (target \(targetSampleRate))\n", stderr)
 
         // Настраиваем IO callback
         try setupIOProc()
@@ -164,6 +171,41 @@ class CoreAudioTap: NSObject {
 
         aggregateDeviceID = deviceIDOut
         fputs("Aggregate device created: \(aggregateDeviceID)\n", stderr)
+    }
+
+    private func readAggregateSampleRate() -> Double {
+        var rate = targetSampleRate
+        var size = UInt32(MemoryLayout<Double>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        let status = AudioObjectGetPropertyData(aggregateDeviceID, &address, 0, nil, &size, &rate)
+        if status != noErr || rate <= 0 {
+            fputs("Warning: Failed to read aggregate sample rate (status \(status)), using target \(targetSampleRate)\n", stderr)
+            return targetSampleRate
+        }
+
+        return rate
+    }
+
+    private func setAggregateDeviceSampleRate(_ rate: Double) {
+        var rate = rate
+        var size = UInt32(MemoryLayout<Double>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyNominalSampleRate,
+            mScope: kAudioObjectPropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        let status = AudioObjectSetPropertyData(aggregateDeviceID, &address, 0, nil, &size, &rate)
+        if status != noErr {
+            fputs("Warning: Failed to set aggregate sample rate to \(rate): \(status)\n", stderr)
+        } else {
+            fputs("Aggregate device sample rate set to \(rate) Hz\n", stderr)
+        }
     }
 
     private func setupIOProc() throws {
@@ -252,9 +294,41 @@ class CoreAudioTap: NSObject {
             }
         }
 
-        outputQueue.async {
-            writeChannelData(marker: 0x53, samples: monoSamples) // 'S' = system
+        // Приводим поток к 48 kHz, иначе при 44.1 kHz слышны щелчки и «замедление» из-за рассинхрона с микрофоном
+        let sourceRate = deviceSampleRate
+        let outputSamples: [Float]
+        if abs(sourceRate - targetSampleRate) > 1 {
+            outputSamples = resample(monoSamples, from: sourceRate, to: targetSampleRate)
+        } else {
+            outputSamples = monoSamples
         }
+
+        outputQueue.async {
+            writeChannelData(marker: 0x53, samples: outputSamples) // 'S' = system
+        }
+    }
+
+    private func resample(_ samples: [Float], from fromRate: Double, to toRate: Double) -> [Float] {
+        guard fromRate > 0, toRate > 0, fromRate != toRate else { return samples }
+
+        let ratio = fromRate / toRate
+        let newLength = Int(Double(samples.count) / ratio)
+        if newLength <= 1 { return samples }
+
+        var result = [Float](repeating: 0, count: newLength)
+        for i in 0..<newLength {
+            let srcPos = Double(i) * ratio
+            let srcIdx = Int(srcPos)
+            let frac = Float(srcPos - Double(srcIdx))
+
+            if srcIdx + 1 < samples.count {
+                result[i] = samples[srcIdx] * (1 - frac) + samples[srcIdx + 1] * frac
+            } else if srcIdx < samples.count {
+                result[i] = samples[srcIdx]
+            }
+        }
+
+        return result
     }
 }
 
