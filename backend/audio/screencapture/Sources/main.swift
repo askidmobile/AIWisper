@@ -249,10 +249,12 @@ func performCleanup() async {
     ScreenCaptureAudio.systemDelegate = nil
     ScreenCaptureAudio.micDelegate = nil
     
-    // ШАГ 6: Небольшая задержка чтобы macOS успела обработать освобождение ресурсов
-    fputs("Step 6: Final delay for resource release\n", stderr)
-    try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
-    
+    // ШАГ 6: Задержка чтобы macOS успела обработать освобождение ресурсов
+    // 500ms даёт системе достаточно времени для полного освобождения audio tap
+    // Это критично для предотвращения конфликтов с другими приложениями
+    fputs("Step 6: Final delay for resource release (500ms)\n", stderr)
+    try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
+
     fputs("Cleanup complete - audio resources released\n", stderr)
 }
 

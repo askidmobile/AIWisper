@@ -119,7 +119,7 @@ fi
 echo ""
 
 # =============================================================================
-# Сборка Swift ScreenCaptureKit модуля
+# Сборка Swift модулей (ScreenCaptureKit и CoreAudio tap)
 # =============================================================================
 log_info "Building Swift ScreenCaptureKit module..."
 
@@ -127,7 +127,14 @@ cd "$BACKEND_DIR/audio/screencapture"
 swift build -c release 2>&1 | grep -v "^Build complete" || true
 cp .build/release/screencapture-audio "$RESOURCES_DIR/"
 chmod +x "$RESOURCES_DIR/screencapture-audio"
-log_success "Swift module built"
+log_success "ScreenCaptureKit module built"
+
+log_info "Building Swift CoreAudio tap module (macOS 14.2+)..."
+cd "$BACKEND_DIR/audio/coreaudio"
+swift build -c release 2>&1 | grep -v "^Build complete" || true
+cp .build/release/coreaudio-tap "$RESOURCES_DIR/"
+chmod +x "$RESOURCES_DIR/coreaudio-tap"
+log_success "CoreAudio tap module built"
 echo ""
 
 # =============================================================================
@@ -365,6 +372,11 @@ codesign --force --sign - --entitlements "$FRONTEND_DIR/build-resources/entitlem
 # Подписываем screencapture-audio
 if [ -f "screencapture-audio" ]; then
     codesign --force --sign - "screencapture-audio" 2>/dev/null || log_warn "Failed to sign screencapture-audio"
+fi
+
+# Подписываем coreaudio-tap
+if [ -f "coreaudio-tap" ]; then
+    codesign --force --sign - "coreaudio-tap" 2>/dev/null || log_warn "Failed to sign coreaudio-tap"
 fi
 
 # Подписываем ffmpeg

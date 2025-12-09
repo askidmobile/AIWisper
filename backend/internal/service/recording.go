@@ -71,6 +71,7 @@ func (s *RecordingService) StartSession(config session.SessionConfig, echoCancel
 
 	// 5. Configure Capture
 	if voiceIsolation {
+		// Voice Isolation требует ScreenCaptureKit с режимом "both"
 		s.Capture.EnableScreenCaptureKit(true)
 		s.Capture.EnableSystemCapture(true)
 		if err := s.Capture.StartScreenCaptureKitAudioWithMode("both"); err != nil {
@@ -83,10 +84,24 @@ func (s *RecordingService) StartSession(config session.SessionConfig, echoCancel
 		}
 		if config.CaptureSystem {
 			s.Capture.EnableSystemCapture(true)
-			if config.UseNative && audio.ScreenCaptureKitAvailable() {
-				s.Capture.EnableScreenCaptureKit(true)
+			// Выбираем метод захвата системного звука:
+			// 1. Core Audio tap (macOS 14.2+) - предпочтительный, меньше конфликтов
+			// 2. ScreenCaptureKit (macOS 13+) - fallback
+			// 3. BlackHole/loopback - legacy fallback
+			if config.UseNative {
+				if audio.CoreAudioTapAvailable() {
+					log.Println("Using Core Audio tap for system audio (macOS 14.2+)")
+					s.Capture.SetSystemCaptureMethod(audio.SystemCaptureCoreAudioTap)
+				} else if audio.ScreenCaptureKitAvailable() {
+					log.Println("Using ScreenCaptureKit for system audio (macOS 13+)")
+					s.Capture.SetSystemCaptureMethod(audio.SystemCaptureScreenKit)
+				} else if config.SystemDevice != "" {
+					log.Println("Using BlackHole/loopback for system audio")
+					s.Capture.SetSystemCaptureMethod(audio.SystemCaptureBlackHole)
+					s.Capture.SetSystemDeviceByName(config.SystemDevice)
+				}
 			} else if config.SystemDevice != "" {
-				s.Capture.EnableScreenCaptureKit(false)
+				s.Capture.SetSystemCaptureMethod(audio.SystemCaptureBlackHole)
 				s.Capture.SetSystemDeviceByName(config.SystemDevice)
 			}
 		}

@@ -35,6 +35,19 @@ type ChannelData struct {
 	Samples []float32
 }
 
+// SystemCaptureMethod определяет метод захвата системного звука на macOS
+type SystemCaptureMethod int
+
+const (
+	// SystemCaptureBlackHole использует BlackHole/loopback устройство
+	SystemCaptureBlackHole SystemCaptureMethod = iota
+	// SystemCaptureScreenKit использует ScreenCaptureKit (macOS 13+)
+	SystemCaptureScreenKit
+	// SystemCaptureCoreAudioTap использует Core Audio Process Tap (macOS 14.2+)
+	// Преимущества: меньше overhead, лучше совместимость с другими приложениями
+	SystemCaptureCoreAudioTap
+)
+
 // Capture управляет захватом аудио с микрофона и системного звука
 type Capture struct {
 	ctx *malgo.AllocatedContext
@@ -51,8 +64,10 @@ type Capture struct {
 	running  bool
 
 	// Настройки
-	captureSystem       bool // Захватывать ли системный звук
-	useScreenCaptureKit bool // Использовать ScreenCaptureKit для системного звука (macOS 13+)
+	captureSystem       bool                // Захватывать ли системный звук
+	useScreenCaptureKit bool                // Использовать ScreenCaptureKit для системного звука (macOS 13+)
+	useCoreAudioTap     bool                // Использовать Core Audio tap (macOS 14.2+)
+	systemCaptureMethod SystemCaptureMethod // Метод захвата системного звука
 }
 
 func NewCapture() (*Capture, error) {
@@ -198,6 +213,39 @@ func (c *Capture) EnableSystemCapture(enable bool) {
 // EnableScreenCaptureKit включает использование ScreenCaptureKit для системного звука
 func (c *Capture) EnableScreenCaptureKit(enable bool) {
 	c.useScreenCaptureKit = enable
+	if enable {
+		c.systemCaptureMethod = SystemCaptureScreenKit
+	}
+}
+
+// EnableCoreAudioTap включает использование Core Audio tap для системного звука (macOS 14.2+)
+// Это предпочтительный метод если доступен - меньше конфликтов с другими приложениями
+func (c *Capture) EnableCoreAudioTap(enable bool) {
+	c.useCoreAudioTap = enable
+	if enable {
+		c.systemCaptureMethod = SystemCaptureCoreAudioTap
+	}
+}
+
+// SetSystemCaptureMethod устанавливает метод захвата системного звука
+func (c *Capture) SetSystemCaptureMethod(method SystemCaptureMethod) {
+	c.systemCaptureMethod = method
+	switch method {
+	case SystemCaptureScreenKit:
+		c.useScreenCaptureKit = true
+		c.useCoreAudioTap = false
+	case SystemCaptureCoreAudioTap:
+		c.useScreenCaptureKit = false
+		c.useCoreAudioTap = true
+	default:
+		c.useScreenCaptureKit = false
+		c.useCoreAudioTap = false
+	}
+}
+
+// GetSystemCaptureMethod возвращает текущий метод захвата системного звука
+func (c *Capture) GetSystemCaptureMethod() SystemCaptureMethod {
+	return c.systemCaptureMethod
 }
 
 // Start начинает захват аудио
@@ -215,15 +263,27 @@ func (c *Capture) Start(deviceID int) error {
 
 	// Запускаем захват системного звука
 	if c.captureSystem {
-		if c.useScreenCaptureKit {
+		switch c.systemCaptureMethod {
+		case SystemCaptureCoreAudioTap:
+			// Используем Core Audio tap (macOS 14.2+) - меньше конфликтов
+			if err := c.StartCoreAudioTap(); err != nil {
+				log.Printf("Warning: failed to start Core Audio tap: %v, falling back to ScreenCaptureKit", err)
+				// Fallback на ScreenCaptureKit
+				if err := c.StartScreenCaptureKitAudio(); err != nil {
+					log.Printf("Warning: failed to start ScreenCaptureKit audio: %v", err)
+				}
+			}
+		case SystemCaptureScreenKit:
 			// Используем ScreenCaptureKit (macOS 13+) - не требует BlackHole
 			if err := c.StartScreenCaptureKitAudio(); err != nil {
 				log.Printf("Warning: failed to start ScreenCaptureKit audio: %v", err)
 			}
-		} else if c.systemDeviceID != nil {
-			// Fallback на BlackHole/loopback устройство
-			if err := c.startSystemCapture(); err != nil {
-				log.Printf("Warning: failed to start system audio capture: %v", err)
+		default:
+			// Используем BlackHole/loopback устройство
+			if c.systemDeviceID != nil {
+				if err := c.startSystemCapture(); err != nil {
+					log.Printf("Warning: failed to start system audio capture: %v", err)
+				}
 			}
 		}
 	}
@@ -345,8 +405,11 @@ func (c *Capture) Stop() error {
 		c.systemDevice = nil
 	}
 
-	// Останавливаем ScreenCaptureKit если использовался
-	if c.useScreenCaptureKit {
+	// Останавливаем системный захват в зависимости от метода
+	switch c.systemCaptureMethod {
+	case SystemCaptureCoreAudioTap:
+		c.StopCoreAudioTap()
+	case SystemCaptureScreenKit:
 		c.StopScreenCaptureKitAudio()
 	}
 

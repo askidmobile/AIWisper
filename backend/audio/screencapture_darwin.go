@@ -190,15 +190,16 @@ func (c *Capture) StopScreenCaptureKitAudio() {
 		return
 	}
 
-	log.Println("Stopping system audio capture...")
+	log.Println("Stopping ScreenCaptureKit audio capture...")
 
 	// Отправляем SIGINT для graceful shutdown
 	// Swift процесс должен корректно остановить SCStream и освободить audio tap
 	if screenCaptureCmd.Process != nil {
+		log.Println("Sending SIGINT to screencapture-audio process...")
 		screenCaptureCmd.Process.Signal(os.Interrupt)
 
-		// Ждём завершения с таймаутом 5 секунд
-		// (Swift cleanup занимает до 3 сек + 100ms задержка)
+		// Ждём завершения с таймаутом 8 секунд
+		// Swift cleanup: ~3 сек wait + 200ms delay + запас на обработку
 		done := make(chan error, 1)
 		go func() {
 			done <- screenCaptureCmd.Wait()
@@ -207,11 +208,16 @@ func (c *Capture) StopScreenCaptureKitAudio() {
 		select {
 		case err := <-done:
 			if err != nil {
-				log.Printf("ScreenCaptureKit process exited with: %v", err)
+				// exit status 0 при SIGINT - это нормально
+				if err.Error() != "signal: interrupt" {
+					log.Printf("ScreenCaptureKit process exited with: %v", err)
+				} else {
+					log.Println("ScreenCaptureKit process stopped gracefully (SIGINT)")
+				}
 			} else {
 				log.Println("ScreenCaptureKit process stopped gracefully")
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(8 * time.Second):
 			// Таймаут - убиваем принудительно
 			log.Println("ScreenCaptureKit process didn't stop gracefully, killing...")
 			screenCaptureCmd.Process.Kill()
@@ -222,7 +228,13 @@ func (c *Capture) StopScreenCaptureKitAudio() {
 
 	screenCaptureCmd = nil
 	screenCaptureRunning = false
-	log.Println("System audio capture stopped")
+
+	// Дополнительная задержка для полного освобождения audio tap в macOS
+	// Это критично для того, чтобы другие приложения могли захватить звук
+	log.Println("Waiting for macOS to release audio resources...")
+	time.Sleep(500 * time.Millisecond)
+
+	log.Println("ScreenCaptureKit audio capture stopped, resources released")
 }
 
 // IsScreenCaptureKitRunning проверяет, запущен ли захват
