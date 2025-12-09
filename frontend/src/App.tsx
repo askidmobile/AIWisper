@@ -8,6 +8,7 @@ import WaveformDisplay from './components/WaveformDisplay';
 import { ModelState, AppSettings, OllamaModel } from './types/models';
 import { WaveformData, computeWaveform } from './utils/waveform';
 import { groupSessionsByTime, formatDuration as formatDurationUtil, formatDate as formatDateUtil, formatTime as formatTimeUtil } from './utils/groupSessions';
+import { createGrpcSocket, RPC_READY_STATE, RpcSocketLike } from './utils/grpcStream';
 
 // Electron IPC
 const electron = typeof window !== 'undefined' && (window as any).require ? (window as any).require('electron') : null;
@@ -213,7 +214,7 @@ function App() {
     const [logs, setLogs] = useState<string[]>([]);
     const [status, setStatus] = useState('Disconnected');
     const [language, setLanguage] = useState<'ru' | 'en' | 'auto'>('ru');
-    const wsRef = useRef<WebSocket | null>(null);
+    const wsRef = useRef<RpcSocketLike | null>(null);
 
     // Audio levels
     const [micLevel, setMicLevel] = useState(0);
@@ -515,16 +516,16 @@ function App() {
         };
     }, [isRecording]);
 
-    // WebSocket connection
+    // gRPC (WebSocket-like) connection
     useEffect(() => {
         let reconnectTimeout: NodeJS.Timeout;
 
         const connect = () => {
-            const socket = new WebSocket('ws://localhost:8080/ws');
+            const socket = createGrpcSocket();
 
             socket.onopen = () => {
                 setStatus('Connected');
-                addLog('Connected to backend');
+                addLog('Connected to backend (gRPC)');
                 socket.send(JSON.stringify({ type: 'get_devices' }));
                 socket.send(JSON.stringify({ type: 'get_sessions' }));
                 socket.send(JSON.stringify({ type: 'get_models' }));
@@ -829,7 +830,7 @@ function App() {
             };
 
             socket.onerror = (error) => {
-                console.error('WebSocket error:', error);
+                console.error('gRPC stream error:', error);
             };
 
             wsRef.current = socket;
@@ -838,7 +839,7 @@ function App() {
         connect();
 
         return () => {
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            if (wsRef.current && wsRef.current.readyState === RPC_READY_STATE.OPEN) {
                 wsRef.current.close();
             }
             clearTimeout(reconnectTimeout);
@@ -901,8 +902,8 @@ function App() {
 
     const handleStartStop = () => {
         const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-            addLog('WebSocket not connected');
+        if (!ws || ws.readyState !== RPC_READY_STATE.OPEN) {
+            addLog('gRPC channel not connected');
             return;
         }
 
@@ -989,8 +990,8 @@ function App() {
     // Улучшение транскрипции с помощью AI
     const handleImproveTranscription = useCallback(() => {
         if (!selectedSession) return;
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-            addLog('WebSocket not connected');
+        if (!wsRef.current || wsRef.current.readyState !== RPC_READY_STATE.OPEN) {
+            addLog('gRPC channel not connected');
             return;
         }
 
@@ -1008,7 +1009,7 @@ function App() {
 
     // Загрузка списка моделей Ollama
     const loadOllamaModels = useCallback(() => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        if (!wsRef.current || wsRef.current.readyState !== RPC_READY_STATE.OPEN) return;
 
         setOllamaModelsLoading(true);
         setOllamaError(null);
@@ -1020,7 +1021,7 @@ function App() {
 
     // Diarization functions
     const handleEnableDiarization = useCallback((segModelId: string, embModelId: string, provider: string) => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        if (!wsRef.current || wsRef.current.readyState !== RPC_READY_STATE.OPEN) return;
 
         // Найти пути к моделям
         const segModel = models.find(m => m.id === segModelId);
@@ -1050,7 +1051,7 @@ function App() {
     }, [models, addLog]);
 
     const handleDisableDiarization = useCallback(() => {
-        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+        if (!wsRef.current || wsRef.current.readyState !== RPC_READY_STATE.OPEN) return;
 
         setDiarizationLoading(true);
         // Сохраняем что диаризация выключена (но сохраняем модели для удобства)

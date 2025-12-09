@@ -9,10 +9,16 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      external: ['@grpc/grpc-js'],
+    },
   },
   server: {
     port: 5173,
     strictPort: true,
+  },
+  optimizeDeps: {
+    exclude: ['@grpc/grpc-js'],
   },
   resolve: {
     alias: {

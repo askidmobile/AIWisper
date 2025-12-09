@@ -10,8 +10,8 @@ interface WebSocketContextType {
 const WebSocketContext = createContext<WebSocketContextType | null>(null);
 
 export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    // Hardcoded URL for now, could be config
-    const ws = useWebSocket('ws://localhost:8080/ws');
+    const targetAddr = typeof process !== 'undefined' ? (process.env.AIWISPER_GRPC_ADDR || '') : '';
+    const ws = useWebSocket(targetAddr);
 
     return (
         <WebSocketContext.Provider value={ws}>

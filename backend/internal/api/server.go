@@ -9,6 +9,7 @@ import (
 	"aiwisper/session"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -25,6 +26,46 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+type sendFunc func(Message) error
+
+type transportClient interface {
+	Send(Message) error
+	Close() error
+}
+
+type wsClient struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
+}
+
+func (c *wsClient) Send(msg Message) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn.WriteJSON(msg)
+}
+
+func (c *wsClient) Close() error {
+	return c.conn.Close()
+}
+
+type grpcClient struct {
+	stream Control_StreamServer
+	mu     sync.Mutex
+}
+
+func (c *grpcClient) Send(msg Message) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stream.Send(&msg)
+}
+
+func (c *grpcClient) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// gRPC поток закрывается на стороне клиента или через контекст
+	return nil
+}
+
 type Server struct {
 	Config               *config.Config
 	SessionMgr           *session.Manager
@@ -35,7 +76,7 @@ type Server struct {
 	RecordingService     *service.RecordingService
 	LLMService           *service.LLMService
 
-	clients map[*websocket.Conn]bool
+	clients map[transportClient]bool
 	mu      sync.Mutex
 }
 
@@ -58,17 +99,19 @@ func NewServer(
 		TranscriptionService: transSvc,
 		RecordingService:     recSvc,
 		LLMService:           llmSvc,
-		clients:              make(map[*websocket.Conn]bool),
+		clients:              make(map[transportClient]bool),
 	}
 	s.setupCallbacks()
 	return s
 }
 
 func (s *Server) Start() {
+	go s.startGRPCServer()
+
 	http.HandleFunc("/ws", s.handleWebSocket)
 	http.HandleFunc("/api/sessions/", s.handleSessionsAPI)
 
-	log.Printf("Backend listening on :%s", s.Config.Port)
+	log.Printf("Backend listening on HTTP :%s and gRPC %s", s.Config.Port, s.Config.GRPCAddr)
 	if err := http.ListenAndServe(":"+s.Config.Port, nil); err != nil {
 		log.Fatal("ListenAndServe:", err)
 	}
@@ -129,30 +172,37 @@ func (s *Server) setupCallbacks() {
 
 func (s *Server) broadcast(msg Message) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Fast path check
 	if len(s.clients) == 0 {
+		s.mu.Unlock()
 		return
 	}
+	targets := make([]transportClient, 0, len(s.clients))
+	for c := range s.clients {
+		targets = append(targets, c)
+	}
+	s.mu.Unlock()
 
-	// Broadcast
-	for conn := range s.clients {
-		// Gorilla websocket WriteJSON is not concurrent safe per connection,
-		// but here we serve strict separation or we need locks per conn if writing concurrently?
-		// WriteJSON locks internally? No.
-		// BUT we are in s.mu.Lock(), so we serialize writes to ALL clients.
-		// Ideally we should have a write pump per client.
-		// For now, simple implementation logic from main.go (which was single threaded per conn).
-		// Since we have multiple sources (callbacks), we need protection.
-		// The simplest way is global lock for broadcast which we have.
-
-		if err := conn.WriteJSON(msg); err != nil {
-			log.Printf("Write error: %v", err)
-			conn.Close()
-			delete(s.clients, conn)
+	for _, c := range targets {
+		if err := c.Send(msg); err != nil {
+			log.Printf("Send error: %v", err)
+			s.removeClient(c)
 		}
 	}
+}
+
+func (s *Server) addClient(c transportClient) {
+	s.mu.Lock()
+	s.clients[c] = true
+	s.mu.Unlock()
+}
+
+func (s *Server) removeClient(c transportClient) {
+	s.mu.Lock()
+	if _, ok := s.clients[c]; ok {
+		delete(s.clients, c)
+	}
+	s.mu.Unlock()
+	_ = c.Close()
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -162,15 +212,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.mu.Lock()
-	s.clients[conn] = true
-	s.mu.Unlock()
+	client := &wsClient{conn: conn}
+	s.addClient(client)
 
 	defer func() {
-		s.mu.Lock()
-		delete(s.clients, conn)
-		s.mu.Unlock()
-		conn.Close()
+		s.removeClient(client)
 	}()
 
 	for {
@@ -180,19 +226,41 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			log.Println("Read:", err)
 			break
 		}
-		s.processMessage(conn, msg)
+		s.processMessage(client.Send, msg)
 	}
 }
 
-func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
+// Stream реализует gRPC bidirectional поток, повторяя поведение WebSocket.
+func (s *Server) Stream(stream Control_StreamServer) error {
+	client := &grpcClient{stream: stream}
+	s.addClient(client)
+	defer s.removeClient(client)
+
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			log.Printf("gRPC recv error: %v", err)
+			return err
+		}
+		if msg == nil {
+			continue
+		}
+		s.processMessage(client.Send, *msg)
+	}
+}
+
+func (s *Server) processMessage(send sendFunc, msg Message) {
 	switch msg.Type {
 	case "get_devices":
 		devices, err := s.Capture.ListDevices()
 		if err != nil {
-			conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+			send(Message{Type: "error", Data: err.Error()})
 			return
 		}
-		conn.WriteJSON(Message{
+		send(Message{
 			Type:                      "devices",
 			Devices:                   devices,
 			ScreenCaptureKitAvailable: audio.ScreenCaptureKitAvailable(),
@@ -200,58 +268,58 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 
 	case "get_models":
 		modelStates := s.ModelMgr.GetAllModelsState()
-		conn.WriteJSON(Message{
+		send(Message{
 			Type:   "models_list",
 			Models: modelStates,
 		})
 
 	case "download_model":
 		if msg.ModelID == "" {
-			conn.WriteJSON(Message{Type: "error", Data: "modelId is required"})
+			send(Message{Type: "error", Data: "modelId is required"})
 			return
 		}
 		if err := s.ModelMgr.DownloadModel(msg.ModelID); err != nil {
-			conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+			send(Message{Type: "error", Data: err.Error()})
 			return
 		}
-		conn.WriteJSON(Message{Type: "download_started", ModelID: msg.ModelID})
+		send(Message{Type: "download_started", ModelID: msg.ModelID})
 
 	case "cancel_download":
 		if msg.ModelID == "" {
-			conn.WriteJSON(Message{Type: "error", Data: "modelId is required"})
+			send(Message{Type: "error", Data: "modelId is required"})
 			return
 		}
 		s.ModelMgr.CancelDownload(msg.ModelID)
-		conn.WriteJSON(Message{Type: "download_cancelled", ModelID: msg.ModelID})
+		send(Message{Type: "download_cancelled", ModelID: msg.ModelID})
 
 	case "delete_model":
 		if msg.ModelID == "" {
-			conn.WriteJSON(Message{Type: "error", Data: "modelId is required"})
+			send(Message{Type: "error", Data: "modelId is required"})
 			return
 		}
 		s.ModelMgr.DeleteModel(msg.ModelID)
-		conn.WriteJSON(Message{Type: "model_deleted", ModelID: msg.ModelID})
-		conn.WriteJSON(Message{Type: "models_list", Models: s.ModelMgr.GetAllModelsState()})
+		send(Message{Type: "model_deleted", ModelID: msg.ModelID})
+		send(Message{Type: "models_list", Models: s.ModelMgr.GetAllModelsState()})
 
 	case "set_active_model":
 		if msg.ModelID == "" {
-			conn.WriteJSON(Message{Type: "error", Data: "modelId is required"})
+			send(Message{Type: "error", Data: "modelId is required"})
 			return
 		}
 		if !s.ModelMgr.IsModelDownloaded(msg.ModelID) {
-			conn.WriteJSON(Message{Type: "error", Data: "model not downloaded"})
+			send(Message{Type: "error", Data: "model not downloaded"})
 			return
 		}
 		if s.EngineMgr != nil {
 			if err := s.EngineMgr.SetActiveModel(msg.ModelID); err != nil {
-				conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+				send(Message{Type: "error", Data: err.Error()})
 				return
 			}
 			// Обновляем transcriber в Pipeline если диаризация включена
 			s.updatePipelineTranscriber()
 		}
-		conn.WriteJSON(Message{Type: "active_model_changed", ModelID: msg.ModelID})
-		conn.WriteJSON(Message{Type: "models_list", Models: s.ModelMgr.GetAllModelsState()})
+		send(Message{Type: "active_model_changed", ModelID: msg.ModelID})
+		send(Message{Type: "models_list", Models: s.ModelMgr.GetAllModelsState()})
 
 	case "get_sessions":
 		sessions := s.SessionMgr.ListSessions()
@@ -263,19 +331,19 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 				ChunksCount:   len(sess.Chunks), Title: sess.Title,
 			}
 		}
-		conn.WriteJSON(Message{Type: "sessions_list", Sessions: infos})
+		send(Message{Type: "sessions_list", Sessions: infos})
 
 	case "get_session":
 		sess, err := s.SessionMgr.GetSession(msg.SessionID)
 		if err != nil {
-			conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+			send(Message{Type: "error", Data: err.Error()})
 			return
 		}
-		conn.WriteJSON(Message{Type: "session_details", Session: sess})
+		send(Message{Type: "session_details", Session: sess})
 
 	case "delete_session":
 		s.SessionMgr.DeleteSession(msg.SessionID)
-		conn.WriteJSON(Message{Type: "session_deleted", SessionID: msg.SessionID})
+		send(Message{Type: "session_deleted", SessionID: msg.SessionID})
 
 	case "start_session":
 		// Configure Engine Model first, then Language
@@ -283,12 +351,12 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			if msg.Model != "" {
 				if !s.ModelMgr.IsModelDownloaded(msg.Model) {
 					log.Printf("start_session: model %s is not downloaded", msg.Model)
-					conn.WriteJSON(Message{Type: "error", Data: fmt.Sprintf("Model %s is not downloaded", msg.Model)})
+					send(Message{Type: "error", Data: fmt.Sprintf("Model %s is not downloaded", msg.Model)})
 					return
 				}
 				if err := s.EngineMgr.SetActiveModel(msg.Model); err != nil {
 					log.Printf("start_session: failed to set active model %s: %v", msg.Model, err)
-					conn.WriteJSON(Message{Type: "error", Data: fmt.Sprintf("Failed to load model %s: %v", msg.Model, err)})
+					send(Message{Type: "error", Data: fmt.Sprintf("Failed to load model %s: %v", msg.Model, err)})
 					return
 				}
 				log.Printf("start_session: model %s activated successfully", msg.Model)
@@ -298,7 +366,7 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 				// Если модель не указана, проверяем есть ли активный движок
 				if s.EngineMgr.GetActiveEngine() == nil {
 					log.Printf("start_session: no model specified and no active engine")
-					conn.WriteJSON(Message{Type: "error", Data: "No model selected. Please select a model in settings."})
+					send(Message{Type: "error", Data: "No model selected. Please select a model in settings."})
 					return
 				}
 			}
@@ -332,26 +400,26 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 
 		sess, err := s.RecordingService.StartSession(config, ec, msg.UseVoiceIsolation)
 		if err != nil {
-			conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+			send(Message{Type: "error", Data: err.Error()})
 			return
 		}
-		conn.WriteJSON(Message{Type: "session_started", Session: sess})
+		send(Message{Type: "session_started", Session: sess})
 
 	case "stop_session":
 		sess, err := s.RecordingService.StopSession()
 		if err != nil {
-			conn.WriteJSON(Message{Type: "error", Data: err.Error()})
+			send(Message{Type: "error", Data: err.Error()})
 			return
 		}
-		conn.WriteJSON(Message{Type: "session_stopped", Session: sess})
+		send(Message{Type: "session_stopped", Session: sess})
 
 	case "generate_summary":
 		if s.LLMService == nil {
-			conn.WriteJSON(Message{Type: "error", Data: "LLM Service not available"})
+			send(Message{Type: "error", Data: "LLM Service not available"})
 			return
 		}
 
-		conn.WriteJSON(Message{Type: "summary_started", SessionID: msg.SessionID})
+		send(Message{Type: "summary_started", SessionID: msg.SessionID})
 
 		// Fetch transcription text helper
 		sess, _ := s.SessionMgr.GetSession(msg.SessionID)
@@ -375,7 +443,7 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 	case "set_auto_improve":
 		// Включение/отключение автоматического улучшения транскрипции через LLM
 		if s.TranscriptionService == nil {
-			conn.WriteJSON(Message{Type: "error", Data: "Transcription service not available"})
+			send(Message{Type: "error", Data: "Transcription service not available"})
 			return
 		}
 		if msg.AutoImproveEnabled {
@@ -388,20 +456,20 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 				model = "llama3.2"
 			}
 			s.TranscriptionService.EnableAutoImprove(url, model)
-			conn.WriteJSON(Message{Type: "auto_improve_status", AutoImproveEnabled: true, OllamaModel: model, OllamaUrl: url})
+			send(Message{Type: "auto_improve_status", AutoImproveEnabled: true, OllamaModel: model, OllamaUrl: url})
 		} else {
 			s.TranscriptionService.DisableAutoImprove()
-			conn.WriteJSON(Message{Type: "auto_improve_status", AutoImproveEnabled: false})
+			send(Message{Type: "auto_improve_status", AutoImproveEnabled: false})
 		}
 		log.Printf("Auto-improve: enabled=%v, model=%s, url=%s", msg.AutoImproveEnabled, msg.OllamaModel, msg.OllamaUrl)
 
 	case "get_auto_improve_status":
 		// Получить текущий статус автоулучшения
 		if s.TranscriptionService == nil {
-			conn.WriteJSON(Message{Type: "auto_improve_status", AutoImproveEnabled: false})
+			send(Message{Type: "auto_improve_status", AutoImproveEnabled: false})
 			return
 		}
-		conn.WriteJSON(Message{
+		send(Message{
 			Type:               "auto_improve_status",
 			AutoImproveEnabled: s.TranscriptionService.AutoImproveWithLLM,
 			OllamaModel:        s.TranscriptionService.OllamaModel,
@@ -410,7 +478,7 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 
 	case "get_ollama_models":
 		if s.LLMService == nil {
-			conn.WriteJSON(Message{Type: "error", Data: "LLM Service not available"})
+			send(Message{Type: "error", Data: "LLM Service not available"})
 			return
 		}
 		url := msg.OllamaUrl
@@ -419,7 +487,7 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 		}
 		models, err := s.LLMService.GetOllamaModels(url)
 		if err != nil {
-			conn.WriteJSON(Message{Type: "ollama_models", Error: err.Error()})
+			send(Message{Type: "ollama_models", Error: err.Error()})
 			return
 		}
 
@@ -433,14 +501,14 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 				Parameters: m.Details.ParameterSize,
 			})
 		}
-		conn.WriteJSON(Message{Type: "ollama_models", OllamaModels: apiModels})
+		send(Message{Type: "ollama_models", OllamaModels: apiModels})
 
 	case "improve_transcription":
 		if s.LLMService == nil {
-			conn.WriteJSON(Message{Type: "error", Data: "LLM Service not available"})
+			send(Message{Type: "error", Data: "LLM Service not available"})
 			return
 		}
-		conn.WriteJSON(Message{Type: "improve_started", SessionID: msg.SessionID})
+		send(Message{Type: "improve_started", SessionID: msg.SessionID})
 
 		sess, _ := s.SessionMgr.GetSession(msg.SessionID)
 		var dialogue []session.TranscriptSegment
@@ -466,7 +534,7 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			msg.SessionID, msg.Data, msg.Model, msg.Language)
 
 		if msg.SessionID == "" || msg.Data == "" {
-			conn.WriteJSON(Message{Type: "error", Data: "sessionId and chunkId (data) are required"})
+			send(Message{Type: "error", Data: "sessionId and chunkId (data) are required"})
 			return
 		}
 
@@ -515,7 +583,7 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			msg.SessionID, msg.Model, msg.Language, msg.DiarizationEnabled)
 
 		if msg.SessionID == "" {
-			conn.WriteJSON(Message{Type: "error", Data: "sessionId is required"})
+			send(Message{Type: "error", Data: "sessionId is required"})
 			return
 		}
 
@@ -603,7 +671,7 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			provider, msg.SegmentationModelPath, msg.EmbeddingModelPath)
 
 		if msg.SegmentationModelPath == "" || msg.EmbeddingModelPath == "" {
-			conn.WriteJSON(Message{Type: "diarization_error", Error: "segmentationModelPath and embeddingModelPath are required"})
+			send(Message{Type: "diarization_error", Error: "segmentationModelPath and embeddingModelPath are required"})
 			return
 		}
 
@@ -618,11 +686,11 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 				log.Printf("enable_diarization: loading active model %s before enabling diarization", activeModelID)
 				if err := s.EngineMgr.SetActiveModel(activeModelID); err != nil {
 					log.Printf("enable_diarization: failed to load model %s: %v", activeModelID, err)
-					conn.WriteJSON(Message{Type: "diarization_error", Error: fmt.Sprintf("Не удалось загрузить модель транскрипции: %v", err)})
+					send(Message{Type: "diarization_error", Error: fmt.Sprintf("Не удалось загрузить модель транскрипции: %v", err)})
 					return
 				}
 			} else {
-				conn.WriteJSON(Message{Type: "diarization_error", Error: "Не выбрана модель транскрипции. Выберите модель в настройках."})
+				send(Message{Type: "diarization_error", Error: "Не выбрана модель транскрипции. Выберите модель в настройках."})
 				return
 			}
 		}
@@ -631,12 +699,12 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			msg.SegmentationModelPath, msg.EmbeddingModelPath, provider)
 		if err != nil {
 			log.Printf("Failed to enable diarization: %v", err)
-			conn.WriteJSON(Message{Type: "diarization_error", Error: err.Error()})
+			send(Message{Type: "diarization_error", Error: err.Error()})
 			return
 		}
 
 		actualProvider := s.TranscriptionService.GetDiarizationProvider()
-		conn.WriteJSON(Message{
+		send(Message{
 			Type:                "diarization_enabled",
 			DiarizationEnabled:  true,
 			DiarizationProvider: actualProvider,
@@ -645,12 +713,12 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 	case "disable_diarization":
 		log.Printf("Received disable_diarization")
 		s.TranscriptionService.DisableDiarization()
-		conn.WriteJSON(Message{Type: "diarization_disabled", DiarizationEnabled: false})
+		send(Message{Type: "diarization_disabled", DiarizationEnabled: false})
 
 	case "get_diarization_status":
 		enabled := s.TranscriptionService.IsDiarizationEnabled()
 		provider := s.TranscriptionService.GetDiarizationProvider()
-		conn.WriteJSON(Message{
+		send(Message{
 			Type:                "diarization_status",
 			DiarizationEnabled:  enabled,
 			DiarizationProvider: provider,

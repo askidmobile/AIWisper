@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { createGrpcSocket, RPC_READY_STATE, RpcSocketLike } from '../utils/grpcStream';
 
 type MessageHandler = (data: any) => void;
 
@@ -10,7 +11,7 @@ interface WebSocketHook {
 
 export const useWebSocket = (url: string): WebSocketHook => {
     const [isConnected, setIsConnected] = useState(false);
-    const wsRef = useRef<WebSocket | null>(null);
+    const wsRef = useRef<RpcSocketLike | null>(null);
     const handlersRef = useRef<Map<string, Set<MessageHandler>>>(new Map());
     const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -33,11 +34,11 @@ export const useWebSocket = (url: string): WebSocketHook => {
     };
 
     const connect = useCallback(() => {
-        const socket = new WebSocket(url);
+        const socket = createGrpcSocket(url);
 
         socket.onopen = () => {
             setIsConnected(true);
-            console.log('Connected to WebSocket');
+            console.log('Connected to backend (gRPC)');
             // Re-send initial requests if needed happens in components using this hook
         };
 
@@ -48,7 +49,7 @@ export const useWebSocket = (url: string): WebSocketHook => {
                     notify(msg.type, msg);
                 }
             } catch (e) {
-                console.error('WebSocket parse error:', e);
+                console.error('gRPC parse error:', e);
             }
         };
 
@@ -59,7 +60,7 @@ export const useWebSocket = (url: string): WebSocketHook => {
         };
 
         socket.onerror = (error) => {
-            console.error('WebSocket error:', error);
+            console.error('gRPC stream error:', error);
             // Error handling usually leads to close
         };
 
@@ -79,10 +80,10 @@ export const useWebSocket = (url: string): WebSocketHook => {
     }, [connect]);
 
     const sendMessage = useCallback((msg: any) => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
+        if (wsRef.current?.readyState === RPC_READY_STATE.OPEN) {
             wsRef.current.send(JSON.stringify(msg));
         } else {
-            console.warn('WebSocket not connected, message dropped:', msg);
+            console.warn('gRPC not connected, message dropped:', msg);
         }
     }, []);
 

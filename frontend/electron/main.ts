@@ -81,8 +81,17 @@ function getResourcesPath(): string {
     }
 }
 
+function getGrpcAddress(): string {
+    if (process.platform === 'win32') {
+        return 'npipe:\\\\.\\pipe\\aiwisper-grpc';
+    }
+    const socketPath = path.join(app.getPath('userData'), 'aiwisper-grpc.sock');
+    return `unix://${socketPath}`;
+}
+
 function startGoBackend() {
     const resourcesPath = getResourcesPath();
+    const grpcAddress = getGrpcAddress();
 
     let backendPath: string;
     let modelPath: string;
@@ -136,6 +145,7 @@ function startGoBackend() {
     log(`Model path: ${modelPath}`);
     log(`Data directory: ${dataDir}`);
     log(`Models directory: ${modelsDirPath}`);
+    log(`gRPC address: ${grpcAddress}`);
     log(`Working directory: ${cwd}`);
 
     const env = { ...process.env };
@@ -144,7 +154,9 @@ function startGoBackend() {
         env.DYLD_FALLBACK_LIBRARY_PATH = resourcesPath;
     }
 
-    goProcess = spawn(backendPath, ['-model', modelPath, '-data', dataDir, '-models', modelsDirPath], {
+    env.AIWISPER_GRPC_ADDR = grpcAddress;
+
+    goProcess = spawn(backendPath, ['-model', modelPath, '-data', dataDir, '-models', modelsDirPath, '-grpc-addr', grpcAddress], {
         cwd: cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: env,
