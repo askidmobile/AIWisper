@@ -1,12 +1,15 @@
 package models
 
 import (
+	"archive/tar"
+	"compress/bzip2"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -114,4 +117,121 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+// DownloadAndExtractTarBz2 скачивает tar.bz2 архив и распаковывает в указанную директорию
+func DownloadAndExtractTarBz2(ctx context.Context, url, destDir string, expectedSize int64, onProgress ProgressFunc) error {
+	// Создаём директорию если нужно
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Создаём HTTP запрос с контекстом
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Выполняем запрос
+	client := &http.Client{
+		Timeout: 0,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to download: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+
+	// Определяем размер файла
+	totalSize := resp.ContentLength
+	if totalSize <= 0 && expectedSize > 0 {
+		totalSize = expectedSize
+	}
+
+	// Создаём reader с прогрессом
+	reader := &progressReader{
+		reader:     resp.Body,
+		totalSize:  totalSize,
+		onProgress: onProgress,
+	}
+
+	// Декомпрессия bzip2
+	bzReader := bzip2.NewReader(reader)
+
+	// Распаковка tar
+	tarReader := tar.NewReader(bzReader)
+
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read tar: %w", err)
+		}
+
+		// Определяем целевой путь
+		targetPath := filepath.Join(destDir, header.Name)
+
+		// Защита от path traversal
+		if !strings.HasPrefix(filepath.Clean(targetPath), filepath.Clean(destDir)) {
+			return fmt.Errorf("invalid file path in archive: %s", header.Name)
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(targetPath, 0755); err != nil {
+				return fmt.Errorf("failed to create directory: %w", err)
+			}
+		case tar.TypeReg:
+			// Создаём директорию для файла
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return fmt.Errorf("failed to create directory: %w", err)
+			}
+
+			// Создаём файл
+			outFile, err := os.Create(targetPath)
+			if err != nil {
+				return fmt.Errorf("failed to create file: %w", err)
+			}
+
+			if _, err := io.Copy(outFile, tarReader); err != nil {
+				outFile.Close()
+				return fmt.Errorf("failed to write file: %w", err)
+			}
+			outFile.Close()
+		}
+	}
+
+	return nil
+}
+
+// FindOnnxModelInDir ищет .onnx файл в директории (рекурсивно)
+func FindOnnxModelInDir(dir string) (string, error) {
+	var modelPath string
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && strings.HasSuffix(strings.ToLower(info.Name()), ".onnx") {
+			modelPath = path
+			return filepath.SkipAll // Нашли первый .onnx файл
+		}
+		return nil
+	})
+
+	if err != nil && err != filepath.SkipAll {
+		return "", err
+	}
+
+	if modelPath == "" {
+		return "", fmt.Errorf("no .onnx file found in %s", dir)
+	}
+
+	return modelPath, nil
 }

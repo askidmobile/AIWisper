@@ -232,6 +232,12 @@ function App() {
     const [isImproving, setIsImproving] = useState(false);
     const [improveError, setImproveError] = useState<string | null>(null);
 
+    // Diarization state
+    const [diarizationEnabled, setDiarizationEnabled] = useState(false);
+    const [diarizationProvider, setDiarizationProvider] = useState('');
+    const [diarizationLoading, setDiarizationLoading] = useState(false);
+    const [diarizationError, setDiarizationError] = useState<string | null>(null);
+
     const transcriptionRef = useRef<HTMLDivElement | null>(null);
 
     // Refs для доступа к актуальным значениям в callbacks
@@ -413,6 +419,7 @@ function App() {
                 socket.send(JSON.stringify({ type: 'get_devices' }));
                 socket.send(JSON.stringify({ type: 'get_sessions' }));
                 socket.send(JSON.stringify({ type: 'get_models' }));
+                socket.send(JSON.stringify({ type: 'get_diarization_status' }));
             };
 
             socket.onmessage = (event) => {
@@ -654,6 +661,33 @@ function App() {
                             setImproveError(msg.error || 'Unknown error');
                             addLog(`AI improvement error: ${msg.error}`);
                             break;
+
+                        // === Diarization ===
+                        case 'diarization_enabled':
+                            setDiarizationEnabled(true);
+                            setDiarizationProvider(msg.diarizationProvider || 'cpu');
+                            setDiarizationLoading(false);
+                            setDiarizationError(null);
+                            addLog(`Diarization enabled (${msg.diarizationProvider || 'cpu'})`);
+                            break;
+
+                        case 'diarization_disabled':
+                            setDiarizationEnabled(false);
+                            setDiarizationProvider('');
+                            setDiarizationLoading(false);
+                            addLog('Diarization disabled');
+                            break;
+
+                        case 'diarization_status':
+                            setDiarizationEnabled(msg.diarizationEnabled || false);
+                            setDiarizationProvider(msg.diarizationProvider || '');
+                            break;
+
+                        case 'diarization_error':
+                            setDiarizationLoading(false);
+                            setDiarizationError(msg.error || 'Unknown diarization error');
+                            addLog(`Diarization error: ${msg.error}`);
+                            break;
                     }
                 } catch {
                     // Ignore JSON errors
@@ -802,6 +836,39 @@ function App() {
             ollamaUrl: ollamaUrl
         }));
     }, [ollamaUrl]);
+
+    // Diarization functions
+    const handleEnableDiarization = useCallback((segModelId: string, embModelId: string, provider: string) => {
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+        // Найти пути к моделям
+        const segModel = models.find(m => m.id === segModelId);
+        const embModel = models.find(m => m.id === embModelId);
+
+        if (!segModel?.path || !embModel?.path) {
+            setDiarizationError('Модели не найдены или не скачаны');
+            return;
+        }
+
+        setDiarizationLoading(true);
+        setDiarizationError(null);
+
+        wsRef.current.send(JSON.stringify({
+            type: 'enable_diarization',
+            segmentationModelPath: segModel.path,
+            embeddingModelPath: embModel.path,
+            diarizationProvider: provider
+        }));
+        addLog(`Enabling diarization (${provider})...`);
+    }, [models, addLog]);
+
+    const handleDisableDiarization = useCallback(() => {
+        if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+
+        setDiarizationLoading(true);
+        wsRef.current.send(JSON.stringify({ type: 'disable_diarization' }));
+        addLog('Disabling diarization...');
+    }, [addLog]);
 
     // Генерация summary
     const handleGenerateSummary = useCallback(() => {
@@ -1515,6 +1582,14 @@ function App() {
                     onShowModelManager={() => setShowModelManager(true)}
                     activeModelId={activeModelId}
                     models={models}
+                    // Diarization
+                    diarizationStatus={{ enabled: diarizationEnabled, provider: diarizationProvider }}
+                    diarizationLoading={diarizationLoading}
+                    diarizationError={diarizationError}
+                    segmentationModels={models.filter(m => m.engine === 'diarization' && m.diarizationType === 'segmentation')}
+                    embeddingModels={models.filter(m => m.engine === 'diarization' && m.diarizationType === 'embedding')}
+                    onEnableDiarization={handleEnableDiarization}
+                    onDisableDiarization={handleDisableDiarization}
                 />
 
                 {/* Transcription Area */}

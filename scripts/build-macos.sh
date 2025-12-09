@@ -158,7 +158,7 @@ fi
 log_info "Building for $GOARCH..."
 # Собираем без переопределения CGO_LDFLAGS - используем статические библиотеки из whisper.go
 GOOS=darwin GOARCH=$GOARCH go build \
-    -ldflags="-s -w -X main.version=1.7.2" \
+    -ldflags="-s -w -X main.version=1.11.0" \
     -o "$RESOURCES_DIR/$BINARY_NAME" \
     .
 

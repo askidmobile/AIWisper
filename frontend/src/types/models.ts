@@ -1,18 +1,21 @@
 // Типы для менеджера моделей
 
-export type ModelType = 'ggml' | 'faster-whisper';
+export type ModelType = 'ggml' | 'onnx' | 'faster-whisper';
+export type EngineType = 'whisper' | 'gigaam' | 'speaker' | 'diarization';
+export type DiarizationModelType = 'segmentation' | 'embedding';
 
-export type ModelStatus = 
-    | 'not_downloaded' 
-    | 'downloading' 
-    | 'downloaded' 
-    | 'active' 
+export type ModelStatus =
+    | 'not_downloaded'
+    | 'downloading'
+    | 'downloaded'
+    | 'active'
     | 'error';
 
 export interface ModelInfo {
     id: string;
     name: string;
     type: ModelType;
+    engine?: EngineType;
     size: string;
     sizeBytes: number;
     description: string;
@@ -22,7 +25,10 @@ export interface ModelInfo {
     recommended?: boolean;
     downloadUrl?: string;
     huggingfaceRepo?: string;
-    requiresPython?: boolean; // Модель скачивается автоматически через faster-whisper
+    requiresPython?: boolean;
+    // Поля для диаризации
+    diarizationType?: DiarizationModelType;
+    isArchive?: boolean;
 }
 
 export interface ModelState extends ModelInfo {
@@ -31,6 +37,14 @@ export interface ModelState extends ModelInfo {
     error?: string;
     path?: string;
     downloaded?: boolean;
+}
+
+// Статус диаризации
+export interface DiarizationStatus {
+    enabled: boolean;
+    provider: string; // 'cpu' | 'coreml' | 'cuda' | ''
+    segmentationModelId?: string;
+    embeddingModelId?: string;
 }
 
 export interface AppSettings {

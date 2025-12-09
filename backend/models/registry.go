@@ -13,9 +13,18 @@ const (
 type EngineType string
 
 const (
-	EngineTypeWhisper EngineType = "whisper" // whisper.cpp
-	EngineTypeGigaAM  EngineType = "gigaam"  // GigaAM ONNX
-	EngineTypeSpeaker EngineType = "speaker" // Speaker Recognition
+	EngineTypeWhisper     EngineType = "whisper"     // whisper.cpp
+	EngineTypeGigaAM      EngineType = "gigaam"      // GigaAM ONNX
+	EngineTypeSpeaker     EngineType = "speaker"     // Speaker Recognition
+	EngineTypeDiarization EngineType = "diarization" // Speaker Diarization (segmentation + embedding)
+)
+
+// DiarizationModelType тип модели диаризации
+type DiarizationModelType string
+
+const (
+	DiarizationModelSegmentation DiarizationModelType = "segmentation" // Pyannote сегментация
+	DiarizationModelEmbedding    DiarizationModelType = "embedding"    // Speaker embedding (WeSpeaker, 3D-Speaker)
 )
 
 // ModelInfo информация о модели
@@ -33,6 +42,10 @@ type ModelInfo struct {
 	Recommended bool       `json:"recommended,omitempty"`
 	DownloadURL string     `json:"downloadUrl,omitempty"`
 	VocabURL    string     `json:"vocabUrl,omitempty"` // URL словаря (для ONNX моделей)
+
+	// Поля для диаризации
+	DiarizationType DiarizationModelType `json:"diarizationType,omitempty"` // Тип модели диаризации
+	IsArchive       bool                 `json:"isArchive,omitempty"`       // Модель в архиве (tar.bz2)
 }
 
 // ModelStatus статус модели на устройстве
@@ -149,6 +162,49 @@ var Registry = []ModelInfo{
 		DownloadURL: "https://huggingface.co/istupakov/gigaam-v2-onnx/resolve/main/v2_ctc.int8.onnx",
 		VocabURL:    "https://huggingface.co/istupakov/gigaam-v2-onnx/resolve/main/v2_vocab.txt",
 	},
+
+	// ===== Модели диаризации (Diarization) =====
+	{
+		ID:              "pyannote-segmentation-3.0",
+		Name:            "Pyannote Segmentation 3.0",
+		Type:            ModelTypeONNX,
+		Engine:          EngineTypeDiarization,
+		DiarizationType: DiarizationModelSegmentation,
+		Size:            "5.9 MB",
+		SizeBytes:       5_900_000,
+		Description:     "Сегментация спикеров (pyannote.audio)",
+		Languages:       []string{"multi"},
+		Speed:           "~100x",
+		IsArchive:       true,
+		DownloadURL:     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2",
+	},
+	{
+		ID:              "3dspeaker-speech-eres2net",
+		Name:            "3D-Speaker ERes2Net",
+		Type:            ModelTypeONNX,
+		Engine:          EngineTypeDiarization,
+		DiarizationType: DiarizationModelEmbedding,
+		Size:            "25 MB",
+		SizeBytes:       25_000_000,
+		Description:     "Speaker embedding (3D-Speaker, Alibaba)",
+		Languages:       []string{"multi"},
+		Speed:           "~50x",
+		DownloadURL:     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx",
+	},
+	{
+		ID:              "wespeaker-voxceleb-resnet34",
+		Name:            "WeSpeaker ResNet34",
+		Type:            ModelTypeONNX,
+		Engine:          EngineTypeDiarization,
+		DiarizationType: DiarizationModelEmbedding,
+		Size:            "26 MB",
+		SizeBytes:       26_851_029,
+		Description:     "Speaker embedding (WeSpeaker ResNet34)",
+		Languages:       []string{"multi"},
+		Speed:           "~40x",
+		Recommended:     true,
+		DownloadURL:     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx",
+	},
 }
 
 // GetModelsByEngine возвращает модели для определённого движка
@@ -188,6 +244,33 @@ func GetRecommendedModels() []ModelInfo {
 	var result []ModelInfo
 	for _, m := range Registry {
 		if m.Recommended {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
+// GetDiarizationModels возвращает модели диаризации
+func GetDiarizationModels() []ModelInfo {
+	return GetModelsByEngine(EngineTypeDiarization)
+}
+
+// GetSegmentationModels возвращает модели сегментации спикеров
+func GetSegmentationModels() []ModelInfo {
+	var result []ModelInfo
+	for _, m := range Registry {
+		if m.Engine == EngineTypeDiarization && m.DiarizationType == DiarizationModelSegmentation {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
+// GetEmbeddingModels возвращает модели speaker embedding
+func GetEmbeddingModels() []ModelInfo {
+	var result []ModelInfo
+	for _, m := range Registry {
+		if m.Engine == EngineTypeDiarization && m.DiarizationType == DiarizationModelEmbedding {
 			result = append(result, m)
 		}
 	}

@@ -53,6 +53,17 @@ func (m *Manager) GetModelPath(modelID string) string {
 		return ""
 	}
 
+	// Для архивных моделей диаризации - ищем .onnx файл в распакованной директории
+	if info.IsArchive && info.Engine == EngineTypeDiarization {
+		extractDir := filepath.Join(m.modelsDir, modelID)
+		onnxPath, err := FindOnnxModelInDir(extractDir)
+		if err == nil {
+			return onnxPath
+		}
+		// Fallback на стандартный путь
+		return filepath.Join(extractDir, "model.onnx")
+	}
+
 	// Расширение зависит от типа модели
 	switch info.Type {
 	case ModelTypeONNX:
@@ -76,6 +87,17 @@ func (m *Manager) IsModelDownloaded(modelID string) bool {
 	info := GetModelByID(modelID)
 	if info == nil {
 		return false
+	}
+
+	// Для архивных моделей проверяем существование директории
+	if info.IsArchive {
+		extractDir := filepath.Join(m.modelsDir, modelID)
+		if stat, err := os.Stat(extractDir); err != nil || !stat.IsDir() {
+			return false
+		}
+		// Проверяем наличие .onnx файла внутри
+		_, err := FindOnnxModelInDir(extractDir)
+		return err == nil
 	}
 
 	modelPath := m.GetModelPath(modelID)
@@ -187,6 +209,32 @@ func (m *Manager) DownloadModel(modelID string) error {
 			m.mu.Unlock()
 		}()
 
+		// Для архивных моделей (tar.bz2) - скачиваем и распаковываем
+		if info.IsArchive {
+			progressCb := func(progress float64) {
+				m.notifyProgress(modelID, progress, ModelStatusDownloading, nil)
+			}
+
+			extractDir := filepath.Join(m.modelsDir, modelID)
+			err := DownloadAndExtractTarBz2(ctx, info.DownloadURL, extractDir, info.SizeBytes, progressCb)
+
+			if err != nil {
+				if ctx.Err() == context.Canceled {
+					log.Printf("Download cancelled for model: %s", modelID)
+					m.notifyProgress(modelID, 0, ModelStatusNotDownloaded, nil)
+					m.cleanupPartialDownload(modelID)
+				} else {
+					log.Printf("Download failed for model %s: %v", modelID, err)
+					m.notifyProgress(modelID, 0, ModelStatusError, err)
+				}
+				return
+			}
+
+			log.Printf("Download and extraction completed for model: %s", modelID)
+			m.notifyProgress(modelID, 100, ModelStatusDownloaded, nil)
+			return
+		}
+
 		// Для ONNX моделей с vocab - скачиваем оба файла
 		hasVocab := info.Type == ModelTypeONNX && info.VocabURL != ""
 		totalSize := info.SizeBytes
@@ -286,6 +334,20 @@ func (m *Manager) DeleteModel(modelID string) error {
 	m.mu.RUnlock()
 
 	info := GetModelByID(modelID)
+	if info == nil {
+		return fmt.Errorf("unknown model: %s", modelID)
+	}
+
+	// Для архивных моделей удаляем директорию
+	if info.IsArchive {
+		extractDir := filepath.Join(m.modelsDir, modelID)
+		if err := os.RemoveAll(extractDir); err != nil {
+			return fmt.Errorf("failed to delete model directory: %w", err)
+		}
+		log.Printf("Model deleted: %s", modelID)
+		return nil
+	}
+
 	modelPath := m.GetModelPath(modelID)
 
 	// Удаляем основной файл модели
@@ -295,7 +357,7 @@ func (m *Manager) DeleteModel(modelID string) error {
 	}
 
 	// Для ONNX моделей удаляем также vocab
-	if info != nil && info.Type == ModelTypeONNX && info.VocabURL != "" {
+	if info.Type == ModelTypeONNX && info.VocabURL != "" {
 		vocabPath := m.GetVocabPath(modelID)
 		os.Remove(vocabPath) // игнорируем ошибку
 	}
@@ -318,6 +380,17 @@ func (m *Manager) notifyProgress(modelID string, progress float64, status ModelS
 // cleanupPartialDownload удаляет частично скачанный файл
 func (m *Manager) cleanupPartialDownload(modelID string) {
 	info := GetModelByID(modelID)
+	if info == nil {
+		return
+	}
+
+	// Для архивных моделей удаляем директорию
+	if info.IsArchive {
+		extractDir := filepath.Join(m.modelsDir, modelID)
+		os.RemoveAll(extractDir)
+		return
+	}
+
 	modelPath := m.GetModelPath(modelID)
 	if modelPath == "" {
 		return
@@ -328,7 +401,7 @@ func (m *Manager) cleanupPartialDownload(modelID string) {
 	os.Remove(modelPath + ".tmp")
 
 	// Для ONNX моделей удаляем также vocab
-	if info != nil && info.Type == ModelTypeONNX && info.VocabURL != "" {
+	if info.Type == ModelTypeONNX && info.VocabURL != "" {
 		vocabPath := m.GetVocabPath(modelID)
 		os.Remove(vocabPath)
 		os.Remove(vocabPath + ".tmp")

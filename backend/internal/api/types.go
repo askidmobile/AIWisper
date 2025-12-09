@@ -49,6 +49,12 @@ type Message struct {
 	OllamaModel  string        `json:"ollamaModel,omitempty"`
 	OllamaUrl    string        `json:"ollamaUrl,omitempty"`
 	OllamaModels []OllamaModel `json:"ollamaModels,omitempty"`
+
+	// Diarization
+	DiarizationEnabled    bool   `json:"diarizationEnabled,omitempty"`
+	DiarizationProvider   string `json:"diarizationProvider,omitempty"` // cpu, coreml, cuda, auto
+	SegmentationModelPath string `json:"segmentationModelPath,omitempty"`
+	EmbeddingModelPath    string `json:"embeddingModelPath,omitempty"`
 }
 
 type OllamaModel struct {

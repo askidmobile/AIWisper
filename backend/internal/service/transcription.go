@@ -15,6 +15,7 @@ import (
 type TranscriptionService struct {
 	SessionMgr *session.Manager
 	EngineMgr  *ai.EngineManager
+	Pipeline   *ai.AudioPipeline // Опционально: пайплайн с диаризацией
 	// Callbacks for UI updates
 	OnChunkTranscribed func(chunk *session.Chunk)
 }
@@ -24,6 +25,81 @@ func NewTranscriptionService(sessionMgr *session.Manager, engineMgr *ai.EngineMa
 		SessionMgr: sessionMgr,
 		EngineMgr:  engineMgr,
 	}
+}
+
+// SetPipeline устанавливает AudioPipeline для расширенной обработки (диаризация)
+func (s *TranscriptionService) SetPipeline(pipeline *ai.AudioPipeline) {
+	s.Pipeline = pipeline
+}
+
+// EnableDiarization включает диаризацию с указанными моделями
+// Provider "auto" (по умолчанию) автоматически выберет лучшее устройство:
+// - CoreML на Apple Silicon (GPU ускорение)
+// - CPU на других платформах
+func (s *TranscriptionService) EnableDiarization(segmentationPath, embeddingPath string) error {
+	return s.EnableDiarizationWithProvider(segmentationPath, embeddingPath, "auto")
+}
+
+// EnableDiarizationWithProvider включает диаризацию с указанными моделями и provider
+// provider: "auto", "cpu", "coreml", "cuda"
+func (s *TranscriptionService) EnableDiarizationWithProvider(segmentationPath, embeddingPath, provider string) error {
+	if s.EngineMgr == nil {
+		return fmt.Errorf("engine manager is required")
+	}
+
+	engine := s.EngineMgr.GetActiveEngine()
+	if engine == nil {
+		return fmt.Errorf("no active transcription engine")
+	}
+
+	config := ai.PipelineConfig{
+		EnableDiarization:     true,
+		SegmentationModelPath: segmentationPath,
+		EmbeddingModelPath:    embeddingPath,
+		ClusteringThreshold:   0.5,
+		MinDurationOn:         0.3,
+		MinDurationOff:        0.5,
+		NumThreads:            4,
+		Provider:              provider, // "auto" = автоопределение
+	}
+
+	pipeline, err := ai.NewAudioPipeline(engine, config)
+	if err != nil {
+		return fmt.Errorf("failed to create pipeline: %w", err)
+	}
+
+	// Закрываем старый пайплайн если был
+	if s.Pipeline != nil {
+		s.Pipeline.Close()
+	}
+
+	s.Pipeline = pipeline
+	actualProvider := pipeline.GetDiarizationProvider()
+	log.Printf("Diarization enabled: provider=%s, segmentation=%s, embedding=%s",
+		actualProvider, segmentationPath, embeddingPath)
+	return nil
+}
+
+// DisableDiarization отключает диаризацию
+func (s *TranscriptionService) DisableDiarization() {
+	if s.Pipeline != nil {
+		s.Pipeline.Close()
+		s.Pipeline = nil
+	}
+}
+
+// IsDiarizationEnabled возвращает true если диаризация включена
+func (s *TranscriptionService) IsDiarizationEnabled() bool {
+	return s.Pipeline != nil && s.Pipeline.IsDiarizationEnabled()
+}
+
+// GetDiarizationProvider возвращает текущий provider диаризации (cpu, coreml, cuda)
+// Возвращает пустую строку если диаризация не включена
+func (s *TranscriptionService) GetDiarizationProvider() string {
+	if s.Pipeline != nil {
+		return s.Pipeline.GetDiarizationProvider()
+	}
+	return ""
 }
 
 // HandleChunk processes a new audio chunk: VAD, transcription, mapping
@@ -159,6 +235,25 @@ func (s *TranscriptionService) processMonoFromMP3(chunk *session.Chunk) {
 
 	log.Printf("Transcribing chunk %d: %d samples (%.1f sec)", chunk.Index, len(samples), float64(len(samples))/16000)
 
+	// Используем Pipeline если доступен (с диаризацией)
+	if s.Pipeline != nil && s.Pipeline.IsDiarizationEnabled() {
+		result, err := s.Pipeline.Process(samples)
+		if err != nil {
+			log.Printf("Pipeline error for chunk %d: %v", chunk.Index, err)
+			s.SessionMgr.UpdateChunkTranscription(chunk.SessionID, chunk.ID, "", err)
+			return
+		}
+
+		log.Printf("Pipeline complete for chunk %d: %d chars, %d speakers",
+			chunk.Index, len(result.FullText), result.NumSpeakers)
+
+		// Конвертируем сегменты с информацией о спикерах
+		sessionSegs := convertPipelineSegments(result.Segments, chunk.StartMs)
+		s.SessionMgr.UpdateChunkWithDiarizedSegments(chunk.SessionID, chunk.ID, result.FullText, sessionSegs, nil)
+		return
+	}
+
+	// Fallback: обычная транскрипция без диаризации
 	text, err := s.EngineMgr.Transcribe(samples, false)
 	if err != nil {
 		log.Printf("Transcription error for chunk %d: %v", chunk.Index, err)
@@ -168,6 +263,39 @@ func (s *TranscriptionService) processMonoFromMP3(chunk *session.Chunk) {
 
 	log.Printf("Transcription complete for chunk %d: %d chars", chunk.Index, len(text))
 	s.SessionMgr.UpdateChunkTranscription(chunk.SessionID, chunk.ID, text, nil)
+}
+
+// convertPipelineSegments конвертирует сегменты из pipeline в формат session
+func convertPipelineSegments(aiSegs []ai.TranscriptSegment, chunkStartMs int64) []session.TranscriptSegment {
+	result := make([]session.TranscriptSegment, len(aiSegs))
+	for i, seg := range aiSegs {
+		result[i] = session.TranscriptSegment{
+			Start:   seg.Start + chunkStartMs,
+			End:     seg.End + chunkStartMs,
+			Text:    seg.Text,
+			Speaker: seg.Speaker, // Speaker уже заполнен из Pipeline
+			Words:   convertWordsWithSpeaker(seg.Words, seg.Speaker, chunkStartMs),
+		}
+	}
+	return result
+}
+
+// convertWordsWithSpeaker конвертирует слова сохраняя спикера из сегмента
+func convertWordsWithSpeaker(aiWords []ai.TranscriptWord, speaker string, chunkStartMs int64) []session.TranscriptWord {
+	if len(aiWords) == 0 {
+		return nil
+	}
+	result := make([]session.TranscriptWord, len(aiWords))
+	for i, word := range aiWords {
+		result[i] = session.TranscriptWord{
+			Start:   word.Start + chunkStartMs,
+			End:     word.End + chunkStartMs,
+			Text:    word.Text,
+			P:       word.P,
+			Speaker: speaker,
+		}
+	}
+	return result
 }
 
 // Helpers

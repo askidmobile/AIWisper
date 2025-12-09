@@ -500,6 +500,50 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			updatedSess, _ := s.SessionMgr.GetSession(msg.SessionID)
 			s.broadcast(Message{Type: "retranscription_completed", SessionID: msg.SessionID, Session: updatedSess})
 		}()
+
+	case "enable_diarization":
+		// Provider: "auto" (default), "cpu", "coreml", "cuda"
+		// "auto" автоматически выберет лучший: coreml на Apple Silicon, cpu иначе
+		provider := msg.DiarizationProvider
+		if provider == "" {
+			provider = "auto"
+		}
+		log.Printf("Received enable_diarization: provider=%s, segmentation=%s, embedding=%s",
+			provider, msg.SegmentationModelPath, msg.EmbeddingModelPath)
+
+		if msg.SegmentationModelPath == "" || msg.EmbeddingModelPath == "" {
+			conn.WriteJSON(Message{Type: "error", Data: "segmentationModelPath and embeddingModelPath are required"})
+			return
+		}
+
+		err := s.TranscriptionService.EnableDiarizationWithProvider(
+			msg.SegmentationModelPath, msg.EmbeddingModelPath, provider)
+		if err != nil {
+			log.Printf("Failed to enable diarization: %v", err)
+			conn.WriteJSON(Message{Type: "diarization_error", Error: err.Error()})
+			return
+		}
+
+		actualProvider := s.TranscriptionService.GetDiarizationProvider()
+		conn.WriteJSON(Message{
+			Type:                "diarization_enabled",
+			DiarizationEnabled:  true,
+			DiarizationProvider: actualProvider,
+		})
+
+	case "disable_diarization":
+		log.Printf("Received disable_diarization")
+		s.TranscriptionService.DisableDiarization()
+		conn.WriteJSON(Message{Type: "diarization_disabled", DiarizationEnabled: false})
+
+	case "get_diarization_status":
+		enabled := s.TranscriptionService.IsDiarizationEnabled()
+		provider := s.TranscriptionService.GetDiarizationProvider()
+		conn.WriteJSON(Message{
+			Type:                "diarization_status",
+			DiarizationEnabled:  enabled,
+			DiarizationProvider: provider,
+		})
 	}
 }
 

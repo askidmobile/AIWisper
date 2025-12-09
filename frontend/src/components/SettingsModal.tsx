@@ -1,5 +1,5 @@
-import React from 'react';
-import { ModelState, OllamaModel } from '../types/models';
+import React, { useState, useEffect } from 'react';
+import { ModelState, OllamaModel, DiarizationStatus } from '../types/models';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -27,6 +27,14 @@ interface SettingsModalProps {
     onShowModelManager: () => void;
     activeModelId: string | null;
     models: ModelState[];
+    // Диаризация
+    diarizationStatus?: DiarizationStatus;
+    diarizationLoading?: boolean;
+    diarizationError?: string | null;
+    segmentationModels?: ModelState[];
+    embeddingModels?: ModelState[];
+    onEnableDiarization?: (segModelId: string, embModelId: string, provider: string) => void;
+    onDisableDiarization?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -55,11 +63,51 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     onShowModelManager,
     activeModelId,
     models,
+    // Диаризация
+    diarizationStatus,
+    diarizationLoading,
+    diarizationError,
+    segmentationModels = [],
+    embeddingModels = [],
+    onEnableDiarization,
+    onDisableDiarization,
 }) => {
+    // Локальное состояние для выбора моделей диаризации
+    const [selectedSegModel, setSelectedSegModel] = useState(
+        segmentationModels.find((m) => m.recommended)?.id || segmentationModels[0]?.id || ''
+    );
+    const [selectedEmbModel, setSelectedEmbModel] = useState(
+        embeddingModels.find((m) => m.recommended)?.id || embeddingModels[0]?.id || ''
+    );
+    const [selectedProvider, setSelectedProvider] = useState<string>('auto');
+
+    // Обновляем выбор при изменении списка моделей
+    useEffect(() => {
+        if (!selectedSegModel && segmentationModels.length > 0) {
+            setSelectedSegModel(
+                segmentationModels.find((m) => m.recommended)?.id || segmentationModels[0].id
+            );
+        }
+        if (!selectedEmbModel && embeddingModels.length > 0) {
+            setSelectedEmbModel(
+                embeddingModels.find((m) => m.recommended)?.id || embeddingModels[0].id
+            );
+        }
+    }, [segmentationModels, embeddingModels, selectedSegModel, selectedEmbModel]);
+
     if (!isOpen) return null;
 
     const activeModel = models.find((m) => m.id === activeModelId);
     const inputDevices = devices.filter((d) => d.isInput);
+
+    // Проверяем готовность моделей диаризации
+    const segModelReady = segmentationModels.find(
+        (m) => m.id === selectedSegModel && (m.status === 'downloaded' || m.status === 'active')
+    );
+    const embModelReady = embeddingModels.find(
+        (m) => m.id === selectedEmbModel && (m.status === 'downloaded' || m.status === 'active')
+    );
+    const canEnableDiarization = segModelReady && embModelReady && !diarizationStatus?.enabled;
 
     const sectionStyle: React.CSSProperties = {
         marginBottom: '1.5rem',
@@ -473,6 +521,186 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         )}
                     </div>
                 </div>
+
+                {/* Diarization Section */}
+                {(segmentationModels.length > 0 || embeddingModels.length > 0) && (
+                    <div style={sectionStyle}>
+                        <span style={labelStyle}>Диаризация спикеров</span>
+
+                        {/* Status indicator */}
+                        <div
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem',
+                                marginBottom: '1rem',
+                                padding: '0.5rem 0.75rem',
+                                background: diarizationStatus?.enabled
+                                    ? 'rgba(52, 199, 89, 0.1)'
+                                    : 'var(--glass-bg)',
+                                borderRadius: 'var(--radius-sm)',
+                                border: `1px solid ${diarizationStatus?.enabled ? 'rgba(52, 199, 89, 0.3)' : 'var(--glass-border)'}`,
+                            }}
+                        >
+                            <div
+                                style={{
+                                    width: '8px',
+                                    height: '8px',
+                                    borderRadius: '50%',
+                                    background: diarizationStatus?.enabled ? '#34c759' : 'var(--text-muted)',
+                                }}
+                            />
+                            <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                                {diarizationStatus?.enabled ? 'Включена' : 'Выключена'}
+                            </span>
+                            {diarizationStatus?.enabled && diarizationStatus.provider && (
+                                <span
+                                    style={{
+                                        fontSize: '0.75rem',
+                                        color: 'var(--text-muted)',
+                                        marginLeft: 'auto',
+                                        textTransform: 'uppercase',
+                                    }}
+                                >
+                                    {diarizationStatus.provider === 'coreml' ? 'GPU (CoreML)' : diarizationStatus.provider.toUpperCase()}
+                                </span>
+                            )}
+                        </div>
+
+                        {/* Model selectors */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                            <div>
+                                <label
+                                    style={{
+                                        fontSize: '0.8rem',
+                                        color: 'var(--text-secondary)',
+                                        marginBottom: '0.35rem',
+                                        display: 'block',
+                                    }}
+                                >
+                                    Сегментация
+                                </label>
+                                <select
+                                    value={selectedSegModel}
+                                    onChange={(e) => setSelectedSegModel(e.target.value)}
+                                    style={selectStyle}
+                                    disabled={diarizationStatus?.enabled || diarizationLoading}
+                                >
+                                    {segmentationModels.map((m) => (
+                                        <option key={m.id} value={m.id}>
+                                            {m.name} {m.status !== 'downloaded' && m.status !== 'active' ? '(не скачана)' : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label
+                                    style={{
+                                        fontSize: '0.8rem',
+                                        color: 'var(--text-secondary)',
+                                        marginBottom: '0.35rem',
+                                        display: 'block',
+                                    }}
+                                >
+                                    Эмбеддинги
+                                </label>
+                                <select
+                                    value={selectedEmbModel}
+                                    onChange={(e) => setSelectedEmbModel(e.target.value)}
+                                    style={selectStyle}
+                                    disabled={diarizationStatus?.enabled || diarizationLoading}
+                                >
+                                    {embeddingModels.map((m) => (
+                                        <option key={m.id} value={m.id}>
+                                            {m.name} {m.recommended ? '★' : ''} {m.status !== 'downloaded' && m.status !== 'active' ? '(не скачана)' : ''}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                        </div>
+
+                        {/* Provider selector */}
+                        <div style={{ marginBottom: '1rem' }}>
+                            <label
+                                style={{
+                                    fontSize: '0.8rem',
+                                    color: 'var(--text-secondary)',
+                                    marginBottom: '0.35rem',
+                                    display: 'block',
+                                }}
+                            >
+                                Устройство
+                            </label>
+                            <select
+                                value={selectedProvider}
+                                onChange={(e) => setSelectedProvider(e.target.value)}
+                                style={{ ...selectStyle, width: 'auto', minWidth: '150px' }}
+                                disabled={diarizationStatus?.enabled || diarizationLoading}
+                            >
+                                <option value="auto">Авто (рекомендуется)</option>
+                                <option value="coreml">GPU (CoreML)</option>
+                                <option value="cpu">CPU</option>
+                            </select>
+                        </div>
+
+                        {/* Error message */}
+                        {diarizationError && (
+                            <div
+                                style={{
+                                    fontSize: '0.75rem',
+                                    color: 'var(--danger)',
+                                    marginBottom: '0.75rem',
+                                }}
+                            >
+                                {diarizationError}
+                            </div>
+                        )}
+
+                        {/* Action button */}
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                            {!diarizationStatus?.enabled ? (
+                                <button
+                                    className="btn-capsule btn-capsule-primary"
+                                    onClick={() => {
+                                        if (onEnableDiarization && selectedSegModel && selectedEmbModel) {
+                                            onEnableDiarization(selectedSegModel, selectedEmbModel, selectedProvider);
+                                        }
+                                    }}
+                                    disabled={!canEnableDiarization || diarizationLoading}
+                                    style={{
+                                        padding: '0.5rem 1rem',
+                                        opacity: canEnableDiarization && !diarizationLoading ? 1 : 0.5,
+                                    }}
+                                >
+                                    {diarizationLoading ? 'Включение...' : 'Включить'}
+                                </button>
+                            ) : (
+                                <button
+                                    className="btn-capsule"
+                                    onClick={onDisableDiarization}
+                                    disabled={diarizationLoading}
+                                    style={{
+                                        padding: '0.5rem 1rem',
+                                        background: 'var(--glass-bg)',
+                                        border: '1px solid var(--glass-border)',
+                                    }}
+                                >
+                                    {diarizationLoading ? 'Отключение...' : 'Отключить'}
+                                </button>
+                            )}
+                        </div>
+
+                        <div
+                            style={{
+                                fontSize: '0.75rem',
+                                color: 'var(--text-muted)',
+                                marginTop: '0.75rem',
+                            }}
+                        >
+                            Диаризация определяет кто говорит в mono-записи. При записи mic+sys спикеры определяются автоматически.
+                        </div>
+                    </div>
+                )}
 
                 {/* Footer */}
                 <div style={{ textAlign: 'right', paddingTop: '0.5rem' }}>

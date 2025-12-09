@@ -329,6 +329,53 @@ func (m *Manager) UpdateChunkStereoWithSegments(sessionID, chunkID, micText, sys
 	return fmt.Errorf("chunk not found: %s", chunkID)
 }
 
+// UpdateChunkWithDiarizedSegments обновляет чанк с диаризованными сегментами (для mono режима с диаризацией)
+func (m *Manager) UpdateChunkWithDiarizedSegments(sessionID, chunkID, text string, segments []TranscriptSegment, err error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	for _, chunk := range session.Chunks {
+		if chunk.ID == chunkID {
+			now := time.Now()
+			chunk.TranscribedAt = &now
+			if err != nil {
+				chunk.Status = ChunkStatusFailed
+				chunk.Error = err.Error()
+				chunk.Transcription = ""
+				chunk.Dialogue = nil
+			} else {
+				chunk.Status = ChunkStatusCompleted
+				chunk.Error = ""
+				chunk.Transcription = text
+				// Сохраняем сегменты как диалог (уже с метками спикеров)
+				chunk.Dialogue = segments
+			}
+
+			// Сохраняем метаданные чанка
+			chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
+			data, _ := json.MarshalIndent(chunk, "", "  ")
+			os.WriteFile(chunkMetaPath, data, 0644)
+
+			// Callback
+			if m.onChunkTranscribed != nil {
+				m.onChunkTranscribed(chunk)
+			}
+
+			return nil
+		}
+	}
+
+	return fmt.Errorf("chunk not found: %s", chunkID)
+}
+
 // mergeSegmentsToDialogue объединяет сегменты mic и sys в хронологическом порядке
 // Использует word-level timestamps для более точной хронологии, если доступны
 func mergeSegmentsToDialogue(micSegments, sysSegments []TranscriptSegment) []TranscriptSegment {
