@@ -86,7 +86,8 @@ function getGrpcAddress(): string {
     if (process.platform === 'win32') {
         return 'npipe:\\\\.\\pipe\\aiwisper-grpc';
     }
-    const socketPath = path.join(app.getPath('userData'), 'aiwisper-grpc.sock');
+    // Держим сокет в /tmp, чтобы адрес был стабильным и совпадал с дефолтом клиента
+    const socketPath = '/tmp/aiwisper-grpc.sock';
     return `unix:${socketPath}`;
 }
 

@@ -520,12 +520,39 @@ function App() {
     useEffect(() => {
         let reconnectTimeout: NodeJS.Timeout;
 
-        const connect = () => {
-            const socket = createGrpcSocket();
+        const resolveGrpcAddress = async (): Promise<string | undefined> => {
+            const envAddr = process.env.AIWISPER_GRPC_ADDR;
+            if (envAddr && envAddr.trim().length > 0) {
+                return envAddr;
+            }
+            try {
+                // eslint-disable-next-line @typescript-eslint/no-var-requires
+                const { ipcRenderer } = require('electron');
+                if (ipcRenderer?.invoke) {
+                    const addr = await ipcRenderer.invoke('get-grpc-address');
+                    if (addr && typeof addr === 'string' && addr.trim().length > 0) {
+                        return addr as string;
+                    }
+                }
+            } catch {
+                // ignore and fallback
+            }
+            return undefined;
+        };
+
+        const connect = async () => {
+            const addr = await resolveGrpcAddress();
+            if (!addr) {
+                console.error('gRPC address is not available');
+                reconnectTimeout = setTimeout(connect, 3000);
+                return;
+            }
+
+            const socket = createGrpcSocket(addr);
 
             socket.onopen = () => {
                 setStatus('Connected');
-                addLog('Connected to backend (gRPC)');
+                addLog(`Connected to backend (gRPC ${addr})`);
                 socket.send(JSON.stringify({ type: 'get_devices' }));
                 socket.send(JSON.stringify({ type: 'get_sessions' }));
                 socket.send(JSON.stringify({ type: 'get_models' }));
@@ -830,7 +857,7 @@ function App() {
             };
 
             socket.onerror = (error) => {
-                console.error('gRPC stream error:', error);
+                console.error('gRPC stream error:', error, 'addr=', addr);
             };
 
             wsRef.current = socket;
