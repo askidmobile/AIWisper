@@ -482,23 +482,34 @@ func (s *Server) processMessage(conn *websocket.Conn, msg Message) {
 			}
 		}
 
-		conn.WriteJSON(Message{Type: "retranscription_started", SessionID: msg.SessionID})
+		conn.WriteJSON(Message{Type: "full_transcription_started", SessionID: msg.SessionID})
 
 		go func() {
 			sess, err := s.SessionMgr.GetSession(msg.SessionID)
 			if err != nil {
-				s.broadcast(Message{Type: "retranscription_error", SessionID: msg.SessionID, Error: err.Error()})
+				s.broadcast(Message{Type: "full_transcription_error", SessionID: msg.SessionID, Error: err.Error()})
 				return
 			}
 
-			log.Printf("Full retranscription: processing %d chunks", len(sess.Chunks))
-			for _, chunk := range sess.Chunks {
-				log.Printf("Retranscribing chunk %d", chunk.Index)
+			totalChunks := len(sess.Chunks)
+			log.Printf("Full retranscription: processing %d chunks", totalChunks)
+
+			for i, chunk := range sess.Chunks {
+				// Отправляем прогресс
+				progress := float64(i) / float64(totalChunks)
+				s.broadcast(Message{
+					Type:      "full_transcription_progress",
+					SessionID: msg.SessionID,
+					Progress:  progress,
+					Data:      fmt.Sprintf("Обработка чанка %d из %d...", i+1, totalChunks),
+				})
+
+				log.Printf("Retranscribing chunk %d/%d", i+1, totalChunks)
 				s.TranscriptionService.HandleChunk(chunk)
 			}
 
 			updatedSess, _ := s.SessionMgr.GetSession(msg.SessionID)
-			s.broadcast(Message{Type: "retranscription_completed", SessionID: msg.SessionID, Session: updatedSess})
+			s.broadcast(Message{Type: "full_transcription_completed", SessionID: msg.SessionID, Session: updatedSess})
 		}()
 
 	case "enable_diarization":
