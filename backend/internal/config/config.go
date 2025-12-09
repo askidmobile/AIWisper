@@ -55,5 +55,5 @@ func defaultGRPCAddress() string {
 	if runtime.GOOS == "windows" {
 		return "npipe:\\\\.\\pipe\\aiwisper-grpc"
 	}
-	return "unix:///tmp/aiwisper-grpc.sock"
+	return "unix:/tmp/aiwisper-grpc.sock"
 }

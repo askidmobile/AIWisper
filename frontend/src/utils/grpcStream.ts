@@ -32,7 +32,7 @@ function resolveAddress(): string {
     if (typeof process !== 'undefined' && process.platform === 'win32') {
         return 'npipe:\\\\.\\pipe\\aiwisper-grpc';
     }
-    return 'unix:///tmp/aiwisper-grpc.sock';
+    return 'unix:/tmp/aiwisper-grpc.sock';
 }
 
 class GrpcSocket implements RpcSocketLike {

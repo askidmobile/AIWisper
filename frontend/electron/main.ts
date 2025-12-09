@@ -87,7 +87,7 @@ function getGrpcAddress(): string {
         return 'npipe:\\\\.\\pipe\\aiwisper-grpc';
     }
     const socketPath = path.join(app.getPath('userData'), 'aiwisper-grpc.sock');
-    return `unix://${socketPath}`;
+    return `unix:${socketPath}`;
 }
 
 function startGoBackend() {

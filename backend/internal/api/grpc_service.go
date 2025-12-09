@@ -93,7 +93,7 @@ func (s *Server) startGRPCServer() {
 		if runtime.GOOS == "windows" {
 			addr = "npipe:\\\\.\\pipe\\aiwisper-grpc"
 		} else {
-			addr = "unix:///tmp/aiwisper-grpc.sock"
+			addr = "unix:/tmp/aiwisper-grpc.sock"
 		}
 	}
 
