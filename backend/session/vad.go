@@ -138,6 +138,11 @@ func DetectSpeechRegions(samples []float32, sampleRate int) []SpeechRegion {
 		confirmWindows  = 3   // Окон подряд для подтверждения начала речи
 		silenceWindows  = 15  // Окон тишины для завершения региона (300ms)
 		minRegionMs     = 100 // Минимальная длина региона речи (100ms)
+		// Speech padding: добавляем буфер до и после детектированной речи
+		// Это необходимо для захвата глухих согласных (С, Т, К, П...) которые имеют низкую энергию
+		// 500ms padding необходим для захвата тихих слов типа "Как" перед громкими "говорится"
+		speechPaddingStartMs = 500 // Padding перед началом речи (500ms)
+		speechPaddingEndMs   = 100 // Padding после конца речи (100ms)
 	)
 
 	windowSamples := (sampleRate * windowMs) / 1000
@@ -233,6 +238,26 @@ func DetectSpeechRegions(samples []float32, sampleRate int) []SpeechRegion {
 		}
 	}
 
+	// Применяем speech padding к каждому региону
+	// Это захватывает глухие согласные в начале слов, которые могут быть пропущены из-за низкой энергии
+	totalDurationMs := int64(len(samples)) * 1000 / int64(sampleRate)
+	for i := range regions {
+		// Padding перед началом речи
+		regions[i].StartMs -= speechPaddingStartMs
+		if regions[i].StartMs < 0 {
+			regions[i].StartMs = 0
+		}
+
+		// Padding после конца речи
+		regions[i].EndMs += speechPaddingEndMs
+		if regions[i].EndMs > totalDurationMs {
+			regions[i].EndMs = totalDurationMs
+		}
+	}
+
+	// Объединяем перекрывающиеся регионы после padding
+	regions = mergeOverlappingRegions(regions)
+
 	log.Printf("DetectSpeechRegions: found %d regions (threshold=%.4f, avgEnergy=%.4f)",
 		len(regions), adaptiveThreshold, avgEnergy)
 	for i, r := range regions {
@@ -240,6 +265,32 @@ func DetectSpeechRegions(samples []float32, sampleRate int) []SpeechRegion {
 	}
 
 	return regions
+}
+
+// mergeOverlappingRegions объединяет перекрывающиеся или смежные регионы
+func mergeOverlappingRegions(regions []SpeechRegion) []SpeechRegion {
+	if len(regions) <= 1 {
+		return regions
+	}
+
+	merged := []SpeechRegion{regions[0]}
+	for i := 1; i < len(regions); i++ {
+		last := &merged[len(merged)-1]
+		current := regions[i]
+
+		// Если регионы перекрываются или касаются
+		if current.StartMs <= last.EndMs {
+			// Расширяем последний регион
+			if current.EndMs > last.EndMs {
+				last.EndMs = current.EndMs
+			}
+		} else {
+			// Добавляем новый регион
+			merged = append(merged, current)
+		}
+	}
+
+	return merged
 }
 
 // MapWhisperSegmentsToRealTime сопоставляет сегменты Whisper с реальными участками речи
@@ -344,6 +395,34 @@ func CreateUnifiedSpeechRegions(micSamples, sysSamples []float32, sampleRate int
 	return DetectSpeechRegions(mixedSamples, sampleRate)
 }
 
+// MapRealTimeToCompressedTime маппит реальное время на сжатое (обратная операция к MapWhisperTimeToRealTime)
+// Используется для сопоставления сегментов транскрипции с результатами диаризации
+func MapRealTimeToCompressedTime(realMs int64, speechRegions []SpeechRegion) int64 {
+	if len(speechRegions) == 0 {
+		return realMs
+	}
+
+	var compressedMs int64 = 0
+
+	for _, region := range speechRegions {
+		if realMs < region.StartMs {
+			// Точка находится в паузе перед этим регионом
+			return compressedMs
+		}
+
+		if realMs <= region.EndMs {
+			// Точка внутри этого региона
+			offsetInRegion := realMs - region.StartMs
+			return compressedMs + offsetInRegion
+		}
+
+		// Добавляем длительность этого региона
+		compressedMs += region.EndMs - region.StartMs
+	}
+
+	return compressedMs
+}
+
 // MapWhisperTimeToRealTime маппит одиночный таймстемп Whisper на реальное время
 // Используется для маппинга word-level timestamps
 func MapWhisperTimeToRealTime(whisperMs int64, speechRegions []SpeechRegion) int64 {
@@ -424,6 +503,54 @@ func CompressSpeech(samples []float32, sampleRate int) *CompressSpeechResult {
 	}
 
 	log.Printf("CompressSpeech: %d samples -> %d samples (%.1f%% speech), %d regions",
+		len(samples), len(compressed),
+		float64(len(compressed))*100/float64(len(samples)),
+		len(regions))
+
+	return &CompressSpeechResult{
+		CompressedSamples:  compressed,
+		Regions:            regions,
+		TotalSpeechMs:      totalSpeechMs,
+		OriginalDurationMs: int64(len(samples)) * 1000 / int64(sampleRate),
+	}
+}
+
+// CompressSpeechFromRegions создаёт сжатое аудио из заранее определённых регионов речи
+// В отличие от CompressSpeech, здесь регионы уже известны (переданы извне)
+func CompressSpeechFromRegions(samples []float32, regions []SpeechRegion, sampleRate int) *CompressSpeechResult {
+	if len(samples) == 0 || len(regions) == 0 {
+		return &CompressSpeechResult{
+			OriginalDurationMs: int64(len(samples)) * 1000 / int64(sampleRate),
+		}
+	}
+
+	// Вычисляем общую длительность речи
+	var totalSpeechMs int64
+	for _, r := range regions {
+		totalSpeechMs += r.EndMs - r.StartMs
+	}
+
+	// Извлекаем только участки с речью
+	totalSpeechSamples := int(totalSpeechMs * int64(sampleRate) / 1000)
+	compressed := make([]float32, 0, totalSpeechSamples)
+
+	for _, region := range regions {
+		startSample := int(region.StartMs * int64(sampleRate) / 1000)
+		endSample := int(region.EndMs * int64(sampleRate) / 1000)
+
+		if startSample < 0 {
+			startSample = 0
+		}
+		if endSample > len(samples) {
+			endSample = len(samples)
+		}
+
+		if startSample < endSample {
+			compressed = append(compressed, samples[startSample:endSample]...)
+		}
+	}
+
+	log.Printf("CompressSpeechFromRegions: %d samples -> %d samples (%.1f%% speech), %d regions",
 		len(samples), len(compressed),
 		float64(len(compressed))*100/float64(len(samples)),
 		len(regions))

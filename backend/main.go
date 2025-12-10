@@ -8,6 +8,9 @@ import (
 	"aiwisper/internal/service"
 	"aiwisper/models"
 	"aiwisper/session"
+	"aiwisper/voiceprint"
+	"fmt"
+	"io"
 	"log"
 	"os"
 )
@@ -15,6 +18,18 @@ import (
 func main() {
 	// 1. Load Configuration
 	cfg := config.Load()
+
+	logFile := setupLogging(cfg.TraceLog)
+	if logFile != nil {
+		defer logFile.Close()
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC: %v", r)
+			panic(r)
+		}
+	}()
 
 	// Ensure directories exist
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
@@ -62,10 +77,39 @@ func main() {
 		transcriptionService.EnableAutoImprove(cfg.OllamaURL, cfg.OllamaModel)
 	}
 
-	// 4. Initialize API Server
-	server := api.NewServer(cfg, sessionMgr, engineMgr, modelMgr, capture, transcriptionService, recordingService, llmService)
+	// 4. Initialize VoicePrint Store for speaker recognition
+	vpStore, err := voiceprint.NewStore(cfg.DataDir)
+	if err != nil {
+		log.Printf("Warning: Failed to initialize voiceprint store: %v", err)
+		// Продолжаем без voiceprint - не критично
+	}
+	var vpMatcher *voiceprint.Matcher
+	if vpStore != nil {
+		vpMatcher = voiceprint.NewMatcher(vpStore)
+	}
+
+	// 5. Initialize API Server
+	server := api.NewServer(cfg, sessionMgr, engineMgr, modelMgr, capture, transcriptionService, recordingService, llmService, vpStore, vpMatcher)
 
 	// 5. Start Server
 	log.Println("Starting AIWisper Backend...")
 	server.Start()
+}
+
+func setupLogging(path string) *os.File {
+	if path == "" {
+		return nil
+	}
+
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open trace log %s: %v\n", path, err)
+		return nil
+	}
+
+	log.SetOutput(io.MultiWriter(os.Stdout, file))
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds | log.Lshortfile)
+	log.Printf("trace log attached: %s", path)
+
+	return file
 }

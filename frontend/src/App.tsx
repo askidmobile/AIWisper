@@ -5,7 +5,9 @@ import SummaryView from './components/SummaryView';
 import SettingsModal from './components/SettingsModal';
 import AudioMeterSidebar from './components/AudioMeterSidebar';
 import WaveformDisplay from './components/WaveformDisplay';
+import SpeakersTab from './components/modules/SpeakersTab';
 import { ModelState, AppSettings, OllamaModel } from './types/models';
+import { SessionSpeaker } from './types/voiceprint';
 import { WaveformData, computeWaveform } from './utils/waveform';
 import { groupSessionsByTime, formatDuration as formatDurationUtil, formatDate as formatDateUtil, formatTime as formatTimeUtil } from './utils/groupSessions';
 import { createGrpcSocket, RPC_READY_STATE, RpcSocketLike } from './utils/grpcStream';
@@ -232,11 +234,14 @@ function App() {
     const [sessions, setSessions] = useState<SessionInfo[]>([]);
     const [selectedSession, setSelectedSession] = useState<Session | null>(null);
 
+    // Session Speakers (for VoicePrint integration)
+    const [sessionSpeakers, setSessionSpeakers] = useState<SessionSpeaker[]>([]);
+
     // Devices
     const [devices, setDevices] = useState<AudioDevice[]>([]);
     const [micDevice, setMicDevice] = useState<string>('');
     const [captureSystem, setCaptureSystem] = useState(true);
-    const [disableVAD, setDisableVAD] = useState(false);
+    const [vadMode, setVADMode] = useState<'auto' | 'compression' | 'per-region' | 'off'>('auto');
     const [screenCaptureKitAvailable, setScreenCaptureKitAvailable] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [echoCancel, setEchoCancel] = useState(0.4); // Эхоподавление 0-1
@@ -314,6 +319,10 @@ function App() {
     // AI improvement state
     const [isImproving, setIsImproving] = useState(false);
     const [improveError, setImproveError] = useState<string | null>(null);
+    
+    // AI diarization state (разбивка по собеседникам через LLM)
+    const [isDiarizing, setIsDiarizing] = useState(false);
+    const [diarizeError, setDiarizeError] = useState<string | null>(null);
 
     // Diarization state
     const [diarizationEnabled, setDiarizationEnabled] = useState(false);
@@ -355,7 +364,7 @@ function App() {
                     setActiveModelId(settings.modelId || 'ggml-large-v3-turbo');
                     setEchoCancel(settings.echoCancel ?? 0.4);
                     setUseVoiceIsolation(settings.useVoiceIsolation ?? false);
-                    setDisableVAD(settings.disableVAD ?? false);
+                    setVADMode(settings.vadMode || 'auto');
                     setCaptureSystem(settings.captureSystem ?? true);
                     setOllamaModel(settings.ollamaModel || 'llama3.2');
                     setOllamaUrl(settings.ollamaUrl || 'http://localhost:11434');
@@ -397,7 +406,7 @@ function App() {
                     modelId: activeModelId,
                     echoCancel,
                     useVoiceIsolation,
-                    disableVAD,
+                    vadMode,
                     captureSystem,
                     ollamaModel,
                     ollamaUrl,
@@ -413,7 +422,7 @@ function App() {
             }
         };
         saveSettings();
-    }, [language, activeModelId, echoCancel, useVoiceIsolation, disableVAD, captureSystem, ollamaModel, ollamaUrl, theme, settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider]);
+    }, [language, activeModelId, echoCancel, useVoiceIsolation, vadMode, captureSystem, ollamaModel, ollamaUrl, theme, settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider]);
 
     // Применяем тему к корню документа
     useEffect(() => {
@@ -643,6 +652,11 @@ function App() {
                             // Подсвечиваем перетранскрибированный чанк (мигание)
                             setHighlightedChunkId(msg.chunk.id);
                             setTimeout(() => setHighlightedChunkId(null), 2000);
+
+                            // Обновляем список спикеров после транскрипции (если есть диаризация)
+                            if (msg.sessionId && msg.chunk.dialogue?.some((d: { speaker?: string }) => d.speaker && d.speaker.startsWith('Собеседник'))) {
+                                wsRef.current?.send(JSON.stringify({ type: 'get_session_speakers', sessionId: msg.sessionId }));
+                            }
                             break;
 
                         case 'session_details':
@@ -775,6 +789,8 @@ function App() {
                             // Обновляем сессию с новыми данными
                             if (msg.session) {
                                 setSelectedSession(msg.session);
+                                // Запрашиваем обновлённый список спикеров после ретранскрипции
+                                wsRef.current?.send(JSON.stringify({ type: 'get_session_speakers', sessionId: msg.session.id }));
                             }
                             addLog('Full transcription completed');
                             break;
@@ -818,6 +834,28 @@ function App() {
                             addLog(`AI improvement error: ${msg.error}`);
                             break;
 
+                        // === AI Diarization (через LLM) ===
+                        case 'diarize_started':
+                            setIsDiarizing(true);
+                            setDiarizeError(null);
+                            addLog('AI diarization started');
+                            break;
+
+                        case 'diarize_completed':
+                            setIsDiarizing(false);
+                            setDiarizeError(null);
+                            if (msg.session) {
+                                setSelectedSession(msg.session);
+                            }
+                            addLog('AI diarization completed');
+                            break;
+
+                        case 'diarize_error':
+                            setIsDiarizing(false);
+                            setDiarizeError(msg.error || 'Unknown error');
+                            addLog(`AI diarization error: ${msg.error}`);
+                            break;
+
                         // === Diarization ===
                         case 'diarization_enabled':
                             setDiarizationEnabled(true);
@@ -843,6 +881,26 @@ function App() {
                             setDiarizationLoading(false);
                             setDiarizationError(msg.error || 'Unknown diarization error');
                             addLog(`Diarization error: ${msg.error}`);
+                            break;
+
+                        // === Session Speakers (VoicePrint) ===
+                        case 'session_speakers':
+                            setSessionSpeakers(msg.speakers || []);
+                            addLog(`Session speakers loaded: ${(msg.speakers || []).length}`);
+                            break;
+
+                        case 'speaker_renamed':
+                            // Обновляем имя спикера в локальном состоянии
+                            setSessionSpeakers(prev => prev.map(s =>
+                                s.localId === msg.localId
+                                    ? { ...s, displayName: msg.newName, isRecognized: msg.savedAsVoiceprint || s.isRecognized }
+                                    : s
+                            ));
+                            addLog(`Speaker renamed: ${msg.newName}`);
+                            break;
+
+                        case 'voiceprint_saved':
+                            addLog(`Voiceprint saved: ${msg.name} (${msg.voiceprintId?.substring(0, 8)}...)`);
                             break;
                     }
                 } catch {
@@ -942,6 +1000,7 @@ function App() {
         } else {
             // Очищаем выбранную сессию и закрываем share menu при начале новой записи
             setSelectedSession(null);
+            setSessionSpeakers([]);  // Очищаем спикеров при начале новой записи
             setShowShareMenu(false);
             setActiveTab('dialogue'); // Сбрасываем на вкладку диалога
 
@@ -972,7 +1031,7 @@ function App() {
                 model: modelId,
                 micDevice,
                 captureSystem,
-                disableVAD,
+                vadMode,
                 useNativeCapture: screenCaptureKitAvailable && captureSystem,
                 useVoiceIsolation: screenCaptureKitAvailable && captureSystem && useVoiceIsolation,
                 echoCancel: captureSystem && !useVoiceIsolation ? echoCancel : 0
@@ -983,6 +1042,8 @@ function App() {
 
     const handleViewSession = (sessionId: string) => {
         wsRef.current?.send(JSON.stringify({ type: 'get_session', sessionId }));
+        // Запрашиваем спикеров для сессии
+        wsRef.current?.send(JSON.stringify({ type: 'get_session_speakers', sessionId }));
     };
 
     const handleRetranscribe = (chunkId: string) => {
@@ -1034,6 +1095,26 @@ function App() {
             ollamaUrl: ollamaUrl
         }));
         addLog(`Improving transcription with AI model: ${ollamaModel}`);
+    }, [selectedSession, ollamaModel, ollamaUrl, addLog]);
+
+    // Диаризация всего текста с помощью AI (разбивка по собеседникам)
+    const handleDiarizeWithLLM = useCallback(() => {
+        if (!selectedSession) return;
+        if (!wsRef.current || wsRef.current.readyState !== RPC_READY_STATE.OPEN) {
+            addLog('gRPC channel not connected');
+            return;
+        }
+
+        setIsDiarizing(true);
+        setDiarizeError(null);
+
+        wsRef.current.send(JSON.stringify({
+            type: 'diarize_with_llm',
+            sessionId: selectedSession.id,
+            ollamaModel: ollamaModel,
+            ollamaUrl: ollamaUrl
+        }));
+        addLog(`Diarizing text with AI model: ${ollamaModel}`);
     }, [selectedSession, ollamaModel, ollamaUrl, addLog]);
 
     // Загрузка списка моделей Ollama
@@ -1088,6 +1169,21 @@ function App() {
         wsRef.current.send(JSON.stringify({ type: 'disable_diarization' }));
         addLog('Disabling diarization...');
     }, [addLog]);
+
+    // Переименование спикера в сессии
+    const handleRenameSpeaker = useCallback((localId: number, name: string, saveAsVoiceprint: boolean) => {
+        if (!selectedSession) return;
+        if (!wsRef.current || wsRef.current.readyState !== RPC_READY_STATE.OPEN) return;
+
+        wsRef.current.send(JSON.stringify({
+            type: 'rename_session_speaker',
+            sessionId: selectedSession.id,
+            localId,
+            newName: name,
+            saveAsVoiceprint
+        }));
+        addLog(`Renaming speaker ${localId} to "${name}"${saveAsVoiceprint ? ' (saving voiceprint)' : ''}`);
+    }, [selectedSession, addLog]);
 
     // Генерация summary
     const handleGenerateSummary = useCallback(() => {
@@ -1159,6 +1255,7 @@ function App() {
         }));
         addLog(`Удалена сессия: ${selectedSession.title || selectedSession.id}`);
         setSelectedSession(null);
+        setSessionSpeakers([]);  // Очищаем спикеров при удалении сессии
         setShowDeleteConfirm(false);
     }, [selectedSession, addLog]);
 
@@ -1859,8 +1956,8 @@ function App() {
                     setMicDevice={setMicDevice}
                     captureSystem={captureSystem}
                     setCaptureSystem={setCaptureSystem}
-                    disableVAD={disableVAD}
-                    setDisableVAD={setDisableVAD}
+                    vadMode={vadMode}
+                    setVADMode={setVADMode}
                     screenCaptureKitAvailable={screenCaptureKitAvailable}
                     useVoiceIsolation={useVoiceIsolation}
                     setUseVoiceIsolation={setUseVoiceIsolation}
@@ -2056,7 +2153,7 @@ function App() {
                                             {/* AI Improve Button */}
                                             <button
                                                 onClick={handleImproveTranscription}
-                                                disabled={isImproving || isFullTranscribing || allDialogue.length === 0}
+                                                disabled={isImproving || isDiarizing || isFullTranscribing || allDialogue.length === 0}
                                                 title="Улучшить с AI"
                                                 style={{
                                                     width: '36px',
@@ -2066,7 +2163,7 @@ function App() {
                                                     color: isImproving ? '#9c27b0' : (allDialogue.length === 0 ? 'var(--text-muted)' : 'var(--text-muted)'),
                                                     border: '1px solid var(--border)',
                                                     borderRadius: '8px',
-                                                    cursor: isImproving || allDialogue.length === 0 ? 'not-allowed' : 'pointer',
+                                                    cursor: isImproving || isDiarizing || allDialogue.length === 0 ? 'not-allowed' : 'pointer',
                                                     display: 'flex',
                                                     alignItems: 'center',
                                                     justifyContent: 'center',
@@ -2079,6 +2176,36 @@ function App() {
                                                     <path d="M12 2L2 7l10 5 10-5-10-5z" />
                                                     <path d="M2 17l10 5 10-5" />
                                                     <path d="M2 12l10 5 10-5" />
+                                                </svg>
+                                            </button>
+
+                                            {/* AI Diarize Button - разбивка по собеседникам */}
+                                            <button
+                                                onClick={handleDiarizeWithLLM}
+                                                disabled={isDiarizing || isImproving || isFullTranscribing || allDialogue.length === 0}
+                                                title="Разбить по собеседникам (AI)"
+                                                style={{
+                                                    width: '36px',
+                                                    height: '36px',
+                                                    padding: 0,
+                                                    backgroundColor: isDiarizing ? 'rgba(33, 150, 243, 0.2)' : 'var(--surface-strong)',
+                                                    color: isDiarizing ? '#2196f3' : (allDialogue.length === 0 ? 'var(--text-muted)' : 'var(--text-muted)'),
+                                                    border: '1px solid var(--border)',
+                                                    borderRadius: '8px',
+                                                    cursor: isDiarizing || isImproving || allDialogue.length === 0 ? 'not-allowed' : 'pointer',
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    transition: 'all 0.2s ease',
+                                                    animation: isDiarizing ? 'pulse 1.5s ease-in-out infinite' : 'none',
+                                                    opacity: allDialogue.length === 0 ? 0.5 : 1
+                                                }}
+                                            >
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                                                    <circle cx="9" cy="7" r="4" />
+                                                    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                                                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
                                                 </svg>
                                             </button>
 
@@ -2108,7 +2235,7 @@ function App() {
 
                                             {/* Close Button */}
                                             <button
-                                                onClick={() => { setSelectedSession(null); setShowShareMenu(false); setActiveTab('dialogue'); }}
+                                                onClick={() => { setSelectedSession(null); setSessionSpeakers([]); setShowShareMenu(false); setActiveTab('dialogue'); }}
                                                 title="Закрыть"
                                                 style={{
                                                     width: '36px',
@@ -2363,6 +2490,47 @@ function App() {
                                 </div>
                             )}
 
+                            {/* Индикатор AI диаризации */}
+                            {isDiarizing && (
+                                <div style={{
+                                    marginBottom: '1rem',
+                                    padding: '0.75rem',
+                                    backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                                    borderRadius: '6px',
+                                    border: '1px solid #2196f3',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.75rem'
+                                }}>
+                                    <div style={{
+                                        width: '20px',
+                                        height: '20px',
+                                        border: '2px solid #2196f3',
+                                        borderTopColor: 'transparent',
+                                        borderRadius: '50%',
+                                        animation: 'spin 1s linear infinite'
+                                    }}></div>
+                                    <span style={{ color: '#2196f3', fontSize: '0.9rem' }}>
+                                        Разбивка по собеседникам с помощью AI...
+                                    </span>
+                                </div>
+                            )}
+
+                            {/* Ошибка AI диаризации */}
+                            {diarizeError && !isDiarizing && (
+                                <div style={{
+                                    marginBottom: '1rem',
+                                    padding: '0.75rem',
+                                    backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                                    borderRadius: '6px',
+                                    border: '1px solid rgba(244, 67, 54, 0.3)',
+                                    color: '#f44336',
+                                    fontSize: '0.85rem'
+                                }}>
+                                    ❌ Ошибка диаризации: {diarizeError}
+                                </div>
+                            )}
+
                             {/* Session Tabs - показываем только если есть сессия */}
                             {displaySession && chunks.length > 0 && (
                                 <SessionTabs
@@ -2371,6 +2539,7 @@ function App() {
                                     hasSummary={!!displaySession.summary}
                                     isGeneratingSummary={isGeneratingSummary}
                                     isRecording={isRecording}
+                                    speakersCount={sessionSpeakers.length}
                                 />
                             )}
                         </div>
@@ -2653,6 +2822,15 @@ function App() {
                                             );
                                         })}
                                     </div>
+                                )}
+
+                                {/* Tab: Speakers */}
+                                {activeTab === 'speakers' && displaySession && (
+                                    <SpeakersTab
+                                        sessionId={displaySession.id}
+                                        speakers={sessionSpeakers}
+                                        onRename={handleRenameSpeaker}
+                                    />
                                 )}
 
                                 {/* Tab: Summary */}

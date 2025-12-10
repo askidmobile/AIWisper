@@ -162,6 +162,21 @@ var Registry = []ModelInfo{
 		DownloadURL: "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_ctc.int8.onnx",
 		VocabURL:    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_vocab.txt",
 	},
+	{
+		ID:          "gigaam-v3-e2e-ctc",
+		Name:        "GigaAM V3 E2E (с пунктуацией)",
+		Type:        ModelTypeONNX,
+		Engine:      EngineTypeGigaAM,
+		Size:        "225 MB",
+		SizeBytes:   225_000_000,
+		Description: "End-to-end модель с пунктуацией для русского (Sber GigaAM v3)",
+		Languages:   []string{"ru"},
+		WER:         "9.1%",
+		Speed:       "~50x",
+		Recommended: true,
+		DownloadURL: "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_e2e_ctc.int8.onnx",
+		VocabURL:    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_e2e_vocab.txt",
+	},
 
 	// ===== Модели диаризации (Diarization) =====
 	{

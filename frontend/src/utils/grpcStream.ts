@@ -10,8 +10,10 @@ export const RPC_READY_STATE = {
     CLOSED: 3,
 } as const;
 
+type ReadyStateType = typeof RPC_READY_STATE[keyof typeof RPC_READY_STATE];
+
 export interface RpcSocketLike {
-    readyState: number;
+    readyState: ReadyStateType;
     send(data: string): void;
     close(): void;
     onopen: (() => void) | null;
@@ -36,7 +38,7 @@ function resolveAddress(): string {
 }
 
 class GrpcSocket implements RpcSocketLike {
-    public readyState = RPC_READY_STATE.CONNECTING;
+    public readyState: ReadyStateType = RPC_READY_STATE.CONNECTING;
     public onopen: (() => void) | null = null;
     public onmessage: ((event: { data: string }) => void) | null = null;
     public onclose: ((event?: any) => void) | null = null;

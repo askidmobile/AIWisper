@@ -1,13 +1,17 @@
 {
   "name": "aiwisper",
-  "version": "1.18.2",
+  "version": "1.20.11",
   "description": "AIWisper - Speech to Text Application",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && tsc -p electron/tsconfig.json",
     "preview": "vite preview",
+    "backend:build": "bash ../scripts/build-backend.sh",
     "electron:dev": "concurrently \"vite\" \"wait-on tcp:5173 && tsc -p electron/tsconfig.json && electron .\"",
+    "preelectron:build": "npm run backend:build",
+    "preelectron:build:dmg": "npm run backend:build",
+    "preelectron:build:dir": "npm run backend:build",
     "electron:build": "vite build && tsc -p electron/tsconfig.json && electron-builder --mac",
     "electron:build:dmg": "vite build && tsc -p electron/tsconfig.json && electron-builder --mac dmg",
     "electron:build:dir": "vite build && tsc -p electron/tsconfig.json && electron-builder --mac dir"

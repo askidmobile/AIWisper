@@ -64,15 +64,20 @@ func (s *RecordingService) StartSession(config session.SessionConfig, echoCancel
 	// 4. Create Chunk Buffer
 	// Для stereo режима (captureSystem=true) ИЛИ если отключен VAD используем фиксированные интервалы
 	var vadConfig session.VADConfig
-	if config.CaptureSystem || config.DisableVAD {
+	if config.CaptureSystem || config.VADMode == session.VADModeOff {
 		vadConfig = session.FixedIntervalConfig()
-		if config.DisableVAD {
+		if config.VADMode == session.VADModeOff {
 			log.Println("VAD disabled by user setting (fixed interval chunking)")
 		} else {
 			log.Println("Using fixed interval chunking for stereo mode (no VAD)")
 		}
 	} else {
 		vadConfig = session.DefaultVADConfig()
+	}
+	// Сохраняем режим VAD в конфигурации
+	vadConfig.VADMode = config.VADMode
+	if vadConfig.VADMode == "" {
+		vadConfig.VADMode = session.VADModeAuto
 	}
 	chunkBuffer := session.NewChunkBuffer(vadConfig, session.SampleRate)
 

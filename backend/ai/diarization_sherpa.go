@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
 )
@@ -60,6 +61,7 @@ type SherpaDiarizer struct {
 	diarizer    *sherpa.OfflineSpeakerDiarization
 	mu          sync.Mutex
 	initialized bool
+	inProgress  int32 // Атомарный счётчик текущих операций (для диагностики)
 }
 
 // NewSherpaDiarizer создаёт новый диаризатор на базе sherpa-onnx
@@ -133,10 +135,23 @@ func NewSherpaDiarizer(config SherpaDiarizerConfig) (*SherpaDiarizer, error) {
 	}, nil
 }
 
+// Максимальный размер аудио для диаризации (в семплах)
+// ~15 секунд при 16kHz - безопасный лимит, предотвращающий зависание нативного кода
+const maxDiarizationSamples = 240000 // 15 секунд * 16000 Hz
+
 // Diarize выполняет диаризацию аудио и возвращает сегменты с метками спикеров
 // samples - аудио данные в формате float32, 16kHz, mono
+//
+// ВАЖНО: Sherpa ONNX нативный код может зависнуть на определённых данных.
+// Вызывающий код должен использовать таймаут (через diarizeWithTimeout в pipeline).
+// Мы используем TryLock чтобы избежать накопления ожидающих goroutines при зависании.
 func (d *SherpaDiarizer) Diarize(samples []float32) ([]SpeakerSegment, error) {
-	d.mu.Lock()
+	// Пробуем взять lock без блокировки - если уже занят, возвращаем ошибку
+	// Это предотвращает накопление goroutines при зависании нативного кода
+	if !d.mu.TryLock() {
+		inProg := atomic.LoadInt32(&d.inProgress)
+		return nil, fmt.Errorf("diarizer is busy (inProgress=%d), try again later", inProg)
+	}
 	defer d.mu.Unlock()
 
 	if !d.initialized {
@@ -147,7 +162,25 @@ func (d *SherpaDiarizer) Diarize(samples []float32) ([]SpeakerSegment, error) {
 		return nil, nil
 	}
 
+	// Ограничиваем размер входных данных, чтобы избежать зависания нативного кода
+	// При превышении лимита разбиваем на части
+	if len(samples) > maxDiarizationSamples {
+		log.Printf("SherpaDiarizer: audio too long (%d samples, %.1fs), splitting into chunks",
+			len(samples), float64(len(samples))/16000.0)
+		return d.diarizeInChunks(samples)
+	}
+
+	return d.diarizeSingle(samples)
+}
+
+// diarizeSingle выполняет диаризацию одного фрагмента
+func (d *SherpaDiarizer) diarizeSingle(samples []float32) ([]SpeakerSegment, error) {
+	// Отмечаем что операция в процессе
+	atomic.AddInt32(&d.inProgress, 1)
+	defer atomic.AddInt32(&d.inProgress, -1)
+
 	// Выполняем диаризацию
+	// ВНИМАНИЕ: Этот вызов может зависнуть в нативном коде!
 	segments := d.diarizer.Process(samples)
 	if len(segments) == 0 {
 		return nil, nil
@@ -167,6 +200,101 @@ func (d *SherpaDiarizer) Diarize(samples []float32) ([]SpeakerSegment, error) {
 		len(result), d.countUniqueSpeakers(result))
 
 	return result, nil
+}
+
+// diarizeInChunks разбивает длинное аудио на части и диаризует их отдельно
+// Это предотвращает зависание нативного кода на длинных аудио
+func (d *SherpaDiarizer) diarizeInChunks(samples []float32) ([]SpeakerSegment, error) {
+	const chunkSize = maxDiarizationSamples // 15 секунд
+	const overlapSize = 16000               // 1 секунда перекрытия для лучшей стыковки
+	const sampleRate = 16000
+
+	var allSegments []SpeakerSegment
+	offset := 0
+	chunkIndex := 0
+
+	for offset < len(samples) {
+		end := offset + chunkSize
+		if end > len(samples) {
+			end = len(samples)
+		}
+
+		chunk := samples[offset:end]
+		chunkOffsetSec := float32(offset) / float32(sampleRate)
+
+		log.Printf("SherpaDiarizer: processing chunk %d (offset=%.1fs, samples=%d)",
+			chunkIndex, chunkOffsetSec, len(chunk))
+
+		// Диаризуем чанк
+		atomic.AddInt32(&d.inProgress, 1)
+		segments := d.diarizer.Process(chunk)
+		atomic.AddInt32(&d.inProgress, -1)
+
+		// Конвертируем и добавляем смещение
+		for _, seg := range segments {
+			allSegments = append(allSegments, SpeakerSegment{
+				Start:   seg.Start + chunkOffsetSec,
+				End:     seg.End + chunkOffsetSec,
+				Speaker: seg.Speaker,
+			})
+		}
+
+		// Следующий чанк с перекрытием (для лучшей стыковки)
+		offset = end - overlapSize
+		if offset < 0 {
+			offset = 0
+		}
+		// Но если остаток меньше минимального, просто завершаем
+		if len(samples)-offset < sampleRate {
+			break
+		}
+		chunkIndex++
+	}
+
+	log.Printf("SherpaDiarizer: chunked diarization complete, %d total segments from %d chunks",
+		len(allSegments), chunkIndex+1)
+
+	// Мержим перекрывающиеся сегменты того же спикера
+	return d.mergeOverlappingSegments(allSegments), nil
+}
+
+// mergeOverlappingSegments объединяет перекрывающиеся сегменты одного спикера
+func (d *SherpaDiarizer) mergeOverlappingSegments(segments []SpeakerSegment) []SpeakerSegment {
+	if len(segments) <= 1 {
+		return segments
+	}
+
+	// Сортируем по времени начала
+	// (простая пузырьковая сортировка - сегментов обычно мало)
+	for i := 0; i < len(segments)-1; i++ {
+		for j := i + 1; j < len(segments); j++ {
+			if segments[j].Start < segments[i].Start {
+				segments[i], segments[j] = segments[j], segments[i]
+			}
+		}
+	}
+
+	// Мержим перекрывающиеся сегменты одного спикера
+	var merged []SpeakerSegment
+	current := segments[0]
+
+	for i := 1; i < len(segments); i++ {
+		seg := segments[i]
+		// Если тот же спикер и сегменты перекрываются или почти соприкасаются
+		if seg.Speaker == current.Speaker && seg.Start <= current.End+0.5 {
+			// Расширяем текущий сегмент
+			if seg.End > current.End {
+				current.End = seg.End
+			}
+		} else {
+			// Сохраняем текущий и начинаем новый
+			merged = append(merged, current)
+			current = seg
+		}
+	}
+	merged = append(merged, current)
+
+	return merged
 }
 
 // SetClusteringConfig обновляет параметры кластеризации

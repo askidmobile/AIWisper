@@ -8,6 +8,7 @@ require (
 	github.com/gen2brain/malgo v0.11.24
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/k2-fsa/sherpa-onnx-go v1.12.19
 	github.com/yalue/onnxruntime_go v1.12.0
 	google.golang.org/grpc v1.77.0

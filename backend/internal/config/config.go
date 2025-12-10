@@ -2,6 +2,7 @@ package config
 
 import (
 	"flag"
+	"os"
 	"path/filepath"
 	"runtime"
 )
@@ -12,6 +13,7 @@ type Config struct {
 	ModelsDir string
 	Port      string
 	GRPCAddr  string
+	TraceLog  string
 
 	// LLM настройки
 	OllamaURL          string // URL Ollama API (по умолчанию http://localhost:11434)
@@ -25,6 +27,7 @@ func Load() *Config {
 	modelsDir := flag.String("models", "", "Directory for downloaded models (default: dataDir/../models)")
 	port := flag.String("port", "18080", "Server port")
 	grpcAddr := flag.String("grpc-addr", defaultGRPCAddress(), "gRPC listen address (unix:/path/to.sock or npipe:////./pipe/aiwisper-grpc)")
+	traceLog := flag.String("trace-log", defaultTraceLog(), "Path to backend trace log file (append mode)")
 
 	// LLM настройки
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama API URL")
@@ -45,6 +48,7 @@ func Load() *Config {
 		ModelsDir:          finalModelsDir,
 		Port:               *port,
 		GRPCAddr:           *grpcAddr,
+		TraceLog:           *traceLog,
 		OllamaURL:          *ollamaURL,
 		OllamaModel:        *ollamaModel,
 		AutoImproveWithLLM: *autoImprove,
@@ -56,4 +60,8 @@ func defaultGRPCAddress() string {
 		return "npipe:\\\\.\\pipe\\aiwisper-grpc"
 	}
 	return "unix:/tmp/aiwisper-grpc.sock"
+}
+
+func defaultTraceLog() string {
+	return filepath.Join(os.TempDir(), "aiwisper-backend.log")
 }

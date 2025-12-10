@@ -5,6 +5,17 @@ import (
 	"math"
 )
 
+// DiarizationProvider интерфейс для провайдеров диаризации
+// Позволяет использовать разные реализации (Sherpa, Fluid, etc.)
+type DiarizationProvider interface {
+	// Diarize выполняет диаризацию и возвращает сегменты с метками спикеров
+	Diarize(samples []float32) ([]SpeakerSegment, error)
+	// IsInitialized возвращает true если провайдер готов к работе
+	IsInitialized() bool
+	// Close освобождает ресурсы
+	Close()
+}
+
 // Diarizer выполняет кластеризацию спикеров
 type Diarizer struct {
 	encoder *SpeakerEncoder

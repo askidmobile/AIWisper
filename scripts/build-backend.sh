@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build Go backend into build/resources and also refresh backend_bin for dev runs.
+# Uses AIWISPER_GOARCH (optional) or host arch; normalizes x64/x86_64 to amd64.
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+ARCH="${AIWISPER_GOARCH:-$(uname -m)}"
+case "$ARCH" in
+  x86_64|x64) ARCH="amd64" ;;
+  aarch64) ARCH="arm64" ;;
+esac
+
+mkdir -p "$ROOT_DIR/build/resources"
+
+echo "==> Building aiwisper-backend (GOARCH=$ARCH)"
+(
+  cd "$ROOT_DIR/backend"
+  GOOS=darwin GOARCH="$ARCH" go build -o "$ROOT_DIR/build/resources/aiwisper-backend"
+)
+
+# Keep dev binary in sync
+cp "$ROOT_DIR/build/resources/aiwisper-backend" "$ROOT_DIR/backend_bin"
+
+echo "Built backend -> build/resources/aiwisper-backend and backend_bin"
+
+# Build FluidAudio diarization binary (Swift)
+echo "==> Building diarization-fluid (Swift)"
+(
+  cd "$ROOT_DIR/backend/audio/diarization"
+  swift build -c release
+)
+
+# Copy diarization binary to resources
+cp "$ROOT_DIR/backend/audio/diarization/.build/release/diarization-fluid" "$ROOT_DIR/build/resources/diarization-fluid"
+
+echo "Built diarization-fluid -> build/resources/diarization-fluid"

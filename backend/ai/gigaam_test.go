@@ -1,7 +1,9 @@
 package ai
 
 import (
+	"encoding/binary"
 	"os"
+	"os/exec"
 	"testing"
 )
 
@@ -45,18 +47,38 @@ func TestGigaAMEngine_Integration(t *testing.T) {
 }
 
 func TestMelFilterbank(t *testing.T) {
-	filters := createMelFilterbank(400, 64, 16000)
+	// GigaAM v3 параметры
+	filters := createMelFilterbank(320, 64, 16000)
 
 	if len(filters) != 64 {
 		t.Errorf("Expected 64 mel filters, got %d", len(filters))
 	}
 
 	// Проверяем что каждый фильтр имеет правильный размер
-	expectedBins := 400/2 + 1 // 201
+	expectedBins := 320/2 + 1 // 161
 	for i, f := range filters {
 		if len(f) != expectedBins {
 			t.Errorf("Filter %d: expected %d bins, got %d", i, expectedBins, len(f))
 		}
+	}
+
+	// Выводим диапазоны bins для первых 10 фильтров
+	t.Log("First 10 mel filters (non-zero bin ranges):")
+	for m := 0; m < 10; m++ {
+		start, end := -1, -1
+		maxVal := 0.0
+		for k := 0; k < len(filters[m]); k++ {
+			if filters[m][k] > 0 {
+				if start < 0 {
+					start = k
+				}
+				end = k
+				if filters[m][k] > maxVal {
+					maxVal = filters[m][k]
+				}
+			}
+		}
+		t.Logf("  Filter %d: bins %d-%d, max=%.4f", m, start, end, maxVal)
 	}
 
 	// Проверяем что фильтры не все нулевые
@@ -139,6 +161,131 @@ func TestLoadGigaAMVocab(t *testing.T) {
 	if vocab[0] != "▁" {
 		t.Errorf("Expected first token '▁', got %q", vocab[0])
 	}
+}
+
+// TestMelSpectrogramComparison сравнивает нашу mel-спектрограмму с torchaudio
+func TestMelSpectrogramComparison(t *testing.T) {
+	// Путь к тестовому аудио
+	audioPath := "/Users/askid/Library/Application Support/aiwisper/sessions/5f581ceb-3cda-4f16-bb76-e19fe9c642e7/full.mp3"
+
+	// Проверяем существование файла
+	if _, err := os.Stat(audioPath); os.IsNotExist(err) {
+		t.Skip("Test audio file not found")
+	}
+
+	// Загружаем аудио через ffmpeg
+	samples, err := loadAudioFFmpegTest(audioPath)
+	if err != nil {
+		t.Fatalf("Failed to load audio: %v", err)
+	}
+	t.Logf("Loaded %d samples (%.2fs)", len(samples), float64(len(samples))/16000)
+
+	// GigaAM v3 параметры
+	config := MelConfig{
+		SampleRate: 16000,
+		NMels:      64,
+		HopLength:  160,
+		WinLength:  320,
+		NFFT:       320,
+		Center:     false, // GigaAM v3
+	}
+
+	processor := NewMelProcessor(config)
+	mel, numFrames := processor.Compute(samples)
+
+	t.Logf("Mel shape: [%d][%d]", numFrames, config.NMels)
+
+	// Статистика
+	var minVal, maxVal float32 = 1e10, -1e10
+	var sum float64
+	count := 0
+
+	for frame := 0; frame < numFrames; frame++ {
+		for m := 0; m < config.NMels; m++ {
+			v := mel[frame][m]
+			if v < minVal {
+				minVal = v
+			}
+			if v > maxVal {
+				maxVal = v
+			}
+			sum += float64(v)
+			count++
+		}
+	}
+	mean := sum / float64(count)
+
+	t.Logf("Mel statistics:")
+	t.Logf("  Min: %.4f", minVal)
+	t.Logf("  Max: %.4f", maxVal)
+	t.Logf("  Mean: %.4f", mean)
+
+	// Выводим первые несколько фреймов
+	t.Logf("First 3 frames (first 10 mel bins):")
+	for frame := 0; frame < 3 && frame < numFrames; frame++ {
+		t.Logf("  Frame %d: %v", frame, mel[frame][:10])
+	}
+
+	// Выводим первые 10 аудио сэмплов
+	t.Logf("First 10 audio samples: %v", samples[:10])
+
+	// Сравнение с Python (torchaudio)
+	// Ожидаемые значения от Python:
+	// Min: -20.7233, Max: 4.3761, Mean: -9.5856
+	// Допустимая погрешность
+	tolerance := float32(0.5)
+
+	if minVal < -21.5 || minVal > -20.0 {
+		t.Errorf("Min value %.4f differs significantly from expected ~-20.7233", minVal)
+	}
+	if maxVal < 3.5 || maxVal > 5.0 {
+		t.Errorf("Max value %.4f differs significantly from expected ~4.3761", maxVal)
+	}
+	_ = tolerance
+
+	// Сохраняем mel в файл для сравнения с Python
+	saveMelToFile(mel, numFrames, config.NMels, "/tmp/mel_go.bin")
+	t.Logf("Saved mel to /tmp/mel_go.bin")
+}
+
+func saveMelToFile(mel [][]float32, numFrames, nMels int, path string) {
+	f, err := os.Create(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	binary.Write(f, binary.LittleEndian, int32(numFrames))
+	binary.Write(f, binary.LittleEndian, int32(nMels))
+	for frame := 0; frame < numFrames; frame++ {
+		for m := 0; m < nMels; m++ {
+			binary.Write(f, binary.LittleEndian, mel[frame][m])
+		}
+	}
+}
+
+func loadAudioFFmpegTest(path string) ([]float32, error) {
+	cmd := exec.Command("ffmpeg",
+		"-nostdin", "-threads", "0",
+		"-i", path,
+		"-f", "s16le", "-ac", "1", "-acodec", "pcm_s16le",
+		"-ar", "16000", "-",
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	// Конвертируем int16 в float32
+	numSamples := len(output) / 2
+	samples := make([]float32, numSamples)
+	for i := 0; i < numSamples; i++ {
+		sample := int16(binary.LittleEndian.Uint16(output[i*2 : i*2+2]))
+		samples[i] = float32(sample) / 32768.0
+	}
+
+	return samples, nil
 }
 
 func TestLoadGigaAMVocab_V3CTC(t *testing.T) {

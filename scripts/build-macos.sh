@@ -135,6 +135,13 @@ swift build -c release 2>&1 | grep -v "^Build complete" || true
 cp .build/release/coreaudio-tap "$RESOURCES_DIR/"
 chmod +x "$RESOURCES_DIR/coreaudio-tap"
 log_success "CoreAudio tap module built"
+
+log_info "Building Swift FluidAudio diarization module..."
+cd "$BACKEND_DIR/audio/diarization"
+swift build -c release 2>&1 | grep -v "^Build complete" || true
+cp .build/release/diarization-fluid "$RESOURCES_DIR/"
+chmod +x "$RESOURCES_DIR/diarization-fluid"
+log_success "FluidAudio diarization module built"
 echo ""
 
 # =============================================================================
@@ -165,7 +172,7 @@ fi
 log_info "Building for $GOARCH..."
 # Собираем без переопределения CGO_LDFLAGS - используем статические библиотеки из whisper.go
 GOOS=darwin GOARCH=$GOARCH go build \
-    -ldflags="-s -w -X main.version=1.18.0" \
+    -ldflags="-s -w -X main.version=1.19.0" \
     -o "$RESOURCES_DIR/$BINARY_NAME" \
     .
 
@@ -377,6 +384,11 @@ fi
 # Подписываем coreaudio-tap
 if [ -f "coreaudio-tap" ]; then
     codesign --force --sign - "coreaudio-tap" 2>/dev/null || log_warn "Failed to sign coreaudio-tap"
+fi
+
+# Подписываем diarization-fluid
+if [ -f "diarization-fluid" ]; then
+    codesign --force --sign - "diarization-fluid" 2>/dev/null || log_warn "Failed to sign diarization-fluid"
 fi
 
 # Подписываем ffmpeg

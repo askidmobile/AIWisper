@@ -144,10 +144,13 @@ export default function SummaryView({
                 backgroundColor: '#1a1a2e',
                 borderRadius: '8px',
                 lineHeight: '1.8',
+                width: '100%',
                 maxWidth: '100%',
                 overflow: 'hidden',
+                overflowX: 'hidden',
                 wordWrap: 'break-word',
-                overflowWrap: 'break-word'
+                overflowWrap: 'break-word',
+                boxSizing: 'border-box'
             }}>
                 <div style={{
                     display: 'flex',
@@ -261,7 +264,10 @@ export default function SummaryView({
                 </div>
                 <div className="markdown-content" style={{
                     color: '#ddd',
-                    fontSize: '0.95rem'
+                    fontSize: '0.95rem',
+                    overflow: 'hidden',
+                    overflowWrap: 'break-word',
+                    wordBreak: 'break-word'
                 }}>
                     <ReactMarkdown
                         components={{
@@ -299,7 +305,9 @@ export default function SummaryView({
                             li: ({children}) => (
                                 <li style={{ 
                                     marginBottom: '0.4rem',
-                                    color: '#bbb'
+                                    color: '#bbb',
+                                    overflowWrap: 'break-word',
+                                    wordBreak: 'break-word'
                                 }}>
                                     {children}
                                 </li>
@@ -307,7 +315,9 @@ export default function SummaryView({
                             p: ({children}) => (
                                 <p style={{ 
                                     margin: '0.5rem 0',
-                                    color: '#ccc'
+                                    color: '#ccc',
+                                    overflowWrap: 'break-word',
+                                    wordBreak: 'break-word'
                                 }}>
                                     {children}
                                 </p>

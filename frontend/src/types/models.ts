@@ -47,13 +47,15 @@ export interface DiarizationStatus {
     embeddingModelId?: string;
 }
 
+export type VADMode = 'auto' | 'compression' | 'per-region' | 'off';
+
 export interface AppSettings {
     language: 'ru' | 'en' | 'auto';
     modelId: string;
     echoCancel: number;
     useVoiceIsolation: boolean;
     captureSystem: boolean;
-    disableVAD?: boolean;
+    vadMode?: VADMode; // Режим VAD: auto, compression, per-region, off
     theme?: 'light' | 'dark';
     // Ollama settings for summary
     ollamaModel: string;  // e.g., 'llama3.2', 'qwen2.5', 'mistral'

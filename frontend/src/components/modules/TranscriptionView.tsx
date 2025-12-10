@@ -152,7 +152,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                 </div>
             )}
 
-            <div ref={transcriptionRef} style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto' }}>
+            <div ref={transcriptionRef} style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto', overflowX: 'hidden' }}>
                 {/* Empty State */}
                 {chunks.length === 0 && !isRecording && !selectedSession ? (
                     <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>

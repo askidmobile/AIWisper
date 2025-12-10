@@ -7,6 +7,8 @@ import (
 	"aiwisper/internal/service"
 	"aiwisper/models"
 	"aiwisper/session"
+	"aiwisper/voiceprint"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,9 +77,15 @@ type Server struct {
 	TranscriptionService *service.TranscriptionService
 	RecordingService     *service.RecordingService
 	LLMService           *service.LLMService
+	VoicePrintStore      *voiceprint.Store   // Хранилище голосовых отпечатков
+	VoicePrintMatcher    *voiceprint.Matcher // Matcher для поиска совпадений
 
 	clients map[transportClient]bool
 	mu      sync.Mutex
+
+	// Отмена полной ретранскрипции по sessionID
+	retranscribeCancels   map[string]func()
+	retranscribeCancelsMu sync.Mutex
 }
 
 func NewServer(
@@ -89,6 +97,8 @@ func NewServer(
 	transSvc *service.TranscriptionService,
 	recSvc *service.RecordingService,
 	llmSvc *service.LLMService,
+	vpStore *voiceprint.Store,
+	vpMatcher *voiceprint.Matcher,
 ) *Server {
 	s := &Server{
 		Config:               cfg,
@@ -99,7 +109,10 @@ func NewServer(
 		TranscriptionService: transSvc,
 		RecordingService:     recSvc,
 		LLMService:           llmSvc,
+		VoicePrintStore:      vpStore,
+		VoicePrintMatcher:    vpMatcher,
 		clients:              make(map[transportClient]bool),
+		retranscribeCancels:  make(map[string]func()),
 	}
 	s.setupCallbacks()
 	return s
@@ -384,7 +397,7 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			SystemDevice:  msg.SystemDevice,
 			CaptureSystem: msg.CaptureSystem,
 			UseNative:     msg.UseNative,
-			DisableVAD:    msg.DisableVAD,
+			VADMode:       session.VADMode(msg.VADMode),
 		}
 
 		// Echo Cancel default 0.4
@@ -396,6 +409,8 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 		// Сбрасываем состояние диаризации (спикеров) перед новой сессией
 		if s.TranscriptionService != nil {
 			s.TranscriptionService.ResetDiarizationState()
+			// Устанавливаем режим VAD
+			s.TranscriptionService.SetVADMode(config.VADMode)
 		}
 
 		sess, err := s.RecordingService.StartSession(config, ec, msg.UseVoiceIsolation)
@@ -529,6 +544,43 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			s.broadcast(Message{Type: "improve_completed", SessionID: msg.SessionID, Session: updatedSess})
 		}()
 
+	case "diarize_with_llm":
+		// Диаризация всего текста с помощью LLM - разбивает "Собеседник" на "Собеседник 1", "Собеседник 2" и т.д.
+		if s.LLMService == nil {
+			send(Message{Type: "error", Data: "LLM Service not available"})
+			return
+		}
+		send(Message{Type: "diarize_started", SessionID: msg.SessionID})
+
+		sess, err := s.SessionMgr.GetSession(msg.SessionID)
+		if err != nil {
+			send(Message{Type: "diarize_error", SessionID: msg.SessionID, Error: "Session not found"})
+			return
+		}
+
+		var dialogue []session.TranscriptSegment
+		for _, c := range sess.Chunks {
+			if len(c.Dialogue) > 0 {
+				dialogue = append(dialogue, c.Dialogue...)
+			}
+		}
+
+		if len(dialogue) == 0 {
+			send(Message{Type: "diarize_error", SessionID: msg.SessionID, Error: "No dialogue to diarize"})
+			return
+		}
+
+		go func() {
+			diarized, err := s.LLMService.DiarizeWithLLM(dialogue, msg.OllamaModel, msg.OllamaUrl)
+			if err != nil {
+				s.broadcast(Message{Type: "diarize_error", SessionID: msg.SessionID, Error: err.Error()})
+				return
+			}
+			s.SessionMgr.UpdateImprovedDialogue(msg.SessionID, diarized)
+			updatedSess, _ := s.SessionMgr.GetSession(msg.SessionID)
+			s.broadcast(Message{Type: "diarize_completed", SessionID: msg.SessionID, Session: updatedSess})
+		}()
+
 	case "retranscribe_chunk":
 		log.Printf("Received retranscribe_chunk: sessionId=%s, chunkId=%s, model=%s, language=%s",
 			msg.SessionID, msg.Data, msg.Model, msg.Language)
@@ -602,42 +654,93 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			}
 		}
 
-		// Сохраняем флаг использования диаризации для ретранскрибации
+		// Проверяем сессию заранее для определения количества чанков
+		sess, err := s.SessionMgr.GetSession(msg.SessionID)
+		if err != nil {
+			log.Printf("Full retranscription error: %v", err)
+			send(Message{Type: "full_transcription_error", SessionID: msg.SessionID, Error: err.Error()})
+			return
+		}
+
+		totalChunks := len(sess.Chunks)
+
+		// Определяем использование диаризации
+		// ВАЖНО: sherpa-onnx имеет известную утечку памяти при многократных вызовах
+		// (https://github.com/k2-fsa/sherpa-onnx/issues/974, #1939)
+		// Ограничиваем диаризацию только короткими сессиями (до 10 чанков = 5 минут)
+		const maxChunksForDiarization = 10
 		useDiarization := msg.DiarizationEnabled && s.TranscriptionService.IsDiarizationEnabled()
+
+		if useDiarization && totalChunks > maxChunksForDiarization {
+			log.Printf("WARNING: Disabling diarization for batch retranscription (%d chunks > %d max) due to sherpa-onnx memory leak",
+				totalChunks, maxChunksForDiarization)
+			useDiarization = false
+			// Уведомляем пользователя
+			s.broadcast(Message{
+				Type:      "diarization_warning",
+				SessionID: msg.SessionID,
+				Data:      fmt.Sprintf("Диаризация отключена для длинных сессий (>%d чанков) из-за известной проблемы с памятью", maxChunksForDiarization),
+			})
+		}
 
 		// Сбрасываем состояние диаризации (спикеров) перед полной ретранскрипцией
 		if useDiarization {
 			s.TranscriptionService.ResetDiarizationState()
 		}
 
+		// Создаём context для отмены
+		ctx, cancel := context.WithCancel(context.Background())
+		sessionID := msg.SessionID
+
+		// Сохраняем cancel функцию
+		s.retranscribeCancelsMu.Lock()
+		// Отменяем предыдущую ретранскрипцию если была
+		if prevCancel, exists := s.retranscribeCancels[sessionID]; exists {
+			prevCancel()
+		}
+		s.retranscribeCancels[sessionID] = cancel
+		s.retranscribeCancelsMu.Unlock()
+
 		// Отправляем через broadcast для всех клиентов
-		log.Printf("Sending full_transcription_started for session %s (diarization=%v)", msg.SessionID, useDiarization)
-		s.broadcast(Message{Type: "full_transcription_started", SessionID: msg.SessionID})
+		log.Printf("Sending full_transcription_started for session %s (diarization=%v)", sessionID, useDiarization)
+		s.broadcast(Message{Type: "full_transcription_started", SessionID: sessionID})
 
 		go func() {
-			sess, err := s.SessionMgr.GetSession(msg.SessionID)
-			if err != nil {
-				log.Printf("Full retranscription error: %v", err)
-				s.broadcast(Message{Type: "full_transcription_error", SessionID: msg.SessionID, Error: err.Error()})
-				return
-			}
+			defer func() {
+				// Удаляем cancel функцию после завершения
+				s.retranscribeCancelsMu.Lock()
+				delete(s.retranscribeCancels, sessionID)
+				s.retranscribeCancelsMu.Unlock()
+			}()
 
-			totalChunks := len(sess.Chunks)
 			if totalChunks == 0 {
 				log.Printf("Full retranscription: no chunks to process")
-				s.broadcast(Message{Type: "full_transcription_completed", SessionID: msg.SessionID, Session: sess})
+				s.broadcast(Message{Type: "full_transcription_completed", SessionID: sessionID, Session: sess})
 				return
 			}
 
 			log.Printf("Full retranscription: processing %d chunks (diarization=%v)", totalChunks, useDiarization)
 
 			for i, chunk := range sess.Chunks {
+				// Проверяем отмену перед каждым чанком
+				select {
+				case <-ctx.Done():
+					log.Printf("Full retranscription cancelled for session %s at chunk %d/%d", sessionID, i+1, totalChunks)
+					s.broadcast(Message{
+						Type:      "full_transcription_cancelled",
+						SessionID: sessionID,
+						Data:      fmt.Sprintf("Отменено на чанке %d из %d", i+1, totalChunks),
+					})
+					return
+				default:
+				}
+
 				// Отправляем прогресс
 				progress := float64(i) / float64(totalChunks)
 				log.Printf("Full retranscription progress: %d/%d (%.1f%%)", i+1, totalChunks, progress*100)
 				s.broadcast(Message{
 					Type:      "full_transcription_progress",
-					SessionID: msg.SessionID,
+					SessionID: sessionID,
 					Progress:  progress,
 					Data:      fmt.Sprintf("Обработка чанка %d из %d...", i+1, totalChunks),
 				})
@@ -650,15 +753,34 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			// Финальный прогресс 100%
 			s.broadcast(Message{
 				Type:      "full_transcription_progress",
-				SessionID: msg.SessionID,
+				SessionID: sessionID,
 				Progress:  1.0,
 				Data:      "Завершение...",
 			})
 
-			updatedSess, _ := s.SessionMgr.GetSession(msg.SessionID)
-			log.Printf("Full retranscription completed for session %s", msg.SessionID)
-			s.broadcast(Message{Type: "full_transcription_completed", SessionID: msg.SessionID, Session: updatedSess})
+			updatedSess, _ := s.SessionMgr.GetSession(sessionID)
+			log.Printf("Full retranscription completed for session %s", sessionID)
+			s.broadcast(Message{Type: "full_transcription_completed", SessionID: sessionID, Session: updatedSess})
 		}()
+
+	case "cancel_full_transcription":
+		sessionID := msg.SessionID
+		if sessionID == "" {
+			send(Message{Type: "error", Data: "sessionId is required"})
+			return
+		}
+
+		log.Printf("Received cancel_full_transcription for session %s", sessionID)
+
+		s.retranscribeCancelsMu.Lock()
+		if cancel, exists := s.retranscribeCancels[sessionID]; exists {
+			cancel()
+			delete(s.retranscribeCancels, sessionID)
+			log.Printf("Full retranscription cancel signal sent for session %s", sessionID)
+		} else {
+			log.Printf("No active retranscription found for session %s", sessionID)
+		}
+		s.retranscribeCancelsMu.Unlock()
 
 	case "enable_diarization":
 		// Provider: "auto" (default), "cpu", "coreml", "cuda"
@@ -667,11 +789,17 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 		if provider == "" {
 			provider = "auto"
 		}
-		log.Printf("Received enable_diarization: provider=%s, segmentation=%s, embedding=%s",
-			provider, msg.SegmentationModelPath, msg.EmbeddingModelPath)
+		// Backend: "sherpa" (default), "fluid" (FluidAudio/CoreML - рекомендуется для macOS)
+		backend := msg.DiarizationBackend
+		if backend == "" {
+			backend = "fluid" // По умолчанию используем FluidAudio на macOS
+		}
+		log.Printf("Received enable_diarization: backend=%s, provider=%s, segmentation=%s, embedding=%s",
+			backend, provider, msg.SegmentationModelPath, msg.EmbeddingModelPath)
 
-		if msg.SegmentationModelPath == "" || msg.EmbeddingModelPath == "" {
-			send(Message{Type: "diarization_error", Error: "segmentationModelPath and embeddingModelPath are required"})
+		// Для FluidAudio не нужны пути к моделям (они скачиваются автоматически)
+		if backend != "fluid" && (msg.SegmentationModelPath == "" || msg.EmbeddingModelPath == "") {
+			send(Message{Type: "diarization_error", Error: "segmentationModelPath and embeddingModelPath are required for Sherpa backend"})
 			return
 		}
 
@@ -695,8 +823,8 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			}
 		}
 
-		err := s.TranscriptionService.EnableDiarizationWithProvider(
-			msg.SegmentationModelPath, msg.EmbeddingModelPath, provider)
+		err := s.TranscriptionService.EnableDiarizationWithBackend(
+			msg.SegmentationModelPath, msg.EmbeddingModelPath, provider, backend)
 		if err != nil {
 			log.Printf("Failed to enable diarization: %v", err)
 			send(Message{Type: "diarization_error", Error: err.Error()})
@@ -708,6 +836,7 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			Type:                "diarization_enabled",
 			DiarizationEnabled:  true,
 			DiarizationProvider: actualProvider,
+			DiarizationBackend:  backend,
 		})
 
 	case "disable_diarization":
@@ -723,6 +852,126 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			DiarizationEnabled:  enabled,
 			DiarizationProvider: provider,
 		})
+
+	// === VoicePrint (глобальные спикеры) ===
+	case "get_voiceprints":
+		if s.VoicePrintStore == nil {
+			send(Message{Type: "voiceprints_list", VoicePrints: []voiceprint.VoicePrint{}})
+			return
+		}
+		voiceprints := s.VoicePrintStore.GetAll()
+		send(Message{Type: "voiceprints_list", VoicePrints: voiceprints})
+
+	case "save_voiceprint":
+		if s.VoicePrintStore == nil {
+			send(Message{Type: "voiceprint_error", Error: "VoicePrint store not available"})
+			return
+		}
+		if msg.SessionID == "" || msg.SpeakerName == "" {
+			send(Message{Type: "voiceprint_error", Error: "sessionId and speakerName are required"})
+			return
+		}
+
+		// Получаем embedding спикера из сессии
+		embedding, source, err := s.getSpeakerEmbedding(msg.SessionID, msg.LocalSpeakerID)
+		if err != nil {
+			send(Message{Type: "voiceprint_error", Error: err.Error()})
+			return
+		}
+
+		// Сохраняем voiceprint
+		vp, err := s.VoicePrintStore.Add(msg.SpeakerName, embedding, source)
+		if err != nil {
+			send(Message{Type: "voiceprint_error", Error: err.Error()})
+			return
+		}
+
+		send(Message{Type: "voiceprint_saved", VoicePrint: vp})
+		log.Printf("[VoicePrint] Saved: %s (%s)", vp.Name, vp.ID[:8])
+
+	case "update_voiceprint":
+		if s.VoicePrintStore == nil {
+			send(Message{Type: "voiceprint_error", Error: "VoicePrint store not available"})
+			return
+		}
+		if msg.VoicePrintID == "" {
+			send(Message{Type: "voiceprint_error", Error: "voiceprintId is required"})
+			return
+		}
+
+		if msg.SpeakerName != "" {
+			if err := s.VoicePrintStore.UpdateName(msg.VoicePrintID, msg.SpeakerName); err != nil {
+				send(Message{Type: "voiceprint_error", Error: err.Error()})
+				return
+			}
+		}
+
+		vp, _ := s.VoicePrintStore.Get(msg.VoicePrintID)
+		send(Message{Type: "voiceprint_updated", VoicePrint: vp})
+
+	case "delete_voiceprint":
+		if s.VoicePrintStore == nil {
+			send(Message{Type: "voiceprint_error", Error: "VoicePrint store not available"})
+			return
+		}
+		if msg.VoicePrintID == "" {
+			send(Message{Type: "voiceprint_error", Error: "voiceprintId is required"})
+			return
+		}
+
+		if err := s.VoicePrintStore.Delete(msg.VoicePrintID); err != nil {
+			send(Message{Type: "voiceprint_error", Error: err.Error()})
+			return
+		}
+
+		send(Message{Type: "voiceprint_deleted", VoicePrintID: msg.VoicePrintID})
+
+	case "get_session_speakers":
+		if msg.SessionID == "" {
+			send(Message{Type: "error", Data: "sessionId is required"})
+			return
+		}
+
+		speakers := s.getSessionSpeakers(msg.SessionID)
+		send(Message{Type: "session_speakers", SessionID: msg.SessionID, SessionSpeakers: speakers})
+
+	case "rename_session_speaker":
+		if msg.SessionID == "" || msg.SpeakerName == "" {
+			send(Message{Type: "error", Data: "sessionId and speakerName are required"})
+			return
+		}
+
+		// Переименовываем спикера в сессии
+		if err := s.renameSpeakerInSession(msg.SessionID, msg.LocalSpeakerID, msg.SpeakerName); err != nil {
+			send(Message{Type: "error", Data: err.Error()})
+			return
+		}
+
+		// Если запрошено сохранение в глобальную базу
+		var voiceprintID string
+		if msg.SaveAsVoiceprint && s.VoicePrintStore != nil {
+			embedding, source, err := s.getSpeakerEmbedding(msg.SessionID, msg.LocalSpeakerID)
+			if err == nil && len(embedding) > 0 {
+				vp, err := s.VoicePrintStore.Add(msg.SpeakerName, embedding, source)
+				if err == nil {
+					voiceprintID = vp.ID
+					log.Printf("[VoicePrint] Saved from rename: %s (%s)", vp.Name, vp.ID[:8])
+				}
+			}
+		}
+
+		send(Message{
+			Type:           "speaker_renamed",
+			SessionID:      msg.SessionID,
+			LocalSpeakerID: msg.LocalSpeakerID,
+			SpeakerName:    msg.SpeakerName,
+			VoicePrintID:   voiceprintID,
+		})
+
+		// Обновляем сессию для всех клиентов
+		if updatedSess, err := s.SessionMgr.GetSession(msg.SessionID); err == nil {
+			s.broadcast(Message{Type: "session_details", Session: updatedSess})
+		}
 	}
 }
 
@@ -815,6 +1064,102 @@ func (s *Server) handleSessionsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.ServeFile(w, r, filePath)
+}
+
+// getSpeakerEmbedding получает embedding спикера из сессии
+// Возвращает embedding, source ("mic" или "sys"), error
+func (s *Server) getSpeakerEmbedding(sessionID string, localSpeakerID int) ([]float32, string, error) {
+	// Получаем Pipeline для доступа к текущим профилям спикеров
+	if s.TranscriptionService == nil || s.TranscriptionService.Pipeline == nil {
+		return nil, "", fmt.Errorf("pipeline not available")
+	}
+
+	// Получаем сессию для определения source
+	sess, err := s.SessionMgr.GetSession(sessionID)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// MIC канал (localID = -1 для "Вы") - всегда "mic"
+	// SYS канал (localID >= 0) - всегда "sys"
+	source := "sys"
+	if localSpeakerID < 0 {
+		source = "mic"
+	}
+
+	// TODO: Получить embedding из Pipeline.speakerProfiles
+	// Сейчас Pipeline хранит speakerProfiles приватно, нужно добавить метод GetSpeakerEmbedding
+	// Временное решение: вернём ошибку
+	_ = sess
+
+	return nil, source, fmt.Errorf("speaker embedding retrieval not implemented yet")
+}
+
+// getSessionSpeakers возвращает список спикеров в сессии
+func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeaker {
+	var speakers []voiceprint.SessionSpeaker
+
+	sess, err := s.SessionMgr.GetSession(sessionID)
+	if err != nil {
+		return speakers
+	}
+
+	// Собираем информацию о спикерах из диалога
+	speakerMap := make(map[string]*voiceprint.SessionSpeaker)
+
+	for _, chunk := range sess.Chunks {
+		for _, seg := range chunk.Dialogue {
+			speaker := seg.Speaker
+			if speaker == "" {
+				continue
+			}
+
+			if _, ok := speakerMap[speaker]; !ok {
+				localID := -1 // По умолчанию для "Вы"
+				isMic := false
+
+				if speaker == "Вы" {
+					isMic = true
+				} else if strings.HasPrefix(speaker, "Собеседник ") {
+					// "Собеседник 1" -> localID = 0
+					var num int
+					fmt.Sscanf(speaker, "Собеседник %d", &num)
+					localID = num - 1
+				}
+
+				speakerMap[speaker] = &voiceprint.SessionSpeaker{
+					LocalID:      localID,
+					DisplayName:  speaker,
+					IsMic:        isMic,
+					IsRecognized: false,
+				}
+			}
+
+			sp := speakerMap[speaker]
+			sp.SegmentCount++
+			sp.TotalDuration += float32(seg.End-seg.Start) / 1000.0 // мс -> сек
+		}
+	}
+
+	for _, sp := range speakerMap {
+		speakers = append(speakers, *sp)
+	}
+
+	return speakers
+}
+
+// renameSpeakerInSession переименовывает спикера во всех сегментах сессии
+func (s *Server) renameSpeakerInSession(sessionID string, localSpeakerID int, newName string) error {
+	// Определяем старое имя по localSpeakerID
+	oldName := ""
+	if localSpeakerID < 0 {
+		oldName = "Вы"
+	} else {
+		oldName = fmt.Sprintf("Собеседник %d", localSpeakerID+1)
+	}
+
+	// Используем метод SessionManager для переименования
+	return s.SessionMgr.UpdateSpeakerName(sessionID, oldName, newName)
 }
 
 // updatePipelineTranscriber обновляет transcriber в Pipeline после смены модели

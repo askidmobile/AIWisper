@@ -1191,6 +1191,59 @@ func (m *Manager) UpdateFullTranscriptionMono(sessionID string, text string) err
 	return nil
 }
 
+// UpdateSpeakerName переименовывает спикера во всех сегментах сессии
+func (m *Manager) UpdateSpeakerName(sessionID string, oldName, newName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	// Обновляем имя спикера во всех чанках
+	for _, chunk := range session.Chunks {
+		modified := false
+
+		// Dialogue
+		for i := range chunk.Dialogue {
+			if chunk.Dialogue[i].Speaker == oldName {
+				chunk.Dialogue[i].Speaker = newName
+				modified = true
+			}
+		}
+
+		// SysSegments
+		for i := range chunk.SysSegments {
+			if chunk.SysSegments[i].Speaker == oldName {
+				chunk.SysSegments[i].Speaker = newName
+				modified = true
+			}
+		}
+
+		// MicSegments
+		for i := range chunk.MicSegments {
+			if chunk.MicSegments[i].Speaker == oldName {
+				chunk.MicSegments[i].Speaker = newName
+				modified = true
+			}
+		}
+
+		// Сохраняем чанк если был изменён
+		if modified {
+			chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
+			data, _ := json.MarshalIndent(chunk, "", "  ")
+			os.WriteFile(chunkMetaPath, data, 0644)
+		}
+	}
+
+	log.Printf("UpdateSpeakerName: session %s, '%s' -> '%s'", sessionID, oldName, newName)
+	return nil
+}
+
 // UpdateImprovedDialogue обновляет диалог сессии улучшенной версией от LLM
 func (m *Manager) UpdateImprovedDialogue(sessionID string, improvedDialogue []TranscriptSegment) error {
 	m.mu.Lock()

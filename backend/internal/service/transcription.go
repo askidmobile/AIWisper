@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // TranscriptionService handles the core transcription logic
@@ -19,6 +20,9 @@ type TranscriptionService struct {
 	SessionMgr *session.Manager
 	EngineMgr  *ai.EngineManager
 	Pipeline   *ai.AudioPipeline // Опционально: пайплайн с диаризацией
+
+	// VAD режим транскрипции
+	VADMode session.VADMode // auto, compression, per-region, off
 
 	// LLM для автоматического улучшения транскрипции
 	LLMService         *LLMService
@@ -34,8 +38,34 @@ func NewTranscriptionService(sessionMgr *session.Manager, engineMgr *ai.EngineMa
 	return &TranscriptionService{
 		SessionMgr:  sessionMgr,
 		EngineMgr:   engineMgr,
+		VADMode:     session.VADModeAuto, // По умолчанию автовыбор
 		OllamaURL:   "http://localhost:11434",
 		OllamaModel: "llama3.2",
+	}
+}
+
+// SetVADMode устанавливает режим VAD для транскрипции
+func (s *TranscriptionService) SetVADMode(mode session.VADMode) {
+	s.VADMode = mode
+	log.Printf("VAD mode set to: %s", mode)
+}
+
+// shouldUsePerRegion определяет нужно ли использовать per-region транскрипцию
+// на основе настройки VADMode и активного движка
+func (s *TranscriptionService) shouldUsePerRegion() bool {
+	switch s.VADMode {
+	case session.VADModePerRegion:
+		// Явно выбран per-region
+		return true
+	case session.VADModeCompression:
+		// Явно выбран compression
+		return false
+	case session.VADModeAuto, "":
+		// Автовыбор: per-region для GigaAM, compression для Whisper
+		return s.EngineMgr.IsGigaAMActive()
+	default:
+		// VADModeOff или неизвестный режим - используем compression
+		return false
 	}
 }
 
@@ -78,6 +108,13 @@ func (s *TranscriptionService) EnableDiarization(segmentationPath, embeddingPath
 // EnableDiarizationWithProvider включает диаризацию с указанными моделями и provider
 // provider: "auto", "cpu", "coreml", "cuda"
 func (s *TranscriptionService) EnableDiarizationWithProvider(segmentationPath, embeddingPath, provider string) error {
+	return s.EnableDiarizationWithBackend(segmentationPath, embeddingPath, provider, "sherpa")
+}
+
+// EnableDiarizationWithBackend включает диаризацию с указанными моделями, provider и backend
+// provider: "auto", "cpu", "coreml", "cuda" (только для Sherpa)
+// backend: "sherpa" (ONNX), "fluid" (FluidAudio/CoreML - рекомендуется для macOS)
+func (s *TranscriptionService) EnableDiarizationWithBackend(segmentationPath, embeddingPath, provider, backend string) error {
 	if s.EngineMgr == nil {
 		return fmt.Errorf("engine manager is required")
 	}
@@ -95,7 +132,8 @@ func (s *TranscriptionService) EnableDiarizationWithProvider(segmentationPath, e
 		MinDurationOn:         0.3,
 		MinDurationOff:        0.5,
 		NumThreads:            4,
-		Provider:              provider, // "auto" = автоопределение
+		Provider:              provider, // "auto" = автоопределение (для Sherpa)
+		DiarizationBackend:    backend,  // "sherpa" или "fluid"
 	}
 
 	pipeline, err := ai.NewAudioPipeline(engine, config)
@@ -110,8 +148,8 @@ func (s *TranscriptionService) EnableDiarizationWithProvider(segmentationPath, e
 
 	s.Pipeline = pipeline
 	actualProvider := pipeline.GetDiarizationProvider()
-	log.Printf("Diarization enabled: provider=%s, segmentation=%s, embedding=%s",
-		actualProvider, segmentationPath, embeddingPath)
+	log.Printf("Diarization enabled: backend=%s, provider=%s, segmentation=%s, embedding=%s",
+		backend, actualProvider, segmentationPath, embeddingPath)
 	return nil
 }
 
@@ -199,43 +237,12 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk, useDia
 
 	mp3Path := filepath.Join(sess.DataDir, "full.mp3")
 
-	// Create temp files for channel extraction
-	micWav := filepath.Join(os.TempDir(), fmt.Sprintf("mic_%s_%s.wav", chunk.SessionID, chunk.ID))
-	sysWav := filepath.Join(os.TempDir(), fmt.Sprintf("sys_%s_%s.wav", chunk.SessionID, chunk.ID))
+	log.Printf("Extracting stereo segment (pure Go): %s (start=%dms, end=%dms)", mp3Path, chunk.StartMs, chunk.EndMs)
 
-	// Ensure cleanup
-	defer func() {
-		os.Remove(micWav)
-		os.Remove(sysWav)
-	}()
-
-	log.Printf("Extracting stereo segment to WAV files: %s (start=%dms, end=%dms)", mp3Path, chunk.StartMs, chunk.EndMs)
-
-	// Extract Left (Mic)
-	if err := session.ExtractChannelToWAV(mp3Path, micWav, 0, chunk.StartMs, chunk.EndMs); err != nil {
-		log.Printf("Failed to extract mic channel: %v, falling back to mono", err)
-		s.processMonoFromMP3Impl(chunk, useDiarizationFallback)
-		return
-	}
-
-	// Extract Right (Sys)
-	if err := session.ExtractChannelToWAV(mp3Path, sysWav, 1, chunk.StartMs, chunk.EndMs); err != nil {
-		log.Printf("Failed to extract sys channel: %v, falling back to mono", err)
-		s.processMonoFromMP3Impl(chunk, useDiarizationFallback)
-		return
-	}
-
-	// Read files back to memory
-	micSamples, err := readWAVFile(micWav)
+	// Используем чистый Go декодер MP3 (без FFmpeg!)
+	micSamples, sysSamples, err := session.ExtractSegmentStereoGo(mp3Path, chunk.StartMs, chunk.EndMs, 16000)
 	if err != nil {
-		log.Printf("Failed to read mic wav: %v", err)
-		s.processMonoFromMP3Impl(chunk, useDiarizationFallback)
-		return
-	}
-
-	sysSamples, err := readWAVFile(sysWav)
-	if err != nil {
-		log.Printf("Failed to read sys wav: %v", err)
+		log.Printf("Failed to extract stereo segment: %v, falling back to mono", err)
 		s.processMonoFromMP3Impl(chunk, useDiarizationFallback)
 		return
 	}
@@ -262,28 +269,40 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk, useDia
 	var micSegments, sysSegments []ai.TranscriptSegment
 	var micErr, sysErr error
 
-	// 1. VAD preprocessing: сжимаем аудио, удаляя тишину
-	micCompressed := session.CompressSpeech(micSamples, 16000)
-	sysCompressed := session.CompressSpeech(sysSamples, 16000)
+	// 1. VAD preprocessing: определяем регионы речи
+	micRegions := session.DetectSpeechRegions(micSamples, 16000)
+	sysRegions := session.DetectSpeechRegions(sysSamples, 16000)
 
-	log.Printf("VAD compression: mic %.1f%% speech, sys %.1f%% speech",
-		float64(micCompressed.TotalSpeechMs)*100/float64(max(micCompressed.OriginalDurationMs, 1)),
-		float64(sysCompressed.TotalSpeechMs)*100/float64(max(sysCompressed.OriginalDurationMs, 1)))
+	log.Printf("VAD: mic %d regions, sys %d regions", len(micRegions), len(sysRegions))
+
+	// Определяем использовать ли per-region транскрипцию
+	usePerRegion := s.shouldUsePerRegion()
+	log.Printf("VAD mode: %s, usePerRegion: %v", s.VADMode, usePerRegion)
 
 	// 2. Transcribe MIC channel - always "Вы" (single speaker, no diarization)
-	if len(micCompressed.CompressedSamples) > 0 {
-		log.Printf("Transcribing MIC channel (Вы): %d samples (%.1f sec, compressed from %.1f sec)",
-			len(micCompressed.CompressedSamples),
-			float64(len(micCompressed.CompressedSamples))/16000,
-			float64(len(micSamples))/16000)
+	if len(micRegions) > 0 {
+		if usePerRegion {
+			// Per-region: транскрибируем каждый регион отдельно
+			log.Printf("Transcribing MIC channel (Вы) with per-region: %d regions", len(micRegions))
+			micSegments, micErr = s.transcribeRegionsSeparately(micSamples, micRegions, 16000)
+		} else {
+			// Compression: используем VAD compression (склеиваем регионы)
+			micCompressed := session.CompressSpeechFromRegions(micSamples, micRegions, 16000)
+			log.Printf("Transcribing MIC channel (Вы) with compression: %d samples (%.1f sec, compressed from %.1f sec)",
+				len(micCompressed.CompressedSamples),
+				float64(len(micCompressed.CompressedSamples))/16000,
+				float64(len(micSamples))/16000)
 
-		micSegments, micErr = s.EngineMgr.TranscribeWithSegments(micCompressed.CompressedSamples)
+			micSegments, micErr = s.EngineMgr.TranscribeWithSegments(micCompressed.CompressedSamples)
+			if micErr == nil {
+				// Восстанавливаем оригинальные timestamps
+				micSegments = restoreAISegmentTimestamps(micSegments, micCompressed.Regions)
+			}
+		}
+
 		if micErr != nil {
 			log.Printf("MIC transcription error: %v", micErr)
 		} else {
-			// Восстанавливаем оригинальные timestamps
-			micSegments = restoreAISegmentTimestamps(micSegments, micCompressed.Regions)
-
 			var texts []string
 			for _, seg := range micSegments {
 				texts = append(texts, seg.Text)
@@ -294,37 +313,63 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk, useDia
 	}
 
 	// 3. Transcribe SYS channel WITH DIARIZATION (multiple speakers possible)
-	if len(sysCompressed.CompressedSamples) > 0 {
-		log.Printf("Transcribing SYS channel with diarization: %d samples (%.1f sec, compressed from %.1f sec)",
-			len(sysCompressed.CompressedSamples),
-			float64(len(sysCompressed.CompressedSamples))/16000,
-			float64(len(sysSamples))/16000)
+	if len(sysRegions) > 0 {
+		if usePerRegion {
+			// Per-region: транскрибируем каждый регион отдельно
+			log.Printf("Transcribing SYS channel with per-region: %d regions", len(sysRegions))
+			sysSegments, sysErr = s.transcribeRegionsSeparately(sysSamples, sysRegions, 16000)
 
-		// Try to use Pipeline with diarization if available
-		if s.Pipeline != nil && s.Pipeline.IsDiarizationEnabled() {
-			log.Printf("Using Pipeline with diarization for SYS channel")
-			result, err := s.Pipeline.Process(sysCompressed.CompressedSamples)
-			if err != nil {
-				log.Printf("Pipeline diarization error: %v, falling back to simple transcription", err)
-				sysSegments, sysErr = s.EngineMgr.TranscribeWithSegments(sysCompressed.CompressedSamples)
-			} else {
-				sysSegments = result.Segments
-				sysText = result.FullText
-				log.Printf("SYS diarization complete: %d chars, %d segments, %d speakers",
-					len(sysText), len(sysSegments), result.NumSpeakers)
+			// Применяем диаризацию если включена (на сжатом аудио для экономии ресурсов)
+			if sysErr == nil && s.Pipeline != nil && s.Pipeline.IsDiarizationEnabled() {
+				log.Printf("Applying diarization to SYS channel (per-region mode)")
+				sysSegments = s.applyDiarizationToSegments(sysSamples, sysRegions, sysSegments)
 			}
 		} else {
-			// Fallback: simple transcription without diarization
-			log.Printf("Diarization not enabled, using simple transcription for SYS")
+			// Compression: используем VAD compression
+			sysCompressed := session.CompressSpeechFromRegions(sysSamples, sysRegions, 16000)
+			log.Printf("Transcribing SYS channel with compression: %d samples (%.1f sec, compressed from %.1f sec)",
+				len(sysCompressed.CompressedSamples),
+				float64(len(sysCompressed.CompressedSamples))/16000,
+				float64(len(sysSamples))/16000)
+
+			// Проверяем нужна ли диаризация
+			diarizationEnabled := s.Pipeline != nil && s.Pipeline.IsDiarizationEnabled()
+
+			// 1. Транскрипция на сжатом аудио (быстрее)
 			sysSegments, sysErr = s.EngineMgr.TranscribeWithSegments(sysCompressed.CompressedSamples)
+			if sysErr == nil {
+				// Восстанавливаем оригинальные timestamps СРАЗУ
+				sysSegments = restoreAISegmentTimestamps(sysSegments, sysCompressed.Regions)
+
+				var texts []string
+				for _, seg := range sysSegments {
+					texts = append(texts, seg.Text)
+				}
+				sysText = strings.Join(texts, " ")
+				log.Printf("SYS transcription complete: %d chars, %d segments", len(sysText), len(sysSegments))
+			}
+
+			// 2. Диаризация на ОРИГИНАЛЬНОМ аудио (не сжатом!) - чтобы timestamps совпадали
+			if sysErr == nil && diarizationEnabled {
+				log.Printf("Running diarization on ORIGINAL SYS audio (%.1f sec) for accurate speaker detection",
+					float64(len(sysSamples))/16000)
+
+				diarResult, diarErr := s.Pipeline.DiarizeOnly(sysSamples)
+				if diarErr != nil {
+					log.Printf("Diarization error: %v, keeping transcription without speakers", diarErr)
+				} else if len(diarResult.SpeakerSegments) > 0 {
+					log.Printf("Diarization found %d speaker segments, %d unique speakers",
+						len(diarResult.SpeakerSegments), diarResult.NumSpeakers)
+
+					// 3. Применяем спикеров к сегментам транскрипции
+					sysSegments = applySpeakersToTranscriptSegments(sysSegments, diarResult.SpeakerSegments)
+				}
+			}
 		}
 
 		if sysErr != nil {
 			log.Printf("SYS transcription error: %v", sysErr)
 		} else {
-			// Восстанавливаем оригинальные timestamps
-			sysSegments = restoreAISegmentTimestamps(sysSegments, sysCompressed.Regions)
-
 			if sysText == "" {
 				var texts []string
 				for _, seg := range sysSegments {
@@ -358,6 +403,197 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk, useDia
 	// 4. Автоулучшение через LLM если включено
 	if s.AutoImproveWithLLM && s.LLMService != nil && finalErr == nil {
 		s.autoImproveChunk(chunk)
+	}
+}
+
+// transcribeRegionsSeparately транскрибирует каждый VAD регион отдельно
+// Это важно для GigaAM, который плохо работает со склеенными регионами (теряет контекст на границах)
+// Каждый регион транскрибируется независимо, затем результаты объединяются с правильными timestamps
+func (s *TranscriptionService) transcribeRegionsSeparately(samples []float32, regions []session.SpeechRegion, sampleRate int) ([]ai.TranscriptSegment, error) {
+	if len(regions) == 0 {
+		return nil, nil
+	}
+
+	log.Printf("transcribeRegionsSeparately: processing %d regions separately for GigaAM", len(regions))
+
+	var allSegments []ai.TranscriptSegment
+
+	for i, region := range regions {
+		// Извлекаем семплы для этого региона
+		startSample := int(region.StartMs * int64(sampleRate) / 1000)
+		endSample := int(region.EndMs * int64(sampleRate) / 1000)
+
+		if startSample < 0 {
+			startSample = 0
+		}
+		if endSample > len(samples) {
+			endSample = len(samples)
+		}
+		if startSample >= endSample {
+			continue
+		}
+
+		regionSamples := samples[startSample:endSample]
+		regionDurationMs := region.EndMs - region.StartMs
+
+		log.Printf("  region[%d]: %dms-%dms (duration: %dms, samples: %d)",
+			i, region.StartMs, region.EndMs, regionDurationMs, len(regionSamples))
+
+		// Транскрибируем регион
+		segments, err := s.EngineMgr.TranscribeWithSegments(regionSamples)
+		if err != nil {
+			log.Printf("  region[%d] transcription error: %v", i, err)
+			continue
+		}
+
+		// Корректируем timestamps: добавляем offset начала региона
+		for j := range segments {
+			segments[j].Start += region.StartMs
+			segments[j].End += region.StartMs
+
+			// Корректируем timestamps для слов
+			for k := range segments[j].Words {
+				segments[j].Words[k].Start += region.StartMs
+				segments[j].Words[k].End += region.StartMs
+			}
+		}
+
+		log.Printf("  region[%d]: got %d segments, text: %q", i, len(segments), segmentsToText(segments))
+
+		allSegments = append(allSegments, segments...)
+	}
+
+	log.Printf("transcribeRegionsSeparately: total %d segments from %d regions", len(allSegments), len(regions))
+	return allSegments, nil
+}
+
+// segmentsToText объединяет текст из сегментов для логирования
+func segmentsToText(segments []ai.TranscriptSegment) string {
+	var texts []string
+	for _, seg := range segments {
+		texts = append(texts, seg.Text)
+	}
+	return strings.Join(texts, " ")
+}
+
+// applyDiarizationToSegments применяет диаризацию к уже готовым сегментам транскрипции
+// Используется для per-region режима, где транскрипция уже выполнена
+func (s *TranscriptionService) applyDiarizationToSegments(samples []float32, regions []session.SpeechRegion, segments []ai.TranscriptSegment) []ai.TranscriptSegment {
+	if s.Pipeline == nil || !s.Pipeline.IsDiarizationEnabled() || len(segments) == 0 {
+		return segments
+	}
+
+	// Создаём сжатое аудио для диаризации (только регионы речи)
+	compressed := session.CompressSpeechFromRegions(samples, regions, 16000)
+	if len(compressed.CompressedSamples) == 0 {
+		return segments
+	}
+
+	log.Printf("applyDiarizationToSegments: running diarization on %d samples", len(compressed.CompressedSamples))
+
+	// Выполняем только диаризацию (без повторной транскрипции)
+	result, err := s.pipelineDiarizeOnly(compressed.CompressedSamples, 20*time.Second)
+	if err != nil {
+		log.Printf("applyDiarizationToSegments: diarization failed: %v", err)
+		return segments
+	}
+
+	if len(result.SpeakerSegments) == 0 {
+		log.Printf("applyDiarizationToSegments: no speaker segments found")
+		return segments
+	}
+
+	log.Printf("applyDiarizationToSegments: found %d speaker segments, %d speakers",
+		len(result.SpeakerSegments), result.NumSpeakers)
+
+	// Применяем спикеров к сегментам транскрипции
+	// Нужно учитывать что timestamps сегментов - в оригинальном времени,
+	// а speakerSegments - в сжатом времени. Конвертируем.
+	updatedSegments := make([]ai.TranscriptSegment, len(segments))
+	for i, seg := range segments {
+		updatedSegments[i] = seg
+
+		// Конвертируем timestamp сегмента в сжатое время
+		compressedStart := session.MapRealTimeToCompressedTime(seg.Start, regions)
+		compressedEnd := session.MapRealTimeToCompressedTime(seg.End, regions)
+
+		// Находим спикера с максимальным перекрытием
+		speaker := findBestSpeakerForSegment(compressedStart, compressedEnd, result.SpeakerSegments)
+		if speaker >= 0 {
+			updatedSegments[i].Speaker = fmt.Sprintf("Speaker %d", speaker)
+		}
+	}
+
+	return updatedSegments
+}
+
+// pipelineDiarizeOnly выполняет только диаризацию без транскрипции
+func (s *TranscriptionService) pipelineDiarizeOnly(samples []float32, timeout time.Duration) (*ai.PipelineResult, error) {
+	type res struct {
+		result *ai.PipelineResult
+		err    error
+	}
+
+	ch := make(chan res, 1)
+	go func() {
+		r, err := s.Pipeline.DiarizeOnly(samples)
+		ch <- res{result: r, err: err}
+	}()
+
+	select {
+	case out := <-ch:
+		return out.result, out.err
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("diarization timeout after %v", timeout)
+	}
+}
+
+// findBestSpeakerForSegment находит спикера с максимальным перекрытием для сегмента
+func findBestSpeakerForSegment(startMs, endMs int64, speakerSegments []ai.SpeakerSegment) int {
+	maxOverlap := float32(0)
+	bestSpeaker := -1
+
+	startSec := float32(startMs) / 1000.0
+	endSec := float32(endMs) / 1000.0
+
+	for _, seg := range speakerSegments {
+		overlapStart := startSec
+		if seg.Start > startSec {
+			overlapStart = seg.Start
+		}
+		overlapEnd := endSec
+		if seg.End < endSec {
+			overlapEnd = seg.End
+		}
+		overlap := overlapEnd - overlapStart
+
+		if overlap > maxOverlap {
+			maxOverlap = overlap
+			bestSpeaker = seg.Speaker
+		}
+	}
+
+	return bestSpeaker
+}
+
+// pipelineProcessWithTimeout защищает вызов Pipeline.Process от зависаний нативных библиотек
+func (s *TranscriptionService) pipelineProcessWithTimeout(samples []float32, timeout time.Duration) (*ai.PipelineResult, error) {
+	type res struct {
+		result *ai.PipelineResult
+		err    error
+	}
+
+	ch := make(chan res, 1)
+	go func() {
+		r, err := s.Pipeline.Process(samples)
+		ch <- res{result: r, err: err}
+	}()
+
+	select {
+	case out := <-ch:
+		return out.result, out.err
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("pipeline process timeout after %v", timeout)
 	}
 }
 
@@ -419,9 +655,9 @@ func (s *TranscriptionService) processMonoFromMP3Impl(chunk *session.Chunk, useD
 
 	mp3Path := filepath.Join(sess.DataDir, "full.mp3")
 
-	// Extract mono segment from MP3
-	log.Printf("Extracting mono segment from MP3: %s (start=%dms, end=%dms)", mp3Path, chunk.StartMs, chunk.EndMs)
-	samples, err := session.ExtractSegment(mp3Path, chunk.StartMs, chunk.EndMs, session.WhisperSampleRate)
+	// Extract mono segment from MP3 (pure Go, no FFmpeg!)
+	log.Printf("Extracting mono segment (pure Go): %s (start=%dms, end=%dms)", mp3Path, chunk.StartMs, chunk.EndMs)
+	samples, err := session.ExtractSegmentGo(mp3Path, chunk.StartMs, chunk.EndMs, session.WhisperSampleRate)
 	if err != nil {
 		log.Printf("Failed to extract segment: %v", err)
 		s.SessionMgr.UpdateChunkTranscription(chunk.SessionID, chunk.ID, "", err)
@@ -533,6 +769,85 @@ func convertWords(aiWords []ai.TranscriptWord, speaker string, chunkStartMs int6
 			Speaker: speaker,
 		}
 	}
+	return result
+}
+
+// applySpeakersToTranscriptSegments применяет спикеров из диаризации к сегментам транскрипции
+// Timestamps в обоих случаях должны быть в одной системе координат (оригинальное аудио)
+func applySpeakersToTranscriptSegments(segments []ai.TranscriptSegment, speakerSegs []ai.SpeakerSegment) []ai.TranscriptSegment {
+	if len(speakerSegs) == 0 {
+		log.Printf("applySpeakersToTranscriptSegments: no speaker segments, returning original")
+		return segments
+	}
+
+	// Логируем для отладки
+	speakerSet := make(map[int]bool)
+	for _, ss := range speakerSegs {
+		speakerSet[ss.Speaker] = true
+	}
+	log.Printf("applySpeakersToTranscriptSegments: %d transcript segments, %d speaker segments, %d unique speakers",
+		len(segments), len(speakerSegs), len(speakerSet))
+
+	// Логируем первые несколько speaker segments для отладки
+	for i, ss := range speakerSegs {
+		if i < 5 {
+			log.Printf("  SpeakerSeg[%d]: speaker=%d, start=%.2f, end=%.2f", i, ss.Speaker, ss.Start, ss.End)
+		}
+	}
+
+	result := make([]ai.TranscriptSegment, len(segments))
+	copy(result, segments)
+
+	for i := range result {
+		// Время сегмента в секундах (timestamps уже в ms, конвертируем)
+		segStartSec := float32(result[i].Start) / 1000.0
+		segEndSec := float32(result[i].End) / 1000.0
+		segMidSec := (segStartSec + segEndSec) / 2.0
+
+		// Ищем спикера с максимальным перекрытием
+		bestSpeaker := -1
+		bestOverlap := float32(0)
+
+		for _, ss := range speakerSegs {
+			// Вычисляем перекрытие
+			overlapStart := segStartSec
+			if ss.Start > overlapStart {
+				overlapStart = ss.Start
+			}
+			overlapEnd := segEndSec
+			if ss.End < overlapEnd {
+				overlapEnd = ss.End
+			}
+			overlap := overlapEnd - overlapStart
+			if overlap > 0 && overlap > bestOverlap {
+				bestOverlap = overlap
+				bestSpeaker = ss.Speaker
+			}
+		}
+
+		// Если нет перекрытия, ищем ближайшего спикера по середине сегмента
+		if bestSpeaker == -1 {
+			minDist := float32(1e9)
+			for _, ss := range speakerSegs {
+				ssMid := (ss.Start + ss.End) / 2.0
+				dist := segMidSec - ssMid
+				if dist < 0 {
+					dist = -dist
+				}
+				if dist < minDist {
+					minDist = dist
+					bestSpeaker = ss.Speaker
+				}
+			}
+		}
+
+		if bestSpeaker >= 0 {
+			result[i].Speaker = fmt.Sprintf("Собеседник %d", bestSpeaker)
+		} else {
+			result[i].Speaker = "Собеседник"
+		}
+	}
+
 	return result
 }
 

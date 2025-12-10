@@ -1,4 +1,4 @@
-export type TabType = 'dialogue' | 'chunks' | 'summary';
+export type TabType = 'dialogue' | 'chunks' | 'speakers' | 'summary';
 
 interface SessionTabsProps {
     activeTab: TabType;
@@ -6,6 +6,7 @@ interface SessionTabsProps {
     hasSummary: boolean;
     isGeneratingSummary: boolean;
     isRecording?: boolean;
+    speakersCount?: number;
 }
 
 export default function SessionTabs({
@@ -14,10 +15,12 @@ export default function SessionTabs({
     hasSummary,
     isGeneratingSummary,
     isRecording = false,
+    speakersCount = 0,
 }: SessionTabsProps) {
     const tabs: { id: TabType; label: string; hideWhenRecording?: boolean }[] = [
         { id: 'dialogue', label: 'Транскрипция' },
         { id: 'chunks', label: 'Отрезки' },
+        { id: 'speakers', label: 'Собеседники', hideWhenRecording: true },
         { id: 'summary', label: 'Сводка', hideWhenRecording: true },
     ];
 
@@ -33,6 +36,7 @@ export default function SessionTabs({
             {visibleTabs.map((tab) => {
                 const isActive = activeTab === tab.id;
                 const showBadge = tab.id === 'summary' && (hasSummary || isGeneratingSummary);
+                const showSpeakersBadge = tab.id === 'speakers' && speakersCount > 0;
 
                 return (
                     <button
@@ -59,6 +63,20 @@ export default function SessionTabs({
                                     animation: isGeneratingSummary ? 'pulse 1s infinite' : 'none',
                                 }}
                             />
+                        )}
+                        {showSpeakersBadge && (
+                            <span
+                                style={{
+                                    fontSize: '0.7rem',
+                                    padding: '1px 5px',
+                                    borderRadius: '999px',
+                                    backgroundColor: 'var(--primary)',
+                                    color: 'white',
+                                    fontWeight: 600,
+                                }}
+                            >
+                                {speakersCount}
+                            </span>
                         )}
                     </button>
                 );

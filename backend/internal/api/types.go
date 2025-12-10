@@ -4,6 +4,7 @@ import (
 	"aiwisper/audio"
 	"aiwisper/models"
 	"aiwisper/session"
+	"aiwisper/voiceprint"
 	"time"
 )
 
@@ -20,7 +21,7 @@ type Message struct {
 	CaptureSystem     bool    `json:"captureSystem,omitempty"`
 	UseNative         bool    `json:"useNativeCapture,omitempty"`
 	UseVoiceIsolation bool    `json:"useVoiceIsolation,omitempty"`
-	DisableVAD        bool    `json:"disableVAD,omitempty"`
+	VADMode           string  `json:"vadMode,omitempty"` // auto, compression, per-region, off
 	EchoCancel        float64 `json:"echoCancel,omitempty"`
 
 	// Responses
@@ -54,11 +55,22 @@ type Message struct {
 	// Diarization
 	DiarizationEnabled    bool   `json:"diarizationEnabled,omitempty"`
 	DiarizationProvider   string `json:"diarizationProvider,omitempty"` // cpu, coreml, cuda, auto
+	DiarizationBackend    string `json:"diarizationBackend,omitempty"`  // sherpa (default), fluid (FluidAudio/CoreML)
 	SegmentationModelPath string `json:"segmentationModelPath,omitempty"`
 	EmbeddingModelPath    string `json:"embeddingModelPath,omitempty"`
 
 	// Auto-improve with LLM
 	AutoImproveEnabled bool `json:"autoImproveEnabled,omitempty"`
+
+	// VoicePrint (спикеры)
+	VoicePrints      []voiceprint.VoicePrint     `json:"voiceprints,omitempty"`
+	VoicePrint       *voiceprint.VoicePrint      `json:"voiceprint,omitempty"`
+	SessionSpeakers  []voiceprint.SessionSpeaker `json:"sessionSpeakers,omitempty"`
+	LocalSpeakerID   int                         `json:"localSpeakerId,omitempty"`
+	SpeakerName      string                      `json:"speakerName,omitempty"`
+	SaveAsVoiceprint bool                        `json:"saveAsVoiceprint,omitempty"`
+	VoicePrintID     string                      `json:"voiceprintId,omitempty"`
+	Similarity       float32                     `json:"similarity,omitempty"`
 }
 
 type OllamaModel struct {

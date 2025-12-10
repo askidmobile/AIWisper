@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] - 2025-12-10
+
+### Fixed
+- **VAD Speech Padding**: Fixed cutting off beginning of words starting with quiet consonants
+  - **Problem**: Words like "Снова" were transcribed as "нова" - initial "С" was cut off
+  - **Root Cause**: VAD detected speech start at the loud part of the word, missing quiet consonants (С, К, Т, П...)
+  - **Solution**: Added speech padding (150ms before, 50ms after detected speech regions)
+  - New `mergeOverlappingRegions()` function to merge adjacent padded regions
+
+### Changed
+- **E2E Model Recommended**: GigaAM v3 E2E (BPE) model produces much better results than CTC
+  - CTC model struggles with quiet consonants at word boundaries
+  - E2E model correctly recognizes "Как говорится, снова здравствуйте"
+  - E2E also adds punctuation and capitalization automatically
+
+### Technical
+- `backend/session/vad.go`:
+  - Added `speechPaddingStartMs = 150` and `speechPaddingEndMs = 50` constants
+  - Applied padding to all detected speech regions in `DetectSpeechRegions()`
+  - New `mergeOverlappingRegions()` function
+
 ## [1.18.0] - 2025-12-10
 
 ### Added

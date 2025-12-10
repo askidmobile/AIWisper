@@ -13,13 +13,22 @@ import (
 	ort "github.com/yalue/onnxruntime_go"
 )
 
-// Константы GigaAM
+// Константы GigaAM (общие для всех версий)
 const (
 	gigaamSampleRate = 16000 // GigaAM ожидает 16kHz
 	gigaamNMels      = 64    // Количество mel-фильтров
 	gigaamHopLength  = 160   // sample_rate // 100 (10ms)
-	gigaamWinLength  = 400   // sample_rate // 40 (25ms)
-	gigaamNFFT       = 400   // Размер FFT
+)
+
+// Константы препроцессора для разных версий моделей
+// v2: win_length=400, n_fft=400
+// v3: win_length=320, n_fft=320
+const (
+	gigaamV2WinLength = 400 // v2: sample_rate / 40 (25ms)
+	gigaamV2NFFT      = 400 // v2: размер FFT
+
+	gigaamV3WinLength = 320 // v3: sample_rate / 50 (20ms)
+	gigaamV3NFFT      = 320 // v3: размер FFT
 )
 
 // Константы для эвристик CTC декодера
@@ -47,6 +56,14 @@ const (
 	coremlFlagUseCPUAndGPU               uint32 = 0x020 // CPU + GPU (без Neural Engine)
 )
 
+// GigaAMModelType тип модели GigaAM
+type GigaAMModelType string
+
+const (
+	GigaAMModelTypeCTC GigaAMModelType = "ctc" // Character-level CTC (34 токена)
+	GigaAMModelTypeE2E GigaAMModelType = "e2e" // End-to-end BPE (257 токенов, с пунктуацией)
+)
+
 // GigaAMEngine движок распознавания речи на основе GigaAM (ONNX)
 // Оптимизирован для русского языка
 type GigaAMEngine struct {
@@ -55,7 +72,8 @@ type GigaAMEngine struct {
 	vocabPath    string
 	vocab        []string
 	blankID      int
-	spaceID      int // ID токена ▁ (пробел/начало слова)
+	spaceID      int             // ID токена ▁ (пробел/начало слова)
+	modelType    GigaAMModelType // Тип модели: CTC или E2E
 	melProcessor *MelProcessor
 	mu           sync.Mutex
 	initialized  bool
@@ -108,13 +126,45 @@ func NewGigaAMEngineWithOptions(modelPath, vocabPath string, useCoreML bool) (*G
 	engine.blankID = blankID
 	engine.spaceID = spaceID
 
-	// Инициализируем MelProcessor
+	// Определяем версию и тип модели по имени файла
+	// v3 использует win_length=320, n_fft=320
+	// v2 и v1 используют win_length=400, n_fft=400
+	// E2E модели имеют "e2e" в имени и используют BPE токенизацию
+	modelPathLower := strings.ToLower(modelPath)
+	isV3 := strings.Contains(modelPathLower, "v3")
+	isE2E := strings.Contains(modelPathLower, "e2e")
+
+	// Определяем тип модели
+	if isE2E {
+		engine.modelType = GigaAMModelTypeE2E
+		log.Printf("GigaAM: detected E2E model (BPE tokenization, with punctuation)")
+	} else {
+		engine.modelType = GigaAMModelTypeCTC
+		log.Printf("GigaAM: detected CTC model (character-level)")
+	}
+
+	var winLength, nFFT int
+	var center bool
+	if isV3 {
+		winLength = gigaamV3WinLength
+		nFFT = gigaamV3NFFT
+		center = false // v3: center=false в yaml конфиге
+		log.Printf("GigaAM: detected v3 model, using win_length=%d, n_fft=%d, center=%v", winLength, nFFT, center)
+	} else {
+		winLength = gigaamV2WinLength
+		nFFT = gigaamV2NFFT
+		center = true // v2/v1: librosa default center=true
+		log.Printf("GigaAM: detected v2/v1 model, using win_length=%d, n_fft=%d, center=%v", winLength, nFFT, center)
+	}
+
+	// Инициализируем MelProcessor с параметрами для конкретной версии
 	melConfig := MelConfig{
 		SampleRate: gigaamSampleRate,
 		NMels:      gigaamNMels,
 		HopLength:  gigaamHopLength,
-		WinLength:  gigaamWinLength,
-		NFFT:       gigaamNFFT,
+		WinLength:  winLength,
+		NFFT:       nFFT,
+		Center:     center,
 	}
 	engine.melProcessor = NewMelProcessor(melConfig)
 
@@ -347,8 +397,17 @@ func (e *GigaAMEngine) TranscribeWithSegments(samples []float32) ([]TranscriptSe
 		logits[t] = outputData[t*vocabSize : (t+1)*vocabSize]
 	}
 
-	// CTC декодирование с timestamps
-	segments := e.decodeCTCWithTimestamps(logits, float64(len(samples))/gigaamSampleRate)
+	// Декодирование зависит от типа модели
+	var segments []TranscriptSegment
+	audioDuration := float64(len(samples)) / gigaamSampleRate
+
+	if e.modelType == GigaAMModelTypeE2E {
+		// E2E модель: BPE токены, конкатенация + замена ▁ на пробел
+		segments = e.decodeE2EWithTimestamps(logits, audioDuration)
+	} else {
+		// CTC модель: посимвольное декодирование
+		segments = e.decodeCTCWithTimestamps(logits, audioDuration)
+	}
 
 	return segments, nil
 }
@@ -463,39 +522,30 @@ func (e *GigaAMEngine) decodeCTCWithTimestamps(logits [][]float32, audioDuration
 		currentConfidence := softmaxMax(frame)
 
 		// Эвристика 1: Детекция паузы по blank sequence
+		// ОТКЛЮЧЕНА: ломает слова, т.к. модель часто выдаёт blank между буквами
+		// Используем только токен пробела для разделения слов
 		if maxIdx == e.blankID {
 			blankCount++
-			// Если накопилось достаточно blank токенов - это пауза между словами
-			if blankCount >= minBlankSequenceForPause && currentWord.Len() > 0 && wordStart >= 0 {
-				word := TranscriptWord{
-					Start: wordStart,
-					End:   frameTime,
-					Text:  currentWord.String(),
-					P:     lastConfidence,
-				}
-				currentWords = append(currentWords, word)
-				currentWord.Reset()
-				wordStart = -1
-			}
 		} else {
 			blankCount = 0
 		}
+		_ = blankCount // suppress unused warning
 
 		// Эвристика 2: Детекция границы по падению confidence
-		// Резкое падение confidence может указывать на начало нового слова
-		confidenceDrop := prevConfidence - currentConfidence
-		if confidenceDrop > confidenceDropThreshold && currentWord.Len() >= minWordLengthForSplit && wordStart >= 0 {
-			// Сохраняем текущее слово перед резким падением confidence
-			word := TranscriptWord{
-				Start: wordStart,
-				End:   frameTime,
-				Text:  currentWord.String(),
-				P:     lastConfidence,
-			}
-			currentWords = append(currentWords, word)
-			currentWord.Reset()
-			wordStart = frameTime
-		}
+		// ОТКЛЮЧЕНА: ломает слова, т.к. confidence может падать внутри слова
+		// confidenceDrop := prevConfidence - currentConfidence
+		// if confidenceDrop > confidenceDropThreshold && currentWord.Len() >= minWordLengthForSplit && wordStart >= 0 {
+		// 	word := TranscriptWord{
+		// 		Start: wordStart,
+		// 		End:   frameTime,
+		// 		Text:  currentWord.String(),
+		// 		P:     lastConfidence,
+		// 	}
+		// 	currentWords = append(currentWords, word)
+		// 	currentWord.Reset()
+		// 	wordStart = frameTime
+		// }
+		_ = prevConfidence // suppress unused warning
 
 		// CTC правило: пропускаем blank и повторяющиеся токены
 		if maxIdx != e.blankID && maxIdx != prevToken {
@@ -563,6 +613,85 @@ func (e *GigaAMEngine) decodeCTCWithTimestamps(logits [][]float32, audioDuration
 	return segments
 }
 
+// decodeE2EWithTimestamps выполняет CTC декодирование для E2E модели
+// E2E модель использует BPE токенизацию:
+// - токены могут быть subwords: "пр", "овер", "ка"
+// - ▁ означает начало нового слова (пробел перед токеном)
+// - пунктуация: ".", ",", "!" и т.д.
+func (e *GigaAMEngine) decodeE2EWithTimestamps(logits [][]float32, audioDuration float64) []TranscriptSegment {
+	if len(logits) == 0 {
+		return nil
+	}
+
+	frameMs := audioDuration * 1000 / float64(len(logits))
+
+	var segments []TranscriptSegment
+	var allTokens strings.Builder
+	var segmentStart int64 = -1
+	var segmentEnd int64 = 0
+	prevToken := e.blankID
+
+	for t, frame := range logits {
+		// Находим токен с максимальной вероятностью
+		maxIdx := 0
+		maxVal := frame[0]
+		for i, v := range frame {
+			if v > maxVal {
+				maxVal = v
+				maxIdx = i
+			}
+		}
+
+		frameTime := int64(float64(t) * frameMs)
+
+		// CTC правило: пропускаем blank и повторяющиеся токены
+		if maxIdx != e.blankID && maxIdx != prevToken {
+			if maxIdx < len(e.vocab) {
+				token := e.vocab[maxIdx]
+
+				// Пропускаем <unk>
+				if token != "<unk>" {
+					if segmentStart < 0 {
+						segmentStart = frameTime
+					}
+					segmentEnd = frameTime
+
+					// Добавляем токен как есть (включая ▁)
+					allTokens.WriteString(token)
+				}
+			}
+		}
+		prevToken = maxIdx
+	}
+
+	// Обрабатываем собранный текст
+	text := allTokens.String()
+	if text != "" {
+		// Заменяем ▁ на пробел
+		text = strings.ReplaceAll(text, "▁", " ")
+		// Убираем начальный пробел если есть
+		text = strings.TrimLeft(text, " ")
+		// Убираем лишние пробелы
+		text = strings.Join(strings.Fields(text), " ")
+
+		if segmentStart < 0 {
+			segmentStart = 0
+		}
+		if segmentEnd == 0 {
+			segmentEnd = int64(audioDuration * 1000)
+		}
+
+		segment := TranscriptSegment{
+			Start: segmentStart,
+			End:   segmentEnd,
+			Text:  text,
+		}
+		segments = append(segments, segment)
+	}
+
+	return segments
+}
+
 // softmaxMax возвращает максимальную вероятность после softmax
 func softmaxMax(logits []float32) float32 {
 	maxVal := logits[0]
@@ -601,9 +730,31 @@ func loadGigaAMVocab(path string) ([]string, int, int, error) {
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		parts := strings.Fields(line)
-		if len(parts) >= 1 {
-			token := parts[0]
+
+		// Формат: "token index" или "token\tindex"
+		// Для пробела: " 0" - первый символ пробел, потом пробел-разделитель, потом 0
+		// Используем strings.LastIndex чтобы найти последний пробел (разделитель)
+		lastSpace := strings.LastIndex(line, " ")
+		if lastSpace < 0 {
+			lastSpace = strings.LastIndex(line, "\t")
+		}
+
+		var token string
+		if lastSpace > 0 {
+			token = line[:lastSpace]
+		} else if lastSpace == 0 {
+			// Строка начинается с пробела, значит токен = пробел
+			token = " "
+		} else {
+			// Нет разделителя, весь line - это токен
+			token = line
+		}
+
+		if token != "" || lastSpace == 0 {
+			// lastSpace == 0 означает что токен = пробел (пустая строка до разделителя)
+			if lastSpace == 0 {
+				token = " "
+			}
 			vocab = append(vocab, token)
 
 			// Ищем blank токен
@@ -611,8 +762,8 @@ func loadGigaAMVocab(path string) ([]string, int, int, error) {
 				blankID = len(vocab) - 1
 			}
 
-			// Ищем space токен (▁)
-			if token == "▁" {
+			// Ищем space токен (пробел " " или ▁)
+			if token == " " || token == "▁" {
 				spaceID = len(vocab) - 1
 			}
 		}

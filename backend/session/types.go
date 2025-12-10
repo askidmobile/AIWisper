@@ -98,6 +98,16 @@ type Chunk struct {
 	Error         string     `json:"error,omitempty"`
 }
 
+// VADMode режим Voice Activity Detection
+type VADMode string
+
+const (
+	VADModeAuto        VADMode = "auto"        // Автовыбор: per-region для GigaAM, compression для Whisper
+	VADModeCompression VADMode = "compression" // VAD compression: склеивание регионов речи
+	VADModePerRegion   VADMode = "per-region"  // Per-region: раздельная транскрипция каждого региона
+	VADModeOff         VADMode = "off"         // Отключить VAD (фиксированные 30с чанки)
+)
+
 // SessionConfig конфигурация для создания сессии
 type SessionConfig struct {
 	Language      string
@@ -106,7 +116,7 @@ type SessionConfig struct {
 	SystemDevice  string
 	CaptureSystem bool
 	UseNative     bool
-	DisableVAD    bool // Отключить VAD (фиксированные интервалы)
+	VADMode       VADMode // Режим VAD (auto, compression, per-region, off)
 }
 
 // VADConfig конфигурация Voice Activity Detection
@@ -117,8 +127,8 @@ type VADConfig struct {
 	MaxChunkDuration   time.Duration // Максимальная длина чанка (default: 5min)
 	PreRollDuration    time.Duration // Буфер до начала речи (default: 500ms)
 	ChunkingStartDelay time.Duration // Задержка перед началом нарезки (default: 60s)
-	DisableVAD         bool          // Отключить VAD и использовать фиксированные интервалы
-	FixedChunkDuration time.Duration // Фиксированная длина чанка (когда DisableVAD=true, default: 30s)
+	VADMode            VADMode       // Режим VAD (auto, compression, per-region, off)
+	FixedChunkDuration time.Duration // Фиксированная длина чанка (когда VADMode=off, default: 30s)
 }
 
 // DefaultVADConfig возвращает конфигурацию VAD по умолчанию
@@ -130,7 +140,7 @@ func DefaultVADConfig() VADConfig {
 		MaxChunkDuration:   5 * time.Minute,  // Максимум 5 минут
 		PreRollDuration:    500 * time.Millisecond,
 		ChunkingStartDelay: 60 * time.Second, // Начинаем нарезку после 1 минуты
-		DisableVAD:         false,
+		VADMode:            VADModeAuto,
 		FixedChunkDuration: 30 * time.Second, // Фиксированный интервал по умолчанию
 	}
 }
@@ -145,7 +155,7 @@ func FixedIntervalConfig() VADConfig {
 		MaxChunkDuration:   5 * time.Minute,
 		PreRollDuration:    500 * time.Millisecond,
 		ChunkingStartDelay: 60 * time.Second, // Первый чанк через 1 минуту
-		DisableVAD:         true,
+		VADMode:            VADModeOff,
 		FixedChunkDuration: 30 * time.Second, // Фиксированные чанки по 30 секунд
 	}
 }

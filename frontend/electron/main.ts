@@ -96,10 +96,14 @@ function startGoBackend() {
     const grpcAddress = getGrpcAddress();
     grpcAddressValue = grpcAddress;
     const backendPort = 18080;
+    const traceLogPath = app.getPath('userData')
+        ? path.join(app.getPath('userData'), 'aiwisper-backend.log')
+        : path.join('/tmp', 'aiwisper-backend.log');
 
     // Прокидываем адрес gRPC сокета и в дочерний backend, и в renderer (process.env)
     process.env.AIWISPER_GRPC_ADDR = grpcAddress;
     process.env.AIWISPER_HTTP_PORT = backendPort.toString();
+    process.env.AIWISPER_TRACE_LOG = traceLogPath;
 
     let backendPath: string;
     let modelPath: string;
@@ -154,6 +158,7 @@ function startGoBackend() {
     log(`Data directory: ${dataDir}`);
     log(`Models directory: ${modelsDirPath}`);
     log(`gRPC address: ${grpcAddress}`);
+    log(`Trace log: ${traceLogPath}`);
     log(`Working directory: ${cwd}`);
 
     const env = { ...process.env };
@@ -163,8 +168,9 @@ function startGoBackend() {
     }
 
     env.AIWISPER_GRPC_ADDR = grpcAddress;
+    env.AIWISPER_TRACE_LOG = traceLogPath;
 
-    goProcess = spawn(backendPath, ['-model', modelPath, '-data', dataDir, '-models', modelsDirPath, '-grpc-addr', grpcAddress, '-port', backendPort.toString()], {
+    goProcess = spawn(backendPath, ['-model', modelPath, '-data', dataDir, '-models', modelsDirPath, '-grpc-addr', grpcAddress, '-port', backendPort.toString(), '-trace-log', traceLogPath], {
         cwd: cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: env,

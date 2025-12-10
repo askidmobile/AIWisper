@@ -161,7 +161,7 @@ func (b *ChunkBuffer) tryEmitChunk() {
 	var splitPoint int64
 
 	// Режим с отключённым VAD - фиксированные интервалы
-	if b.config.DisableVAD {
+	if b.config.VADMode == VADModeOff {
 		fixedChunkSamples := int64(b.config.FixedChunkDuration.Seconds() * float64(b.sampleRate))
 		maxChunkSamples := int64(b.config.MaxChunkDuration.Seconds() * float64(b.sampleRate))
 
@@ -212,7 +212,7 @@ func (b *ChunkBuffer) tryEmitChunk() {
 	// Выделяем чанк
 	minChunkSamples := int64(b.config.MinChunkDuration.Seconds() * float64(b.sampleRate))
 	chunkSize := splitPoint - b.emittedSamples
-	if chunkSize < minChunkSamples && !b.config.DisableVAD {
+	if chunkSize < minChunkSamples && b.config.VADMode != VADModeOff {
 		return
 	}
 

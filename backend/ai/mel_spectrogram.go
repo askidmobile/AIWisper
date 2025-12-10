@@ -13,6 +13,7 @@ type MelConfig struct {
 	HopLength  int // Usually SampleRate / 100 (10ms)
 	WinLength  int // Usually SampleRate / 40 (25ms)
 	NFFT       int
+	Center     bool // true = center frames (librosa default), false = left-aligned (GigaAM v3)
 }
 
 // MelProcessor обрабатывает аудио и вычисляет Mel-спектрограмму
@@ -38,20 +39,39 @@ func NewMelProcessor(config MelConfig) *MelProcessor {
 
 // Compute вычисляет log-mel спектрограмму
 func (p *MelProcessor) Compute(samples []float32) ([][]float32, int) {
-	// Количество фреймов
-	numFrames := len(samples)/p.config.HopLength + 1
+	// Количество фреймов зависит от режима center
+	var numFrames int
+	if p.config.Center {
+		// center=true: фреймы центрированы, начинаются с sample 0
+		numFrames = len(samples)/p.config.HopLength + 1
+	} else {
+		// center=false: фреймы начинаются с начала без центрирования
+		// Как в GigaAM v3: (len - win_length) / hop_length + 1
+		if len(samples) >= p.config.WinLength {
+			numFrames = (len(samples)-p.config.WinLength)/p.config.HopLength + 1
+		} else {
+			numFrames = 1
+		}
+	}
 
 	// Результат: [numFrames][nMels]
 	melSpec := make([][]float32, numFrames)
 
 	for frame := 0; frame < numFrames; frame++ {
-		// Центр фрейма
-		center := frame * p.config.HopLength
+		// Начало фрейма зависит от режима center
+		var frameStart int
+		if p.config.Center {
+			// center=true: центр фрейма на позиции frame * hop_length
+			frameStart = frame*p.config.HopLength - p.config.WinLength/2
+		} else {
+			// center=false: начало фрейма на позиции frame * hop_length
+			frameStart = frame * p.config.HopLength
+		}
 
 		// Извлекаем фрейм с паддингом
 		frameData := make([]float64, p.config.NFFT)
 		for i := 0; i < p.config.WinLength; i++ {
-			sampleIdx := center - p.config.WinLength/2 + i
+			sampleIdx := frameStart + i
 			if sampleIdx >= 0 && sampleIdx < len(samples) {
 				frameData[i] = float64(samples[sampleIdx]) * p.window[i]
 			}
@@ -87,8 +107,9 @@ func (p *MelProcessor) Compute(samples []float32) ([][]float32, int) {
 }
 
 // createMelFilterbank создаёт mel-фильтры
+// Реализация совместима с torchaudio/librosa (работает в Hz, не bin indices)
 func createMelFilterbank(nFFT, nMels, sampleRate int) [][]float64 {
-	// Преобразование Hz в mel
+	// Преобразование Hz в mel (HTK formula)
 	hzToMel := func(hz float64) float64 {
 		return 2595.0 * math.Log10(1.0+hz/700.0)
 	}
@@ -97,44 +118,49 @@ func createMelFilterbank(nFFT, nMels, sampleRate int) [][]float64 {
 		return 700.0 * (math.Pow(10.0, mel/2595.0) - 1.0)
 	}
 
-	// Границы в mel
-	lowFreq := float64(0)
-	highFreq := float64(sampleRate / 2)
-	lowMel := hzToMel(lowFreq)
-	highMel := hzToMel(highFreq)
-
-	// Точки mel-фильтров
-	melPoints := make([]float64, nMels+2)
-	for i := 0; i < nMels+2; i++ {
-		melPoints[i] = lowMel + float64(i)*(highMel-lowMel)/float64(nMels+1)
-	}
-
-	// Преобразуем обратно в Hz и затем в bin индексы
-	binPoints := make([]int, nMels+2)
-	for i := 0; i < nMels+2; i++ {
-		hz := melToHz(melPoints[i])
-		binPoints[i] = int(math.Floor((float64(nFFT)+1)*hz/float64(sampleRate) + 0.5))
-	}
-
-	// Создаём фильтры
-	filters := make([][]float64, nMels)
 	numBins := nFFT/2 + 1
+	fMax := float64(sampleRate) / 2.0
 
+	// Частоты для каждого FFT bin
+	allFreqs := make([]float64, numBins)
+	for i := 0; i < numBins; i++ {
+		allFreqs[i] = float64(i) * fMax / float64(numBins-1)
+	}
+
+	// Mel points (nMels + 2 точек: left edge, centers, right edge)
+	mMin := hzToMel(0)
+	mMax := hzToMel(fMax)
+	fPts := make([]float64, nMels+2)
+	for i := 0; i < nMels+2; i++ {
+		mel := mMin + float64(i)*(mMax-mMin)/float64(nMels+1)
+		fPts[i] = melToHz(mel)
+	}
+
+	// Разницы между соседними точками (для нормализации)
+	fDiff := make([]float64, nMels+1)
+	for i := 0; i < nMels+1; i++ {
+		fDiff[i] = fPts[i+1] - fPts[i]
+	}
+
+	// Создаём фильтры (как в torchaudio)
+	filters := make([][]float64, nMels)
 	for m := 0; m < nMels; m++ {
 		filters[m] = make([]float64, numBins)
-		left := binPoints[m]
-		center := binPoints[m+1]
-		right := binPoints[m+2]
 
-		for k := left; k < center && k < numBins; k++ {
-			if center > left {
-				filters[m][k] = float64(k-left) / float64(center-left)
+		for k := 0; k < numBins; k++ {
+			freq := allFreqs[k]
+
+			// Lower slope: (freq - f_pts[m]) / (f_pts[m+1] - f_pts[m])
+			// Upper slope: (f_pts[m+2] - freq) / (f_pts[m+2] - f_pts[m+1])
+			lower := (freq - fPts[m]) / fDiff[m]
+			upper := (fPts[m+2] - freq) / fDiff[m+1]
+
+			// Берём минимум и ограничиваем [0, 1]
+			val := math.Min(lower, upper)
+			if val < 0 {
+				val = 0
 			}
-		}
-		for k := center; k < right && k < numBins; k++ {
-			if right > center {
-				filters[m][k] = float64(right-k) / float64(right-center)
-			}
+			filters[m][k] = val
 		}
 	}
 
