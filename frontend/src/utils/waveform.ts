@@ -4,10 +4,12 @@
  */
 
 export interface WaveformData {
-    /** Peak values per channel [channel][sample] normalized 0..1 */
+    /** Peak values per channel [channel][sample] normalized 0..1 for waveform display */
     peaks: number[][];
-    /** RMS values per channel [channel][sample] normalized 0..1 */
+    /** RMS values per channel [channel][sample] normalized 0..1 for waveform display */
     rms: number[][];
+    /** Absolute RMS values per channel [channel][sample] for VU meter (0..1 linear scale) */
+    rmsAbsolute: number[][];
     /** Duration per sample in seconds */
     sampleDuration: number;
     /** Total duration in seconds */
@@ -33,6 +35,9 @@ export const computeWaveform = (
         new Array(sampleCount).fill(0)
     );
     const rms: number[][] = Array.from({ length: channelCount }, () =>
+        new Array(sampleCount).fill(0)
+    );
+    const rmsAbsolute: number[][] = Array.from({ length: channelCount }, () =>
         new Array(sampleCount).fill(0)
     );
 
@@ -64,19 +69,21 @@ export const computeWaveform = (
 
             peaks[ch][i] = peak;
             rms[ch][i] = rmsValue;
+            rmsAbsolute[ch][i] = rmsValue; // Store absolute RMS for VU meter
 
             if (peak > maxPeak) maxPeak = peak;
             if (rmsValue > maxRms) maxRms = rmsValue;
         }
     }
 
-    // Normalize values
+    // Normalize values for waveform display
     const peakNorm = maxPeak > 0 ? maxPeak : 1;
     const rmsNorm = maxRms > 0 ? maxRms : 1;
 
     return {
         peaks: peaks.map(channel => channel.map(v => v / peakNorm)),
         rms: rms.map(channel => channel.map(v => v / rmsNorm)),
+        rmsAbsolute, // Absolute RMS values (0..1 linear) for VU meter
         sampleDuration,
         duration: buffer.duration,
         sampleCount,

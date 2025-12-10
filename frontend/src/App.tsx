@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { flushSync } from 'react-dom';
 import ModelManager from './components/ModelManager';
 import SessionTabs, { TabType } from './components/SessionTabs';
 import SummaryView from './components/SummaryView';
@@ -229,6 +230,8 @@ function App() {
     const [recordingDuration, setRecordingDuration] = useState(0);
     const [currentSession, setCurrentSession] = useState<Session | null>(null);
     const recordingStartRef = useRef<number | null>(null);
+    const [recordingWave, setRecordingWave] = useState<number[]>(Array(24).fill(0.3));
+    const waveAnimationRef = useRef<number | null>(null);
 
     // Sessions list
     const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -491,8 +494,9 @@ function App() {
             playbackLevelSlicesRef.current = null;
             return;
         }
-        const mic = waveformData.peaks[0] || [];
-        const sys = waveformData.peaks[1] || mic;
+        // Use absolute RMS values for VU meter (not normalized peaks)
+        const mic = waveformData.rmsAbsolute?.[0] || waveformData.peaks[0] || [];
+        const sys = waveformData.rmsAbsolute?.[1] || waveformData.rmsAbsolute?.[0] || waveformData.peaks[1] || mic;
         playbackLevelSlicesRef.current = {
             mic,
             sys,
@@ -524,6 +528,30 @@ function App() {
 
         return () => {
             if (interval) clearInterval(interval);
+        };
+    }, [isRecording]);
+
+    // Recording waveform animation
+    useEffect(() => {
+        if (!isRecording) {
+            setRecordingWave(Array(24).fill(0.3));
+            return;
+        }
+
+        const animate = () => {
+            setRecordingWave(prev => prev.map((_, i) => {
+                const base = 0.3 + Math.sin(Date.now() / 180 + i * 0.6) * 0.2;
+                const random = Math.random() * 0.35;
+                return Math.min(1, Math.max(0.15, base + random));
+            }));
+            waveAnimationRef.current = requestAnimationFrame(animate);
+        };
+        animate();
+
+        return () => {
+            if (waveAnimationRef.current) {
+                cancelAnimationFrame(waveAnimationRef.current);
+            }
         };
     }, [isRecording]);
 
@@ -1316,10 +1344,13 @@ function App() {
 
             analyserLeftRef.current = audioContextRef.current.createAnalyser();
             analyserRightRef.current = audioContextRef.current.createAnalyser();
-            analyserLeftRef.current.fftSize = 512;
-            analyserRightRef.current.fftSize = 512;
-            analyserLeftRef.current.smoothingTimeConstant = 0.6;
-            analyserRightRef.current.smoothingTimeConstant = 0.6;
+            // Optimized for instant VU meter response:
+            // - fftSize 128: minimum practical size (~2.7ms at 48kHz)
+            // - smoothing 0: no smoothing for instant response (like backend)
+            analyserLeftRef.current.fftSize = 128;
+            analyserRightRef.current.fftSize = 128;
+            analyserLeftRef.current.smoothingTimeConstant = 0;
+            analyserRightRef.current.smoothingTimeConstant = 0;
 
             // Выделяем буферы под временную область, чтобы не создавать их на каждом кадре
             leftTimeDataRef.current = new Float32Array(analyserLeftRef.current.fftSize);
@@ -1347,6 +1378,20 @@ function App() {
             return Math.sqrt(sum / data.length);
         };
 
+        // Convert RMS to VU meter level using dB scale
+        // Maps -50dB to 0dB range onto 0-100% for natural loudness perception
+        const rmsToVuLevel = (rms: number): number => {
+            if (rms <= 0) return 0;
+            // Convert to dB (dBFS - decibels relative to full scale)
+            const db = 20 * Math.log10(rms);
+            // Map dB range to 0-100%: -50dB = 0%, 0dB = 100%
+            // -50dB is a good threshold - catches speech but ignores very quiet noise
+            const minDb = -50;
+            const maxDb = 0;
+            const percent = ((db - minDb) / (maxDb - minDb)) * 100;
+            return Math.max(0, Math.min(100, percent));
+        };
+
         const analyzeAudio = () => {
             const leftAnalyser = analyserLeftRef.current;
             const rightAnalyser = analyserRightRef.current;
@@ -1363,19 +1408,9 @@ function App() {
                 setPlaybackTime(currentPlaybackTime);
             }
 
-            const slices = playbackLevelSlicesRef.current;
-            const currentSessionId = playingAudio ? extractSessionIdFromUrl(playingAudio) : null;
-            const precomputedAvailable =
-                slices &&
-                slices.mic.length > 0 &&
-                (!currentSessionId || !slices.sessionId || slices.sessionId === currentSessionId);
-
-            if (precomputedAvailable && slices) {
-                const absolute = Math.min(slices.duration, Math.max(0, playbackOffsetRef.current + el.currentTime));
-                const sliceIndex = Math.min(slices.mic.length - 1, Math.floor(absolute / slices.sliceDuration));
-                setPlaybackMicLevel(Math.min(100, slices.mic[sliceIndex] * 100));
-                setPlaybackSysLevel(Math.min(100, slices.sys[sliceIndex] * 100));
-            } else if (leftAnalyser && rightAnalyser) {
+            // Always use real-time audio analysis for accurate VU meters
+            if (leftAnalyser && rightAnalyser) {
+                // Ensure buffers are allocated
                 if (!leftTimeDataRef.current || leftTimeDataRef.current.length !== leftAnalyser.fftSize) {
                     leftTimeDataRef.current = new Float32Array(leftAnalyser.fftSize);
                 }
@@ -1383,14 +1418,24 @@ function App() {
                     rightTimeDataRef.current = new Float32Array(rightAnalyser.fftSize);
                 }
 
+                // Get current audio samples
                 leftAnalyser.getFloatTimeDomainData(leftTimeDataRef.current as Float32Array<ArrayBuffer>);
                 rightAnalyser.getFloatTimeDomainData(rightTimeDataRef.current as Float32Array<ArrayBuffer>);
 
+                // Calculate RMS from time domain data
                 const micRms = calculateRMS(leftTimeDataRef.current);
                 const sysRms = calculateRMS(rightTimeDataRef.current);
 
-                setPlaybackMicLevel(Math.min(100, micRms * 140));
-                setPlaybackSysLevel(Math.min(100, sysRms * 140));
+                // Convert to VU level using dB scale
+                const micLevel = rmsToVuLevel(micRms);
+                const sysLevel = rmsToVuLevel(sysRms);
+
+                // Use flushSync to force immediate React re-render from requestAnimationFrame
+                // Without this, React 18 batches updates and VU meters don't animate smoothly
+                flushSync(() => {
+                    setPlaybackMicLevel(micLevel);
+                    setPlaybackSysLevel(sysLevel);
+                });
             }
 
             playbackRafRef.current = requestAnimationFrame(analyzeAudio);
@@ -1568,9 +1613,16 @@ function App() {
     // Автоскролл только при создании новых чанков во время записи
     useEffect(() => {
         if (shouldAutoScroll && transcriptionRef.current) {
-            transcriptionRef.current.scrollTo({
-                top: transcriptionRef.current.scrollHeight,
-                behavior: 'smooth'
+            // Используем requestAnimationFrame + небольшую задержку чтобы DOM успел обновиться
+            requestAnimationFrame(() => {
+                setTimeout(() => {
+                    if (transcriptionRef.current) {
+                        transcriptionRef.current.scrollTo({
+                            top: transcriptionRef.current.scrollHeight + 1000, // +1000 для гарантии
+                            behavior: 'smooth'
+                        });
+                    }
+                }, 50);
             });
             setShouldAutoScroll(false);
         }
@@ -1672,6 +1724,7 @@ function App() {
             <aside
                 className="glass-surface-elevated"
                 style={{
+                    position: 'relative', // For recording overlay positioning
                     width: '300px',
                     margin: 'var(--spacing-inset)',
                     marginRight: 0,
@@ -1689,6 +1742,8 @@ function App() {
                 {/* Sidebar Header */}
                 <div style={{
                     padding: '1rem 1.25rem',
+                    paddingTop: '0.5rem', // Reduced - traffic light offset is on parent
+                    marginTop: '28px', // macOS traffic lights offset
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
@@ -1702,28 +1757,30 @@ function App() {
                     }}>
                         Все записи
                     </h2>
-                    <button
-                        className="btn-icon btn-icon-sm"
-                        onClick={refreshSessions}
-                        title="Обновить список"
-                        style={{ width: '32px', height: '32px' }}
-                    >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M23 4v6h-6"/>
-                            <path d="M1 20v-6h6"/>
-                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                        </svg>
-                    </button>
-                    <button
-                        className="btn-icon btn-icon-sm"
-                        onClick={openDataFolder}
-                        title="Открыть папку с записями"
-                        style={{ width: '32px', height: '32px' }}
-                    >
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                        </svg>
-                    </button>
+                    <div style={{ display: 'flex', gap: '0.25rem' }}>
+                        <button
+                            className="btn-icon btn-icon-sm"
+                            onClick={refreshSessions}
+                            title="Обновить список"
+                            style={{ width: '32px', height: '32px' }}
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M23 4v6h-6"/>
+                                <path d="M1 20v-6h6"/>
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                            </svg>
+                        </button>
+                        <button
+                            className="btn-icon btn-icon-sm"
+                            onClick={openDataFolder}
+                            title="Открыть папку с записями"
+                            style={{ width: '32px', height: '32px' }}
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
 
                 {/* Sessions List with Grouping */}
@@ -1799,7 +1856,7 @@ function App() {
                     )}
                 </div>
 
-                {/* New Recording Button at Bottom */}
+                {/* New Recording Button at Bottom - всегда показывает "Новая запись", затемнена при записи */}
                 <div style={{
                     padding: '0.75rem 1rem',
                     borderTop: '1px solid var(--glass-border-subtle)',
@@ -1807,47 +1864,87 @@ function App() {
                     <button
                         className="btn-capsule"
                         onClick={handleStartStop}
-                        disabled={status !== 'Connected' || isStopping}
+                        disabled={status !== 'Connected' || isStopping || isRecording}
                         style={{
                             width: '100%',
                             justifyContent: 'center',
                             padding: '0.6rem 1rem',
                             gap: '0.4rem',
-                            background: isRecording
-                                ? 'linear-gradient(135deg, #f87171, #ef4444)'
-                                : 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+                            background: 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
                             border: 'none',
                             color: 'white',
-                            boxShadow: isRecording
-                                ? '0 0 20px rgba(239, 68, 68, 0.4)'
-                                : 'var(--shadow-glow-primary)',
+                            boxShadow: isRecording ? 'none' : 'var(--shadow-glow-primary)',
+                            opacity: isRecording ? 0.4 : 1,
+                            cursor: isRecording ? 'not-allowed' : 'pointer',
+                            transition: 'opacity 0.2s ease, box-shadow 0.2s ease',
                         }}
                     >
-                        {isStopping ? (
-                            <>
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}>
-                                    <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
-                                </svg>
-                                Сохранение...
-                            </>
-                        ) : isRecording ? (
-                            <>
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-                                    <rect x="6" y="6" width="12" height="12" rx="2"/>
-                                </svg>
-                                Стоп
-                            </>
-                        ) : (
-                            <>
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                                    <line x1="12" y1="5" x2="12" y2="19"/>
-                                    <line x1="5" y1="12" x2="19" y2="12"/>
-                                </svg>
-                                Новая запись
-                            </>
-                        )}
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                            <line x1="12" y1="5" x2="12" y2="19"/>
+                            <line x1="5" y1="12" x2="19" y2="12"/>
+                        </svg>
+                        Новая запись
                     </button>
                 </div>
+
+                {/* Recording Lock Overlay - полное покрытие sidebar с размытием */}
+                {isRecording && (
+                    <div
+                        style={{
+                            position: 'absolute',
+                            inset: 0,
+                            background: 'rgba(0, 0, 0, 0.3)',
+                            backdropFilter: 'blur(4px) saturate(0.8)',
+                            WebkitBackdropFilter: 'blur(4px) saturate(0.8)',
+                            borderRadius: 'var(--radius-xl)',
+                            zIndex: 10,
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '0.75rem',
+                            cursor: 'not-allowed',
+                        }}
+                    >
+                        <div
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.6rem',
+                                padding: '0.75rem 1.5rem',
+                                background: 'rgba(239, 68, 68, 0.15)',
+                                backdropFilter: 'blur(12px)',
+                                WebkitBackdropFilter: 'blur(12px)',
+                                borderRadius: 'var(--radius-capsule)',
+                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                            }}
+                        >
+                            <div
+                                style={{
+                                    width: '10px',
+                                    height: '10px',
+                                    borderRadius: '50%',
+                                    background: '#ef4444',
+                                    boxShadow: '0 0 12px rgba(239, 68, 68, 0.8)',
+                                    animation: 'pulse 1s infinite',
+                                }}
+                            />
+                            <span style={{
+                                fontSize: '0.95rem',
+                                fontWeight: 600,
+                                color: '#ef4444',
+                            }}>
+                                Идёт запись
+                            </span>
+                        </div>
+                        <span style={{
+                            fontSize: '0.8rem',
+                            color: 'rgba(255, 255, 255, 0.6)',
+                        }}>
+                            Остановите для выбора другой записи
+                        </span>
+                    </div>
+                )}
             </aside>
 
             {/* Main Content */}
@@ -1882,49 +1979,147 @@ function App() {
                         />
                     </div>
 
-                    {/* Center: Recording Timer (only when recording) */}
+                    {/* Recording Indicator Bar - растягивается между статусом и настройками */}
                     {isRecording && (
                         <div
                             className="animate-scale-in"
                             style={{
-                                position: 'absolute',
-                                left: '50%',
-                                transform: 'translateX(-50%)',
-                                padding: '0.4rem 1rem',
+                                flex: 1,
+                                margin: '0 1rem',
+                                padding: '0.5rem 1.5rem',
                                 borderRadius: 'var(--radius-capsule)',
-                                background: 'rgba(239, 68, 68, 0.15)',
-                                backdropFilter: 'blur(var(--glass-blur-light))',
-                                WebkitBackdropFilter: 'blur(var(--glass-blur-light))',
-                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                                background: 'rgba(239, 68, 68, 0.1)',
+                                backdropFilter: 'blur(12px)',
+                                WebkitBackdropFilter: 'blur(12px)',
+                                border: '1px solid rgba(239, 68, 68, 0.2)',
                                 display: 'flex',
                                 alignItems: 'center',
-                                gap: '0.5rem',
+                                justifyContent: 'center',
+                                gap: '1rem',
                                 WebkitAppRegion: 'no-drag',
                             } as React.CSSProperties}
                         >
-                            <div
-                                style={{
-                                    width: '8px',
-                                    height: '8px',
-                                    borderRadius: '50%',
-                                    background: '#ef4444',
-                                    animation: 'pulse 1s infinite',
-                                }}
-                            />
+                            {/* Pulsing Record Indicator */}
+                            <div style={{ position: 'relative', width: '10px', height: '10px' }}>
+                                <div
+                                    style={{
+                                        position: 'absolute',
+                                        inset: 0,
+                                        borderRadius: '50%',
+                                        background: '#ef4444',
+                                        animation: 'recordPulseRing 1.5s infinite',
+                                    }}
+                                />
+                                <div
+                                    style={{
+                                        position: 'absolute',
+                                        inset: '1px',
+                                        borderRadius: '50%',
+                                        background: '#ef4444',
+                                        boxShadow: '0 0 8px rgba(239, 68, 68, 0.8)',
+                                    }}
+                                />
+                            </div>
+
+                            {/* REC label */}
                             <span
                                 style={{
-                                    fontFamily: 'SF Mono, Menlo, monospace',
-                                    fontSize: '0.9rem',
-                                    fontWeight: 'var(--font-weight-semibold)',
+                                    fontSize: '0.75rem',
+                                    fontWeight: 700,
+                                    color: '#ef4444',
+                                    textTransform: 'uppercase',
+                                    letterSpacing: '0.08em',
+                                }}
+                            >
+                                REC
+                            </span>
+
+                            {/* Waveform Visualization - расширенная */}
+                            <div
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '2.5px',
+                                    height: '24px',
+                                    flex: 1,
+                                    maxWidth: '400px',
+                                    justifyContent: 'center',
+                                }}
+                            >
+                                {recordingWave.map((height, i) => (
+                                    <div
+                                        key={i}
+                                        style={{
+                                            width: '3px',
+                                            height: `${height * 100}%`,
+                                            minHeight: '4px',
+                                            background: `linear-gradient(to top, rgba(239, 68, 68, 0.4), rgba(239, 68, 68, ${0.3 + height * 0.7}))`,
+                                            borderRadius: '2px',
+                                            transition: 'height 0.08s ease-out',
+                                        }}
+                                    />
+                                ))}
+                            </div>
+
+                            {/* Timer */}
+                            <span
+                                style={{
+                                    fontFamily: 'SF Mono, Menlo, Monaco, monospace',
+                                    fontSize: '0.95rem',
+                                    fontWeight: 600,
                                     color: 'var(--text-primary)',
+                                    minWidth: '52px',
+                                    letterSpacing: '0.02em',
                                 }}
                             >
                                 {formatDuration(recordingDuration)}
                             </span>
+
+                            {/* Stop Button inline */}
+                            <button
+                                onClick={handleStartStop}
+                                disabled={isStopping}
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.35rem',
+                                    padding: '0.35rem 0.75rem',
+                                    background: 'rgba(239, 68, 68, 0.9)',
+                                    border: 'none',
+                                    borderRadius: '9999px',
+                                    color: 'white',
+                                    fontSize: '0.8rem',
+                                    fontWeight: 600,
+                                    cursor: isStopping ? 'wait' : 'pointer',
+                                    transition: 'all 0.15s ease',
+                                    opacity: isStopping ? 0.7 : 1,
+                                }}
+                                onMouseEnter={(e) => !isStopping && (e.currentTarget.style.background = 'rgba(220, 38, 38, 1)')}
+                                onMouseLeave={(e) => !isStopping && (e.currentTarget.style.background = 'rgba(239, 68, 68, 0.9)')}
+                            >
+                                {isStopping ? (
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}>
+                                        <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                                    </svg>
+                                ) : (
+                                    <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                                        <rect x="6" y="6" width="12" height="12" rx="2" />
+                                    </svg>
+                                )}
+                                {isStopping ? 'Сохранение' : 'Стоп'}
+                            </button>
                         </div>
                     )}
+                    
+                    {/* CSS animation for recording pulse */}
+                    <style>{`
+                        @keyframes recordPulseRing {
+                            0%, 100% { transform: scale(1); opacity: 1; }
+                            50% { transform: scale(2); opacity: 0; }
+                        }
+                    `}</style>
 
-                    {/* Right: Settings only */}
+                    {/* Right: Settings only (disabled during recording) */}
                     <div
                         style={{
                             display: 'flex',
@@ -1935,9 +2130,16 @@ function App() {
                     >
                         <button
                             className="btn-icon"
-                            onClick={() => setShowSettings(true)}
-                            title="Настройки"
-                            style={{ width: '36px', height: '36px' }}
+                            onClick={() => !isRecording && setShowSettings(true)}
+                            title={isRecording ? "Остановите запись для доступа к настройкам" : "Настройки"}
+                            disabled={isRecording}
+                            style={{ 
+                                width: '36px', 
+                                height: '36px',
+                                opacity: isRecording ? 0.4 : 1,
+                                cursor: isRecording ? 'not-allowed' : 'pointer',
+                                transition: 'opacity 0.2s ease',
+                            }}
                         >
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                                 <circle cx="12" cy="12" r="3"/>
@@ -2531,8 +2733,8 @@ function App() {
                                 </div>
                             )}
 
-                            {/* Session Tabs - показываем только если есть сессия */}
-                            {displaySession && chunks.length > 0 && (
+                            {/* Session Tabs - скрываем во время записи */}
+                            {displaySession && chunks.length > 0 && !isRecording && (
                                 <SessionTabs
                                     activeTab={activeTab}
                                     onTabChange={setActiveTab}
@@ -2548,9 +2750,173 @@ function App() {
                     {/* Scrollable Content Area */}
                     <div ref={transcriptionRef} style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto', overflowX: 'hidden', minWidth: 0 }}>
                         {chunks.length === 0 && !isRecording && !selectedSession ? (
-                            <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
-                                <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎙</div>
-                                <div>Нажмите «Запись» чтобы начать</div>
+                            /* Welcome Screen - Modern Onboarding */
+                            <div style={{ 
+                                display: 'flex', 
+                                flexDirection: 'column', 
+                                alignItems: 'center', 
+                                justifyContent: 'center',
+                                height: '100%',
+                                padding: '2rem',
+                                textAlign: 'center',
+                            }}>
+                                {/* Hero Section */}
+                                <div style={{
+                                    marginBottom: '2.5rem',
+                                }}>
+                                    {/* App Icon / Logo */}
+                                    <div style={{
+                                        width: '80px',
+                                        height: '80px',
+                                        borderRadius: '24px',
+                                        background: 'linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%)',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        margin: '0 auto 1.5rem',
+                                        boxShadow: 'var(--shadow-glow-primary)',
+                                    }}>
+                                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2">
+                                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                                            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                                            <line x1="12" y1="19" x2="12" y2="23"/>
+                                            <line x1="8" y1="23" x2="16" y2="23"/>
+                                        </svg>
+                                    </div>
+                                    
+                                    <h1 style={{
+                                        fontSize: '1.75rem',
+                                        fontWeight: 700,
+                                        color: 'var(--text-primary)',
+                                        margin: '0 0 0.5rem',
+                                        letterSpacing: '-0.02em',
+                                    }}>
+                                        Добро пожаловать в AIWisper
+                                    </h1>
+                                    <p style={{
+                                        fontSize: '1rem',
+                                        color: 'var(--text-secondary)',
+                                        margin: 0,
+                                        maxWidth: '400px',
+                                    }}>
+                                        Интеллектуальная транскрипция с распознаванием говорящих
+                                    </p>
+                                </div>
+
+                                {/* Quick Start Guide */}
+                                <div style={{
+                                    background: 'var(--surface)',
+                                    borderRadius: 'var(--radius-xl)',
+                                    padding: '1.5rem',
+                                    width: '100%',
+                                    maxWidth: '420px',
+                                    border: '1px solid var(--glass-border-subtle)',
+                                }}>
+                                    <h3 style={{
+                                        fontSize: '0.9rem',
+                                        fontWeight: 600,
+                                        color: 'var(--text-secondary)',
+                                        margin: '0 0 1rem',
+                                        textTransform: 'uppercase',
+                                        letterSpacing: '0.05em',
+                                    }}>
+                                        Быстрый старт
+                                    </h3>
+
+                                    {/* Step 1 */}
+                                    <div style={{
+                                        display: 'flex',
+                                        alignItems: 'flex-start',
+                                        gap: '1rem',
+                                        marginBottom: '1rem',
+                                        textAlign: 'left',
+                                    }}>
+                                        <div style={{
+                                            width: '28px',
+                                            height: '28px',
+                                            borderRadius: '50%',
+                                            background: 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+                                            color: 'white',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            fontSize: '0.85rem',
+                                            fontWeight: 700,
+                                            flexShrink: 0,
+                                        }}>1</div>
+                                        <div>
+                                            <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                                                Нажмите «Новая запись»
+                                            </div>
+                                            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                                                Кнопка в левой панели запустит запись микрофона и системного звука
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Step 2 */}
+                                    <div style={{
+                                        display: 'flex',
+                                        alignItems: 'flex-start',
+                                        gap: '1rem',
+                                        marginBottom: '1rem',
+                                        textAlign: 'left',
+                                    }}>
+                                        <div style={{
+                                            width: '28px',
+                                            height: '28px',
+                                            borderRadius: '50%',
+                                            background: 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+                                            color: 'white',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            fontSize: '0.85rem',
+                                            fontWeight: 700,
+                                            flexShrink: 0,
+                                        }}>2</div>
+                                        <div>
+                                            <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                                                Говорите или проиграйте аудио
+                                            </div>
+                                            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                                                AI автоматически разделит речь по говорящим
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Step 3 */}
+                                    <div style={{
+                                        display: 'flex',
+                                        alignItems: 'flex-start',
+                                        gap: '1rem',
+                                        textAlign: 'left',
+                                    }}>
+                                        <div style={{
+                                            width: '28px',
+                                            height: '28px',
+                                            borderRadius: '50%',
+                                            background: 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+                                            color: 'white',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            fontSize: '0.85rem',
+                                            fontWeight: 700,
+                                            flexShrink: 0,
+                                        }}>3</div>
+                                        <div>
+                                            <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                                                Остановите и получите текст
+                                            </div>
+                                            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                                                Транскрипция с таймкодами и диаризацией готова к экспорту
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+
                             </div>
                         ) : chunks.length === 0 && isRecording ? (
                             <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>

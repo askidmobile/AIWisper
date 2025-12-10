@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.1] - 2025-12-10
+
+### Fixed
+- **VU Meters during playback**: Fixed audio level indicators not animating during playback
+  - Used `flushSync` from React DOM to force immediate re-renders from `requestAnimationFrame`
+  - React 18 batching was preventing VU meter updates
+
+### Removed
+- Removed non-functional keyboard shortcut hint (⌘+,) from welcome screen
+
+### Technical
+- Removed debug console.log statements from audio analysis code
+- Cleaned up unused `frameCount` variable
+
 ## [1.21.0] - 2025-12-10
 
 ### Added

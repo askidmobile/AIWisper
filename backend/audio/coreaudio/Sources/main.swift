@@ -50,7 +50,7 @@ class CoreAudioTap: NSObject {
     private let outputQueue = DispatchQueue(label: "audio.output", qos: .userInteractive)
     private var tapDescription: CATapDescription?
     private var realChannelCount: UInt32 = 2
-    private let targetSampleRate: Double = 48_000
+    private let targetSampleRate: Double = 24_000  // 24kHz - совпадает с malgo и Whisper
     private var deviceSampleRate: Double = 48_000
 
     override init() {

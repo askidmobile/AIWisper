@@ -25,14 +25,27 @@ cp "$ROOT_DIR/build/resources/aiwisper-backend" "$ROOT_DIR/backend_bin"
 
 echo "Built backend -> build/resources/aiwisper-backend and backend_bin"
 
-# Build FluidAudio diarization binary (Swift)
-echo "==> Building diarization-fluid (Swift)"
+# Build Swift modules
+echo "==> Building ScreenCaptureKit module (Swift)"
+(
+  cd "$ROOT_DIR/backend/audio/screencapture"
+  swift build -c release
+)
+cp "$ROOT_DIR/backend/audio/screencapture/.build/release/screencapture-audio" "$ROOT_DIR/build/resources/screencapture-audio"
+echo "Built screencapture-audio -> build/resources/screencapture-audio"
+
+echo "==> Building CoreAudio tap module (Swift, macOS 14.2+)"
+(
+  cd "$ROOT_DIR/backend/audio/coreaudio"
+  swift build -c release
+)
+cp "$ROOT_DIR/backend/audio/coreaudio/.build/release/coreaudio-tap" "$ROOT_DIR/build/resources/coreaudio-tap"
+echo "Built coreaudio-tap -> build/resources/coreaudio-tap"
+
+echo "==> Building FluidAudio diarization module (Swift)"
 (
   cd "$ROOT_DIR/backend/audio/diarization"
   swift build -c release
 )
-
-# Copy diarization binary to resources
 cp "$ROOT_DIR/backend/audio/diarization/.build/release/diarization-fluid" "$ROOT_DIR/build/resources/diarization-fluid"
-
 echo "Built diarization-fluid -> build/resources/diarization-fluid"
