@@ -1,81 +1,233 @@
 # AIWisper
 
-AIWisper is a cross-platform desktop application for local speech recognition using `whisper.cpp` and Electron.
+**AIWisper** — десктопное приложение для локальной транскрипции речи с диаризацией спикеров. Все данные обрабатываются на устройстве без отправки в облако.
 
-## Prerequisites
+![macOS](https://img.shields.io/badge/macOS-13+-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-1.22.1-orange)
 
-- **Go**: Version 1.18 or later.
-- **Node.js**: Version 16 or later.
-- **C/C++ Compiler**: GCC or Clang (required for CGO).
-- **macOS** (Tested on Apple Silicon).
+## Возможности
 
-## Project Structure
+- **Транскрипция речи** — Whisper (многоязычный) и GigaAM (русский)
+- **Диаризация спикеров** — автоматическое определение кто говорит
+- **Запись системного звука** — транскрибация звонков, видео, подкастов
+- **Voice Isolation** — подавление фонового шума (macOS 15+)
+- **AI-сводка** — генерация краткого содержания через Ollama
+- **GPU ускорение** — Metal и CoreML на Apple Silicon
+- **Полностью офлайн** — никакие данные не покидают устройство
 
-- `backend/`: Go backend service.
-  - `ai/binding/`: CGO bindings for `whisper.cpp` and `ggml`.
-  - `audio/`: Audio capture logic using `malgo`.
-  - `server/`: WebSocket server.
-- `frontend/`: Electron + React frontend.
-  - `electron/`: Electron main process.
-  - `src/`: React UI.
+## Системные требования
 
-## Setup
+| Требование | Минимум | Рекомендуется |
+|------------|---------|---------------|
+| macOS | 13 Ventura | 15 Sequoia |
+| RAM | 8 GB | 16 GB |
+| Диск | 3 GB | 10 GB (для моделей) |
+| Процессор | Intel/Apple Silicon | Apple Silicon |
 
-1.  **Clone the repository.**
-2.  **Download the Whisper model:**
-    The backend requires a GGML model file.
-    ```bash
-    cd backend
-    # Download base model (or others)
-    bash whisper.cpp/models/download-ggml-model.sh base
-    # Move/Link to backend root if needed, or ensure the path is correct.
-    # The app expects `ggml-base.bin` in `backend/` or `resources/` in prod.
-    cp whisper.cpp/models/ggml-base.bin .
-    ```
-3.  **Install Frontend Dependencies:**
-    ```bash
-    cd frontend
-    npm install
-    ```
+## Установка
 
-## Running in Development
+### Готовые релизы
 
-1.  **Build the Backend:**
-    The frontend spawns the backend binary. You must build it first.
-    ```bash
-    cd backend
-    # Important: Enable CPU backend for Apple Silicon if not using Metal explicitly, 
-    # though Metal is enabled by default in CGO flags for Darwin.
-    # We added GGML_USE_CPU to ensure CPU fallback/registration works.
-    go build -o ../backend_bin .
-    ```
-    This creates `backend_bin` in the project root.
+Скачайте DMG из [Releases](https://github.com/askidmobile/AIWisper/releases):
 
-2.  **Run the Frontend:**
-    ```bash
-    cd frontend
-    npm run electron:dev
-    ```
-    This starts the Vite dev server and launches Electron.
+```bash
+# Для Apple Silicon
+AIWisper-x.x.x-arm64.dmg
 
-## Building for Production
+# Для Intel
+AIWisper-x.x.x-x64.dmg
+```
 
-1.  **Build the Backend:**
-    ```bash
-    cd backend
-    go build -o ../backend_bin .
-    ```
+### Сборка из исходников
 
-2.  **Build the Frontend & Package:**
-    ```bash
-    cd frontend
-    npm run build
-    ```
-    This uses `electron-builder` to package the application.
-    *Note: You may need to configure `electron-builder.yml` or `package.json` to include `backend_bin` and `ggml-base.bin` in `extraResources`.*
+```bash
+# Клонировать репозиторий
+git clone https://github.com/askidmobile/AIWisper.git
+cd AIWisper
 
-## Troubleshooting
+# Установить зависимости frontend
+cd frontend && npm install && cd ..
 
-- **White Screen**: Ensure `backend_bin` is running. Check console logs (DevTools).
-- **No Transcription**: Check "System Console" in the app. Ensure microphone permission is granted.
-- **Backend Crash**: Check terminal logs. Ensure `ggml-base.bin` is present and compatible.
+# Собрать backend и запустить в dev-режиме
+cd frontend && npm run electron:dev
+```
+
+## Быстрый старт
+
+1. **Запустите приложение** и дайте разрешение на микрофон
+2. **Скачайте модель** в менеджере моделей (рекомендуется `large-v3-turbo`)
+3. **Нажмите "Новая запись"** и начните говорить
+4. **Остановите запись** — транскрипция появится автоматически
+
+## Поддерживаемые модели
+
+### Whisper (многоязычные)
+
+| Модель | Размер | Качество | Скорость |
+|--------|--------|----------|----------|
+| `tiny` | 74 MB | Базовое | Очень быстро |
+| `base` | 141 MB | Хорошее | Быстро |
+| `small` | 465 MB | Отличное | Средне |
+| `medium` | 1.4 GB | Высокое | Медленно |
+| **`large-v3-turbo`** | 1.5 GB | **Высокое** | **Быстро** |
+| `large-v3` | 2.9 GB | Максимальное | Очень медленно |
+
+### GigaAM (русский язык, Sber)
+
+| Модель | Размер | WER | Особенности |
+|--------|--------|-----|-------------|
+| **`gigaam-v3-ctc`** | 225 MB | 9.1% | Рекомендуется |
+| `gigaam-v3-e2e-ctc` | 225 MB | 9.1% | С автопунктуацией |
+
+## Диаризация спикеров
+
+AIWisper автоматически определяет кто говорит в записи:
+
+- **Режим диалога** — раздельные каналы "Вы" (микрофон) и "Собеседник" (системный звук)
+- **FluidAudio** — нативный движок на CoreML (Apple Neural Engine)
+- **Sherpa-ONNX** — кроссплатформенный движок
+
+## AI-функции (Ollama)
+
+При установленном [Ollama](https://ollama.ai/) доступны:
+
+- **Сводка** — краткое содержание записи
+- **Улучшение текста** — коррекция ошибок транскрипции
+- **AI-диаризация** — разбивка по собеседникам через LLM
+
+```bash
+# Установка Ollama
+brew install ollama
+ollama pull llama3.2
+```
+
+## Технологии
+
+### Backend (Go)
+- **whisper.cpp** — движок распознавания речи (CGO bindings)
+- **GigaAM** — ONNX Runtime для русского языка
+- **sherpa-onnx** — диаризация спикеров
+- **gRPC + HTTP** — коммуникация с frontend
+
+### Frontend (Electron + React)
+- **Electron 39** — десктопная оболочка
+- **React 19** — UI фреймворк
+- **Vite 7** — сборка
+
+### macOS Audio (Swift)
+- **ScreenCaptureKit** — захват системного звука (macOS 13+)
+- **CoreAudio Process Tap** — альтернативный захват (macOS 14.2+)
+- **Voice Isolation** — шумоподавление (macOS 15+)
+- **Metal/CoreML** — GPU ускорение
+
+## Структура проекта
+
+```
+AIWisper/
+├── backend/                 # Go backend
+│   ├── ai/                  # Движки распознавания
+│   │   ├── binding/         # CGO bindings для whisper.cpp
+│   │   ├── whisper.go       # Whisper интерфейс
+│   │   ├── gigaam.go        # GigaAM интерфейс
+│   │   └── diarization*.go  # Диаризация
+│   ├── audio/               # Захват аудио
+│   │   ├── coreaudio/       # Swift: CoreAudio Tap
+│   │   ├── screencapture/   # Swift: ScreenCaptureKit
+│   │   └── diarization/     # Swift: FluidAudio
+│   ├── internal/            # Внутренние сервисы
+│   │   ├── api/             # gRPC сервер
+│   │   └── service/         # Бизнес-логика
+│   ├── session/             # Управление записями
+│   └── models/              # Загрузка моделей
+├── frontend/                # Electron + React
+│   ├── electron/            # Main process
+│   ├── src/                 # React приложение
+│   │   ├── components/      # UI компоненты
+│   │   └── App.tsx          # Главный компонент
+│   └── package.json
+├── scripts/                 # Скрипты сборки
+└── docs/                    # Документация
+```
+
+## Разработка
+
+### Требования для сборки
+
+- **Go** 1.21+
+- **Node.js** 18+
+- **Xcode Command Line Tools** (для CGO и Swift)
+
+### Команды
+
+```bash
+# Запуск в режиме разработки
+cd frontend && npm run electron:dev
+
+# Сборка backend отдельно
+cd frontend && npm run backend:build
+
+# Сборка DMG
+cd frontend && npm run electron:build:dmg
+
+# Сборка без упаковки (для отладки)
+cd frontend && npm run electron:build:dir
+```
+
+### Переменные окружения
+
+```bash
+# Путь к данным (по умолчанию ~/Library/Application Support/aiwisper)
+AIWISPER_DATA_DIR=/path/to/data
+
+# Ollama URL (по умолчанию http://localhost:11434)
+OLLAMA_URL=http://localhost:11434
+```
+
+## Хранение данных
+
+```
+~/Library/Application Support/aiwisper/
+├── sessions/           # Записи
+│   └── {uuid}/
+│       ├── meta.json   # Метаданные
+│       ├── full.mp3    # Аудио
+│       └── chunks/     # Чанки + транскрипции
+├── models/             # Скачанные модели
+├── voiceprints/        # Голосовые профили
+└── config.json         # Настройки
+```
+
+## Решение проблем
+
+### Нет звука системы
+1. Дайте разрешение "Запись экрана" в Настройки → Конфиденциальность
+2. Перезапустите приложение
+
+### Медленная транскрипция
+1. Используйте модель `large-v3-turbo` вместо `large-v3`
+2. Убедитесь что используется GPU (Metal)
+
+### Ошибка загрузки модели
+1. Проверьте свободное место на диске
+2. Удалите частично скачанную модель из `~/Library/Application Support/aiwisper/models/`
+
+### Backend не запускается
+```bash
+# Проверить логи
+cat /tmp/aiwisper-backend.log
+
+# Запустить вручную для отладки
+./backend/aiwisper-backend -trace-log /dev/stdout
+```
+
+## Лицензия
+
+MIT License. См. [LICENSE](LICENSE).
+
+## Благодарности
+
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — движок транскрипции
+- [GigaAM](https://github.com/salute-developers/GigaAM) — русскоязычная модель от Sber
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — диаризация
+- [Electron](https://www.electronjs.org/) — десктопный фреймворк
