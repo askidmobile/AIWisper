@@ -85,8 +85,24 @@ cd frontend && npm run electron:dev
 AIWisper автоматически определяет кто говорит в записи:
 
 - **Режим диалога** — раздельные каналы "Вы" (микрофон) и "Собеседник" (системный звук)
-- **FluidAudio** — нативный движок на CoreML (Apple Neural Engine)
-- **Sherpa-ONNX** — кроссплатформенный движок
+- **FluidAudio** — нативный движок диаризации на Swift/CoreML
+- **Sherpa-ONNX** — кроссплатформенный движок на C++/ONNX
+
+### FluidAudio
+
+Собственная разработка — нативный движок диаризации для macOS, использующий Apple Neural Engine через CoreML:
+
+| Компонент | Модель | Описание |
+|-----------|--------|----------|
+| Сегментация | `pyannote-segmentation-3.0` | Определение границ речи |
+| Embedding | `wespeaker-voxceleb-resnet34` | Извлечение голосовых признаков |
+| Кластеризация | Agglomerative Clustering | Группировка по спикерам |
+
+**Преимущества FluidAudio:**
+- Работает на Apple Neural Engine (ANE) — энергоэффективно
+- Нативная интеграция с macOS
+- Не требует внешних зависимостей (ONNX Runtime)
+- Оптимизирован для Apple Silicon
 
 ## AI-функции (Ollama)
 
@@ -115,11 +131,13 @@ ollama pull llama3.2
 - **React 19** — UI фреймворк
 - **Vite 7** — сборка
 
-### macOS Audio (Swift)
+### macOS Native (Swift)
 - **ScreenCaptureKit** — захват системного звука (macOS 13+)
 - **CoreAudio Process Tap** — альтернативный захват (macOS 14.2+)
 - **Voice Isolation** — шумоподавление (macOS 15+)
-- **Metal/CoreML** — GPU ускорение
+- **FluidAudio** — нативная диаризация на CoreML
+- **Metal** — GPU ускорение для whisper.cpp
+- **CoreML** — Apple Neural Engine для диаризации и GigaAM
 
 ## Структура проекта
 
