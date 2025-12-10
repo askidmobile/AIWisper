@@ -4,6 +4,7 @@ import { Header } from './Header';
 import { SettingsPanel } from '../modules/SettingsPanel';
 import { TranscriptionView } from '../modules/TranscriptionView';
 import { ConsoleFooter } from '../modules/ConsoleFooter';
+import { RecordingOverlay } from '../RecordingOverlay';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { useSessionContext } from '../../context/SessionContext';
 import { useModelContext } from '../../context/ModelContext';
@@ -139,12 +140,16 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     const loadOllama = () => fetchOllamaModels('http://localhost:11434');
 
     return (
-        <div className="app-frame" style={{ display: 'flex', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)' }}>
+        <div className="app-frame" style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)' }}>
+            {/* Recording Overlay - shows when recording */}
+            <RecordingOverlay onStop={handleStartStop} />
+            
+            <div style={{ display: 'flex', flex: 1, overflow: 'hidden', marginTop: isRecording ? '48px' : 0, transition: 'margin-top 0.2s ease' }}>
             <Sidebar
                 onStartRecording={handleStartStop}
             />
 
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                 <Header
                     showSettings={showSettings}
                     setShowSettings={setShowSettings}
@@ -179,16 +184,13 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                         onSeek={seek}
                     />
                 </ErrorBoundary>
-
-                <ConsoleFooter logs={logs} />
-
-                {/* Model Manager Modal - Triggered via SettingsPanel or Menu?
-                    SettingsPanel has button. We need to pass setShowModelManager to it
-                    or manage it via Context.
-                    I passed `setShowModelManager` via ModelContext in SettingsPanel? No, I commented it.
-                    I should pass `onShowModelManager` to SettingsPanel.
-                */}
             </div>
+            </div>
+
+            {/* Console Footer - Full Width */}
+            <ConsoleFooter logs={logs} />
+
+
 
             {/* Global Modal */}
             {showModelManager && (

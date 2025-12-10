@@ -1,6 +1,6 @@
 // Типы для менеджера моделей
 
-export type ModelType = 'ggml' | 'onnx' | 'faster-whisper';
+export type ModelType = 'ggml' | 'onnx';
 export type EngineType = 'whisper' | 'gigaam' | 'speaker' | 'diarization';
 export type DiarizationModelType = 'segmentation' | 'embedding';
 

@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.0] - 2025-12-10
+
+### Added
+- **Welcome Screen**: Informative landing page when no recording is selected
+  - App logo and description
+  - 3-step quick start guide
+  - Feature highlights (accuracy, speaker separation, AI summary, local processing)
+
+- **Modern Recording Indicator**: Full-width overlay during recording
+  - Animated waveform visualization
+  - Large monospace timer
+  - Prominent stop button
+  - Glass-blur effects following 2024 UI trends
+
+### Changed
+- **Console Footer**: Now spans full application width (was limited to main content area)
+
+- **Sidebar**: Added traffic lights offset (28px margin-top) so macOS window controls don't overlap "Все записи" header
+  - Added refresh button for session list
+
+- **Recording Lock**: Interface is now locked during recording
+  - Sidebar shows lock overlay with explanation
+  - Settings button disabled
+  - "Новая запись" button shows recording status
+
+- **Settings Modal**: Fixed scrollbar overflow issue
+  - Scrollbar now stays within rounded corners
+  - Fixed header/footer with scrollable content area
+
+- **Model Manager**: Complete restyling to Liquid Glass design
+  - Segmented control for filters
+  - Glass-effect model cards
+  - Status badges with gradients
+  - Removed deprecated "Faster-Whisper" filter
+  - Renamed filters: "GGML" → "Whisper", added "GigaAM"
+  - Hidden diarization models (managed via settings)
+
+### Technical
+- New component: `RecordingOverlay.tsx`
+- Updated `ModelType` to remove deprecated `faster-whisper`
+- Restructured `MainLayout.tsx` for full-width console
+
 ## [1.19.0] - 2025-12-10
 
 ### Fixed

@@ -1,12 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { useWebSocketContext } from '../../context/WebSocketContext';
 import { useSessionContext } from '../../context/SessionContext';
-
-const formatDuration = (seconds: number): string => {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-};
 
 interface HeaderProps {
     showSettings: boolean;
@@ -18,22 +12,7 @@ export const Header: React.FC<HeaderProps> = ({
     setShowSettings,
 }) => {
     const { isConnected } = useWebSocketContext();
-    const { isRecording, currentSession } = useSessionContext();
-    const [duration, setDuration] = useState(0);
-
-    useEffect(() => {
-        let interval: NodeJS.Timeout;
-        if (isRecording && currentSession) {
-            const start = new Date(currentSession.startTime).getTime();
-            interval = setInterval(() => {
-                const now = new Date().getTime();
-                setDuration(Math.floor((now - start) / 1000));
-            }, 1000);
-        } else {
-            setDuration(0);
-        }
-        return () => clearInterval(interval);
-    }, [isRecording, currentSession]);
+    const { isRecording } = useSessionContext();
 
     return (
         <header
@@ -71,61 +50,26 @@ export const Header: React.FC<HeaderProps> = ({
                 />
             </div>
 
-            {/* Center: Recording Timer (only when recording) */}
-            {isRecording && (
-                <div
-                    className="animate-scale-in"
-                    style={{
-                        position: 'absolute',
-                        left: '50%',
-                        transform: 'translateX(-50%)',
-                        padding: '0.4rem 1rem',
-                        borderRadius: 'var(--radius-capsule)',
-                        background: 'rgba(239, 68, 68, 0.15)',
-                        backdropFilter: 'blur(var(--glass-blur-light))',
-                        WebkitBackdropFilter: 'blur(var(--glass-blur-light))',
-                        border: '1px solid rgba(239, 68, 68, 0.3)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.5rem',
-                        WebkitAppRegion: 'no-drag',
-                    } as React.CSSProperties}
-                >
-                    <div
-                        style={{
-                            width: '8px',
-                            height: '8px',
-                            borderRadius: '50%',
-                            background: '#ef4444',
-                            animation: 'pulse 1s infinite',
-                        }}
-                    />
-                    <span
-                        style={{
-                            fontFamily: 'SF Mono, Menlo, monospace',
-                            fontSize: '0.9rem',
-                            fontWeight: 'var(--font-weight-semibold)',
-                            color: 'var(--text-primary)',
-                        }}
-                    >
-                        {formatDuration(duration)}
-                    </span>
-                </div>
-            )}
+            {/* Center space - recording indicator moved to RecordingOverlay */}
+            <div style={{ flex: 1 }} />
 
-            {/* Right: Settings only */}
+            {/* Right: Settings only - disabled during recording */}
             <div
                 style={{
                     display: 'flex',
                     gap: '0.5rem',
                     alignItems: 'center',
                     WebkitAppRegion: 'no-drag',
+                    opacity: isRecording ? 0.4 : 1,
+                    pointerEvents: isRecording ? 'none' : 'auto',
+                    transition: 'opacity 0.2s ease',
                 } as React.CSSProperties}
             >
                 <button
                     className="btn-icon"
                     onClick={() => setShowSettings(!showSettings)}
-                    title="Настройки"
+                    title={isRecording ? "Настройки заблокированы во время записи" : "Настройки"}
+                    disabled={isRecording}
                     style={{
                         width: '36px',
                         height: '36px',

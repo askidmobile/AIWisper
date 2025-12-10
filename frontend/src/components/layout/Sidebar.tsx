@@ -18,7 +18,7 @@ const openDataFolder = async () => {
 };
 
 export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
-    const { sessions, selectedSession, selectSession } = useSessionContext();
+    const { sessions, selectedSession, selectSession, isRecording } = useSessionContext();
 
     const groupedSessions = useMemo(() => groupSessionsByTime(sessions), [sessions]);
 
@@ -38,12 +38,63 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                 display: 'flex',
                 flexDirection: 'column',
                 overflow: 'hidden',
+                position: 'relative',
             }}
         >
-            {/* Header */}
+            {/* Recording Lock Overlay */}
+            {isRecording && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        inset: 0,
+                        background: 'rgba(0, 0, 0, 0.5)',
+                        backdropFilter: 'blur(2px)',
+                        zIndex: 10,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        borderRadius: 'var(--radius-xl)',
+                    }}
+                >
+                    <div
+                        style={{
+                            textAlign: 'center',
+                            padding: '1.5rem',
+                        }}
+                    >
+                        <div
+                            style={{
+                                width: '48px',
+                                height: '48px',
+                                borderRadius: '50%',
+                                background: 'rgba(239, 68, 68, 0.2)',
+                                border: '2px solid rgba(239, 68, 68, 0.4)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                margin: '0 auto 1rem',
+                            }}
+                        >
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2">
+                                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                            </svg>
+                        </div>
+                        <div style={{ color: 'var(--text-primary)', fontWeight: 600, marginBottom: '0.25rem' }}>
+                            Запись идёт
+                        </div>
+                        <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                            Навигация заблокирована
+                        </div>
+                    </div>
+                </div>
+            )}
+            {/* Header with macOS traffic lights offset */}
             <div
                 style={{
-                    padding: '1rem 1.25rem',
+                    padding: '0.75rem 1rem',
+                    paddingTop: '0.5rem',
+                    marginTop: '28px', // Offset for macOS traffic lights
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'center',
@@ -60,19 +111,36 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                 >
                     Все записи
                 </h2>
-                <button
-                    className="btn-icon btn-icon-sm"
-                    onClick={openDataFolder}
-                    title="Открыть папку с записями"
-                    style={{
-                        width: '32px',
-                        height: '32px',
-                    }}
-                >
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                    </svg>
-                </button>
+                <div style={{ display: 'flex', gap: '0.25rem' }}>
+                    <button
+                        className="btn-icon btn-icon-sm"
+                        onClick={() => window.location.reload()}
+                        title="Обновить список"
+                        style={{
+                            width: '32px',
+                            height: '32px',
+                        }}
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M23 4v6h-6"/>
+                            <path d="M1 20v-6h6"/>
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                        </svg>
+                    </button>
+                    <button
+                        className="btn-icon btn-icon-sm"
+                        onClick={openDataFolder}
+                        title="Открыть папку с записями"
+                        style={{
+                            width: '32px',
+                            height: '32px',
+                        }}
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                        </svg>
+                    </button>
+                </div>
             </div>
 
             {/* Sessions List */}
@@ -158,7 +226,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                 )}
             </div>
 
-            {/* New Recording Button */}
+            {/* New Recording Button / Recording Status */}
             <div
                 style={{
                     padding: '0.75rem 1rem',
@@ -168,18 +236,42 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                 <button
                     className="btn-capsule"
                     onClick={onStartRecording}
+                    disabled={isRecording}
                     style={{
                         width: '100%',
                         justifyContent: 'center',
                         padding: '0.6rem 1rem',
                         gap: '0.4rem',
+                        background: isRecording 
+                            ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.8), rgba(220, 38, 38, 0.8))'
+                            : 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+                        border: 'none',
+                        color: 'white',
+                        cursor: isRecording ? 'default' : 'pointer',
                     }}
                 >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                        <line x1="12" y1="5" x2="12" y2="19"/>
-                        <line x1="5" y1="12" x2="19" y2="12"/>
-                    </svg>
-                    Новая запись
+                    {isRecording ? (
+                        <>
+                            <div
+                                style={{
+                                    width: '8px',
+                                    height: '8px',
+                                    borderRadius: '50%',
+                                    background: 'white',
+                                    animation: 'pulse 1s infinite',
+                                }}
+                            />
+                            Идёт запись...
+                        </>
+                    ) : (
+                        <>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                <line x1="12" y1="5" x2="12" y2="19"/>
+                                <line x1="5" y1="12" x2="19" y2="12"/>
+                            </svg>
+                            Новая запись
+                        </>
+                    )}
                 </button>
             </div>
         </aside>

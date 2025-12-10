@@ -166,24 +166,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     WebkitBackdropFilter:
                         'blur(var(--glass-blur)) saturate(var(--glass-saturation))',
                     borderRadius: 'var(--radius-xl)',
-                    padding: '1.5rem',
                     width: '480px',
                     maxHeight: '85vh',
-                    overflowY: 'auto',
                     boxShadow: 'var(--shadow-elevated)',
                     border: '1px solid var(--glass-border)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflow: 'hidden',
                 }}
                 onClick={(e) => e.stopPropagation()}
             >
-                {/* Header */}
+                {/* Header - Fixed */}
                 <div
                     style={{
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'center',
-                        marginBottom: '1.5rem',
+                        padding: '1.5rem',
                         paddingBottom: '1rem',
                         borderBottom: '1px solid var(--glass-border-subtle)',
+                        flexShrink: 0,
                     }}
                 >
                     <h2
@@ -214,6 +216,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </button>
                 </div>
 
+                {/* Scrollable Content */}
+                <div
+                    style={{
+                        flex: 1,
+                        overflowY: 'auto',
+                        padding: '0 1.5rem',
+                        paddingBottom: '1rem',
+                    }}
+                >
                 {/* Appearance Section */}
                 <div style={sectionStyle}>
                     <span style={labelStyle}>Внешний вид</span>
@@ -757,8 +768,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                 )}
 
-                {/* Footer */}
-                <div style={{ textAlign: 'right', paddingTop: '0.5rem' }}>
+                </div>
+
+                {/* Footer - Fixed */}
+                <div style={{ 
+                    textAlign: 'right', 
+                    padding: '1rem 1.5rem',
+                    borderTop: '1px solid var(--glass-border-subtle)',
+                    flexShrink: 0,
+                }}>
                     <button
                         className="btn-capsule btn-capsule-primary"
                         onClick={onClose}
