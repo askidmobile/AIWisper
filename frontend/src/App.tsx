@@ -1647,6 +1647,78 @@ function App() {
         addLog(`Файл ${filename} скачан`);
     }, [selectedSession, generateFullText, addLog]);
 
+    // Генерация SRT субтитров
+    const generateSRT = useCallback((session: Session): string => {
+        const sessionChunks = session.chunks || [];
+
+        // Собираем диалог с timestamps
+        const dialogue: TranscriptSegment[] = sessionChunks
+            .filter(c => c.status === 'completed')
+            .sort((a, b) => a.index - b.index)
+            .flatMap((c) => {
+                if (c.dialogue && c.dialogue.length > 0) {
+                    return c.dialogue.map(seg => ({
+                        ...seg,
+                        start: seg.start,
+                        end: seg.end
+                    }));
+                }
+                return [];
+            });
+
+        if (dialogue.length === 0) {
+            return '';
+        }
+
+        // Форматирование времени для SRT: HH:MM:SS,mmm
+        const formatSRTTime = (ms: number): string => {
+            const totalSeconds = Math.floor(ms / 1000);
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+            const milliseconds = ms % 1000;
+            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')},${milliseconds.toString().padStart(3, '0')}`;
+        };
+
+        // Генерация SRT
+        return dialogue.map((seg, index) => {
+            const { name: speaker } = getSpeakerDisplayName(seg.speaker);
+            const startTime = formatSRTTime(seg.start);
+            const endTime = formatSRTTime(seg.end);
+            return `${index + 1}\n${startTime} --> ${endTime}\n${speaker}: ${seg.text}`;
+        }).join('\n\n');
+    }, [getSpeakerDisplayName]);
+
+    // Скачивание как SRT файл
+    const handleDownloadSRT = useCallback(() => {
+        if (!selectedSession) return;
+
+        const srt = generateSRT(selectedSession);
+        if (!srt) {
+            addLog('Нет данных для экспорта в SRT');
+            return;
+        }
+
+        const date = new Date(selectedSession.startTime);
+        const dateStr = date.toISOString().slice(0, 10);
+        const timeStr = date.toTimeString().slice(0, 5).replace(':', '-');
+        const filename = `transcription_${dateStr}_${timeStr}.srt`;
+
+        const blob = new Blob([srt], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        setShowShareMenu(false);
+        addLog(`Файл ${filename} скачан`);
+    }, [selectedSession, generateSRT, addLog]);
+
     // Автоскролл только при создании новых чанков во время записи
     useEffect(() => {
         if (shouldAutoScroll && transcriptionRef.current) {
@@ -2355,6 +2427,9 @@ function App() {
                                                         </button>
                                                         <button onClick={handleDownloadFile} style={{ width: '100%', padding: '0.6rem 1rem', background: 'none', border: 'none', color: 'var(--text-primary)', textAlign: 'left', cursor: 'pointer', fontSize: '0.85rem' }}>
                                                             📄 Скачать .txt
+                                                        </button>
+                                                        <button onClick={handleDownloadSRT} style={{ width: '100%', padding: '0.6rem 1rem', background: 'none', border: 'none', color: 'var(--text-primary)', textAlign: 'left', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                                            🎬 Скачать .srt (субтитры)
                                                         </button>
                                                     </div>
                                                 )}
