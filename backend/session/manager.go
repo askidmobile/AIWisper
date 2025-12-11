@@ -83,6 +83,38 @@ func (m *Manager) CreateSession(cfg SessionConfig) (*Session, error) {
 	return session, nil
 }
 
+// CreateImportSession создаёт сессию для импортированного файла (без активации)
+func (m *Manager) CreateImportSession(cfg SessionConfig) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	id := uuid.New().String()
+	sessionDir := filepath.Join(m.dataDir, id)
+
+	if err := os.MkdirAll(filepath.Join(sessionDir, "chunks"), 0755); err != nil {
+		return nil, fmt.Errorf("failed to create session dir: %w", err)
+	}
+
+	session := &Session{
+		ID:        id,
+		StartTime: time.Now(),
+		Status:    SessionStatusCompleted, // Импортированная сессия сразу completed
+		Language:  cfg.Language,
+		Model:     cfg.Model,
+		DataDir:   sessionDir,
+		Chunks:    make([]*Chunk, 0),
+	}
+
+	m.sessions[id] = session
+
+	// Сохраняем метаданные
+	if err := m.SaveSessionMeta(session); err != nil {
+		return nil, err
+	}
+
+	return session, nil
+}
+
 // StopSession останавливает активную сессию
 func (m *Manager) StopSession() (*Session, error) {
 	m.mu.Lock()

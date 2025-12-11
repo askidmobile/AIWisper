@@ -340,17 +340,24 @@ function App() {
     const [savedDiarizationEnabled, setSavedDiarizationEnabled] = useState(false);
     const diarizationAutoEnableAttempted = useRef(false);
 
+    // Drag & Drop state
+    const [isDragging, setIsDragging] = useState(false);
+    const [isImporting, setIsImporting] = useState(false);
+    const [importProgress, setImportProgress] = useState<string | null>(null);
+
     const transcriptionRef = useRef<HTMLDivElement | null>(null);
 
     // Refs для доступа к актуальным значениям в callbacks
     const modelsRef = useRef(models);
     const activeModelIdRef = useRef(activeModelId);
     const languageRef = useRef(language);
+    const isImportingRef = useRef(isImporting);
 
     // Обновляем refs при изменении состояния
     useEffect(() => { modelsRef.current = models; }, [models]);
     useEffect(() => { activeModelIdRef.current = activeModelId; }, [activeModelId]);
     useEffect(() => { languageRef.current = language; }, [language]);
+    useEffect(() => { isImportingRef.current = isImporting; }, [isImporting]);
 
     const addLog = useCallback((msg: string) => {
         const time = new Date().toLocaleTimeString();
@@ -808,6 +815,10 @@ function App() {
                         case 'full_transcription_progress':
                             setFullTranscriptionProgress(msg.progress || 0);
                             setFullTranscriptionStatus(msg.data || null);
+                            // Обновляем прогресс импорта (если это был импорт)
+                            if (isImportingRef.current) {
+                                setImportProgress(msg.data || `Транскрипция: ${Math.round((msg.progress || 0) * 100)}%`);
+                            }
                             break;
 
                         case 'full_transcription_completed':
@@ -815,6 +826,9 @@ function App() {
                             setFullTranscriptionProgress(1);
                             setFullTranscriptionStatus(null);
                             setFullTranscriptionError(null);
+                            // Сбрасываем состояние импорта (если это был импорт)
+                            setIsImporting(false);
+                            setImportProgress(null);
                             // Обновляем сессию с новыми данными
                             if (msg.session) {
                                 setSelectedSession(msg.session);
@@ -829,6 +843,9 @@ function App() {
                             setFullTranscriptionProgress(0);
                             setFullTranscriptionStatus(null);
                             setFullTranscriptionError(msg.error || 'Unknown error');
+                            // Сбрасываем состояние импорта (если это был импорт)
+                            setIsImporting(false);
+                            setImportProgress(null);
                             addLog(`Full transcription error: ${msg.error}`);
                             break;
 
@@ -839,6 +856,42 @@ function App() {
                             setFullTranscriptionError(null);
                             setIsCancellingTranscription(false);
                             addLog('Full transcription cancelled');
+                            break;
+
+                        // === Audio Import ===
+                        case 'session_imported':
+                            addLog(`Session imported: ${msg.sessionId}`);
+                            // Запрашиваем обновлённый список сессий
+                            wsRef.current?.send(JSON.stringify({ type: 'get_sessions' }));
+                            break;
+
+                        case 'import_transcription_started':
+                            setImportProgress('Транскрипция...');
+                            addLog('Import transcription started');
+                            break;
+
+                        case 'import_transcription_progress':
+                            setImportProgress(`Транскрипция: ${Math.round((msg.progress || 0) * 100)}%`);
+                            break;
+
+                        case 'import_transcription_completed':
+                            setIsImporting(false);
+                            setImportProgress(null);
+                            addLog('Import transcription completed');
+                            // Обновляем список сессий и выбираем импортированную
+                            wsRef.current?.send(JSON.stringify({ type: 'get_sessions' }));
+                            if (msg.sessionId) {
+                                // Автоматически выбираем импортированную сессию
+                                setTimeout(() => {
+                                    wsRef.current?.send(JSON.stringify({ type: 'get_session', sessionId: msg.sessionId }));
+                                }, 500);
+                            }
+                            break;
+
+                        case 'import_transcription_error':
+                            setIsImporting(false);
+                            setImportProgress(null);
+                            addLog(`Import transcription error: ${msg.error}`);
                             break;
 
                         // === AI Improvement ===
@@ -1946,6 +1999,96 @@ function App() {
         addLog(`Файл ${filename} скачан`);
     }, [selectedSession, generateMarkdown, addLog]);
 
+    // === Drag & Drop Import ===
+    const SUPPORTED_AUDIO_FORMATS = ['mp3', 'wav', 'm4a', 'ogg', 'flac'];
+
+    const handleImportFile = useCallback(async (file: File) => {
+        const ext = file.name.split('.').pop()?.toLowerCase();
+        if (!ext || !SUPPORTED_AUDIO_FORMATS.includes(ext)) {
+            addLog(`Неподдерживаемый формат файла: ${ext}. Поддерживаются: ${SUPPORTED_AUDIO_FORMATS.join(', ')}`);
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('audio', file);
+        formData.append('model', activeModelId || 'ggml-large-v3-turbo');
+        formData.append('language', language);
+
+        setIsImporting(true);
+        setImportProgress('Загрузка файла...');
+        addLog(`Импорт файла: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+
+        try {
+            const response = await fetch(`${API_BASE}/api/import`, {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(errorText || `HTTP ${response.status}`);
+            }
+
+            const result = await response.json();
+            if (result.success) {
+                addLog(`Файл импортирован: ${result.title}, длительность: ${Math.round(result.duration)}с`);
+                setImportProgress('Транскрипция запущена...');
+                // WebSocket события обновят прогресс и завершат импорт
+            } else {
+                throw new Error(result.error || 'Неизвестная ошибка');
+            }
+        } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            addLog(`Ошибка импорта: ${errorMsg}`);
+            setIsImporting(false);
+            setImportProgress(null);
+        }
+    }, [activeModelId, language, addLog]);
+
+    const handleDragOver = useCallback((e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+    }, []);
+
+    const handleDragEnter = useCallback((e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Проверяем, что это файл, а не текст
+        if (e.dataTransfer.types.includes('Files')) {
+            setIsDragging(true);
+        }
+    }, []);
+
+    const handleDragLeave = useCallback((e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // Проверяем, что мы действительно покинули область (а не вошли в дочерний элемент)
+        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        const x = e.clientX;
+        const y = e.clientY;
+        if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
+            setIsDragging(false);
+        }
+    }, []);
+
+    const handleDrop = useCallback((e: React.DragEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragging(false);
+
+        const files = Array.from(e.dataTransfer.files);
+        const audioFile = files.find(f => {
+            const ext = f.name.split('.').pop()?.toLowerCase();
+            return ext && SUPPORTED_AUDIO_FORMATS.includes(ext);
+        });
+
+        if (audioFile) {
+            handleImportFile(audioFile);
+        } else if (files.length > 0) {
+            addLog(`Файл ${files[0].name} не является поддерживаемым аудио форматом`);
+        }
+    }, [handleImportFile, addLog]);
+
     // Автоскролл только при создании новых чанков во время записи
     useEffect(() => {
         if (shouldAutoScroll && transcriptionRef.current) {
@@ -2124,7 +2267,46 @@ function App() {
         .sort((a, b) => a.start - b.start);
 
     return (
-        <div className="app-frame" style={{ display: 'flex', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)' }}>
+        <div 
+            className="app-frame" 
+            style={{ display: 'flex', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)', position: 'relative' }}
+            onDragOver={handleDragOver}
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+        >
+            {/* Global Drag Overlay */}
+            {isDragging && (
+                <div style={{
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'rgba(139, 92, 246, 0.15)',
+                    backdropFilter: 'blur(4px)',
+                    zIndex: 9999,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    pointerEvents: 'none',
+                }}>
+                    <div style={{
+                        background: 'var(--surface)',
+                        borderRadius: 'var(--radius-xl)',
+                        padding: '3rem 4rem',
+                        border: '3px dashed var(--primary)',
+                        textAlign: 'center',
+                        boxShadow: 'var(--shadow-glass)',
+                    }}>
+                        <div style={{ fontSize: '4rem', marginBottom: '1rem' }}>📥</div>
+                        <div style={{ fontSize: '1.5rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                            Отпустите для импорта
+                        </div>
+                        <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                            MP3, WAV, M4A, OGG, FLAC
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Hidden audio element */}
             <audio
                 ref={audioRef}
@@ -3349,6 +3531,69 @@ function App() {
                                     </div>
                                 </div>
 
+                                {/* Drop Zone for Audio Import */}
+                                <div
+                                    onDragOver={handleDragOver}
+                                    onDragEnter={handleDragEnter}
+                                    onDragLeave={handleDragLeave}
+                                    onDrop={handleDrop}
+                                    style={{
+                                        marginTop: '1.5rem',
+                                        padding: '2rem',
+                                        border: `2px dashed ${isDragging ? 'var(--primary)' : 'var(--glass-border)'}`,
+                                        borderRadius: 'var(--radius-xl)',
+                                        background: isDragging ? 'rgba(139, 92, 246, 0.1)' : 'var(--surface)',
+                                        textAlign: 'center',
+                                        transition: 'all 0.2s ease',
+                                        width: '100%',
+                                        maxWidth: '420px',
+                                        cursor: 'pointer',
+                                        transform: isDragging ? 'scale(1.02)' : 'scale(1)',
+                                    }}
+                                >
+                                    {isImporting ? (
+                                        <>
+                                            <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>⏳</div>
+                                            <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.5rem' }}>
+                                                {importProgress || 'Импорт...'}
+                                            </div>
+                                            <div style={{
+                                                width: '100%',
+                                                height: '4px',
+                                                background: 'var(--glass-border)',
+                                                borderRadius: '2px',
+                                                overflow: 'hidden',
+                                                marginTop: '0.75rem',
+                                            }}>
+                                                <div style={{
+                                                    width: '30%',
+                                                    height: '100%',
+                                                    background: 'linear-gradient(90deg, var(--primary), var(--primary-dark))',
+                                                    borderRadius: '2px',
+                                                    animation: 'importProgress 1.5s ease-in-out infinite',
+                                                }} />
+                                            </div>
+                                            <style>{`
+                                                @keyframes importProgress {
+                                                    0% { transform: translateX(-100%); }
+                                                    100% { transform: translateX(400%); }
+                                                }
+                                            `}</style>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>
+                                                {isDragging ? '📥' : '📁'}
+                                            </div>
+                                            <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.5rem' }}>
+                                                {isDragging ? 'Отпустите для импорта' : 'Или импортируйте аудио файл'}
+                                            </div>
+                                            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                                                Перетащите сюда MP3, WAV, M4A, OGG или FLAC
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
 
                             </div>
                         ) : chunks.length === 0 && isRecording ? (

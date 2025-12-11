@@ -126,6 +126,7 @@ func (s *Server) Start() {
 
 	http.HandleFunc("/ws", s.handleWebSocket)
 	http.HandleFunc("/api/sessions/", s.handleSessionsAPI)
+	http.HandleFunc("/api/import", s.handleImportAudio)
 
 	log.Printf("Backend listening on HTTP :%s and gRPC %s", s.Config.Port, s.Config.GRPCAddr)
 	if err := http.ListenAndServe(":"+s.Config.Port, nil); err != nil {
@@ -1189,6 +1190,255 @@ func (s *Server) handleSessionsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.ServeFile(w, r, filePath)
+}
+
+// handleImportAudio обрабатывает загрузку аудио файла для транскрипции
+func (s *Server) handleImportAudio(w http.ResponseWriter, r *http.Request) {
+	// CORS headers
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Ограничение размера файла: 500MB
+	r.ParseMultipartForm(500 << 20)
+
+	file, header, err := r.FormFile("audio")
+	if err != nil {
+		log.Printf("Import: failed to get file: %v", err)
+		http.Error(w, "Failed to get file", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	// Получаем параметры
+	modelID := r.FormValue("model")
+	language := r.FormValue("language")
+	if language == "" {
+		language = "ru"
+	}
+
+	// Проверяем расширение файла
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	supportedFormats := map[string]bool{".mp3": true, ".wav": true, ".m4a": true, ".ogg": true, ".flac": true}
+	if !supportedFormats[ext] {
+		http.Error(w, "Unsupported audio format. Supported: mp3, wav, m4a, ogg, flac", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Import: received file %s (%d bytes), model=%s, language=%s",
+		header.Filename, header.Size, modelID, language)
+
+	// Создаём новую сессию для импорта (без активации)
+	sess, err := s.SessionMgr.CreateImportSession(session.SessionConfig{
+		Language: language,
+		Model:    modelID,
+	})
+	if err != nil {
+		log.Printf("Import: failed to create session: %v", err)
+		http.Error(w, "Failed to create session", http.StatusInternalServerError)
+		return
+	}
+
+	// Устанавливаем название из имени файла
+	title := strings.TrimSuffix(header.Filename, ext)
+	s.SessionMgr.SetSessionTitle(sess.ID, title)
+
+	// Сохраняем файл во временную директорию
+	tempPath := filepath.Join(sess.DataDir, "import"+ext)
+	tempFile, err := os.Create(tempPath)
+	if err != nil {
+		log.Printf("Import: failed to create temp file: %v", err)
+		http.Error(w, "Failed to save file", http.StatusInternalServerError)
+		return
+	}
+
+	_, err = io.Copy(tempFile, file)
+	tempFile.Close()
+	if err != nil {
+		log.Printf("Import: failed to save file: %v", err)
+		http.Error(w, "Failed to save file", http.StatusInternalServerError)
+		return
+	}
+
+	// Конвертируем в WAV если нужно
+	wavPath := filepath.Join(sess.DataDir, "full.wav")
+	mp3Path := filepath.Join(sess.DataDir, "full.mp3")
+
+	// Используем ffmpeg для конвертации
+	ffmpegPath := session.GetFFmpegPath()
+
+	// Конвертируем в WAV (16kHz, mono для транскрипции)
+	cmd := exec.Command(ffmpegPath,
+		"-i", tempPath,
+		"-ar", "16000",
+		"-ac", "1",
+		"-y", wavPath,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("Import: ffmpeg WAV conversion failed: %v, output: %s", err, string(output))
+		http.Error(w, "Failed to convert audio", http.StatusInternalServerError)
+		return
+	}
+
+	// Конвертируем в MP3 для воспроизведения (сохраняем оригинальные каналы)
+	cmd = exec.Command(ffmpegPath,
+		"-i", tempPath,
+		"-codec:a", "libmp3lame",
+		"-qscale:a", "2",
+		"-y", mp3Path,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("Import: ffmpeg MP3 conversion failed: %v, output: %s", err, string(output))
+		// Не критично, продолжаем
+	}
+
+	// Удаляем временный файл
+	os.Remove(tempPath)
+
+	// Получаем длительность
+	durationMs, err := s.getAudioDuration(wavPath)
+	if err != nil {
+		log.Printf("Import: failed to get duration: %v", err)
+		durationMs = 0
+	}
+
+	// Обновляем сессию
+	sess.TotalDuration = time.Duration(durationMs) * time.Millisecond
+	sess.Status = session.SessionStatusCompleted
+	s.SessionMgr.SaveSessionMeta(sess)
+
+	// Уведомляем клиентов о новой сессии
+	s.broadcast(Message{
+		Type:      "session_imported",
+		SessionID: sess.ID,
+		Session:   sess,
+	})
+
+	// Запускаем полную транскрипцию в фоне
+	go func() {
+		sessionID := sess.ID
+		log.Printf("Import: starting transcription for session %s", sessionID)
+
+		// Update engine with specified model/language
+		if s.EngineMgr != nil {
+			if language != "" {
+				s.EngineMgr.SetLanguage(language)
+			}
+			if modelID != "" {
+				if err := s.EngineMgr.SetActiveModel(modelID); err != nil {
+					log.Printf("Import: failed to set model: %v", err)
+				}
+			}
+		}
+
+		// Уведомляем о начале транскрипции
+		s.broadcast(Message{
+			Type:      "full_transcription_started",
+			SessionID: sessionID,
+		})
+
+		// Создаём один чанк для всего файла
+		chunk := &session.Chunk{
+			ID:        sessionID + "-0",
+			SessionID: sessionID,
+			Index:     0,
+			Duration:  sess.TotalDuration,
+			StartMs:   0,
+			EndMs:     durationMs,
+			Status:    session.ChunkStatusPending,
+			FilePath:  wavPath,
+			CreatedAt: time.Now(),
+		}
+
+		// Добавляем чанк в сессию
+		if err := s.SessionMgr.AddChunk(sessionID, chunk); err != nil {
+			log.Printf("Import: failed to add chunk: %v", err)
+			s.broadcast(Message{
+				Type:      "full_transcription_error",
+				SessionID: sessionID,
+				Error:     err.Error(),
+			})
+			return
+		}
+
+		// Отправляем прогресс
+		s.broadcast(Message{
+			Type:      "full_transcription_progress",
+			SessionID: sessionID,
+			Progress:  0.1,
+			Data:      "Транскрипция аудио...",
+		})
+
+		// Транскрибируем чанк
+		if s.TranscriptionService != nil {
+			s.TranscriptionService.HandleChunkSyncWithDiarization(chunk, false)
+		}
+
+		// Финальный прогресс
+		s.broadcast(Message{
+			Type:      "full_transcription_progress",
+			SessionID: sessionID,
+			Progress:  1.0,
+			Data:      "Завершение...",
+		})
+
+		// Получаем обновлённую сессию
+		updatedSess, _ := s.SessionMgr.GetSession(sessionID)
+
+		s.broadcast(Message{
+			Type:      "full_transcription_completed",
+			SessionID: sessionID,
+			Session:   updatedSess,
+		})
+
+		log.Printf("Import: transcription completed for session %s", sessionID)
+	}()
+
+	// Возвращаем информацию о созданной сессии
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":   true,
+		"sessionId": sess.ID,
+		"title":     title,
+		"duration":  durationMs,
+	})
+}
+
+// getAudioDuration получает длительность аудио файла в миллисекундах
+func (s *Server) getAudioDuration(audioPath string) (int64, error) {
+	cmd := exec.Command(session.GetFFmpegPath(),
+		"-i", audioPath,
+		"-f", "null", "-",
+	)
+	output, _ := cmd.CombinedOutput()
+
+	// Парсим вывод ffmpeg для получения длительности
+	// Duration: 00:01:23.45
+	outputStr := string(output)
+	if idx := strings.Index(outputStr, "Duration:"); idx != -1 {
+		durationStr := outputStr[idx+10 : idx+21]
+		parts := strings.Split(durationStr, ":")
+		if len(parts) == 3 {
+			var hours, mins int
+			var secs float64
+			fmt.Sscanf(parts[0], "%d", &hours)
+			fmt.Sscanf(parts[1], "%d", &mins)
+			fmt.Sscanf(parts[2], "%f", &secs)
+			totalMs := int64((hours*3600+mins*60)*1000) + int64(secs*1000)
+			return totalMs, nil
+		}
+	}
+	return 0, fmt.Errorf("could not parse duration")
 }
 
 // getSpeakerEmbedding получает embedding спикера из сессии
