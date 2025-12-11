@@ -129,8 +129,7 @@ func (e *WhisperEngine) TranscribeWithSegments(samples []float32) ([]TranscriptS
 	// Включаем таймстемпы токенов для точных временных меток
 	ctx.SetTokenTimestamps(true)
 
-	// Начальный промпт для предотвращения галлюцинаций
-	// Пустой промпт помогает избежать "Продолжение следует..." и подобных артефактов
+	// Пустой начальный промпт для предотвращения зацикливания
 	ctx.SetInitialPrompt("")
 
 	log.Printf("TranscribeWithSegments: samples=%d duration=%.1fs lang=%s", len(samples), float64(len(samples))/16000, e.language)

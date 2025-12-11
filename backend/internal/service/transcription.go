@@ -415,16 +415,20 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk, useDia
 // transcribeRegionsSeparately транскрибирует каждый VAD регион отдельно
 // Это важно для GigaAM, который плохо работает со склеенными регионами (теряет контекст на границах)
 // Каждый регион транскрибируется независимо, затем результаты объединяются с правильными timestamps
+// Короткие регионы (<2 сек) объединяются с соседними для лучшего контекста
 func (s *TranscriptionService) transcribeRegionsSeparately(samples []float32, regions []session.SpeechRegion, sampleRate int) ([]ai.TranscriptSegment, error) {
 	if len(regions) == 0 {
 		return nil, nil
 	}
 
-	log.Printf("transcribeRegionsSeparately: processing %d regions separately for GigaAM", len(regions))
+	// Объединяем короткие регионы для лучшего контекста Whisper
+	mergedRegions := mergeShortRegions(regions, 2000, 3000) // minDuration=2s, maxGap=3s
+
+	log.Printf("transcribeRegionsSeparately: %d regions merged to %d groups", len(regions), len(mergedRegions))
 
 	var allSegments []ai.TranscriptSegment
 
-	for i, region := range regions {
+	for i, region := range mergedRegions {
 		// Извлекаем семплы для этого региона
 		startSample := int(region.StartMs * int64(sampleRate) / 1000)
 		endSample := int(region.EndMs * int64(sampleRate) / 1000)
@@ -469,8 +473,46 @@ func (s *TranscriptionService) transcribeRegionsSeparately(samples []float32, re
 		allSegments = append(allSegments, segments...)
 	}
 
-	log.Printf("transcribeRegionsSeparately: total %d segments from %d regions", len(allSegments), len(regions))
+	log.Printf("transcribeRegionsSeparately: total %d segments from %d regions", len(allSegments), len(mergedRegions))
 	return allSegments, nil
+}
+
+// mergeShortRegions объединяет короткие регионы с соседними для лучшего контекста при транскрипции
+// minDurationMs - минимальная длина региона (короче будут объединены)
+// maxGapMs - максимальный промежуток между регионами для объединения
+func mergeShortRegions(regions []session.SpeechRegion, minDurationMs, maxGapMs int64) []session.SpeechRegion {
+	if len(regions) <= 1 {
+		return regions
+	}
+
+	var merged []session.SpeechRegion
+	current := regions[0]
+
+	for i := 1; i < len(regions); i++ {
+		next := regions[i]
+		currentDuration := current.EndMs - current.StartMs
+		gap := next.StartMs - current.EndMs
+
+		// Объединяем если:
+		// 1. Текущий регион короткий (<minDurationMs) И промежуток небольшой
+		// 2. ИЛИ следующий регион короткий И промежуток небольшой
+		shouldMerge := (currentDuration < minDurationMs && gap <= maxGapMs) ||
+			(next.EndMs-next.StartMs < minDurationMs && gap <= maxGapMs)
+
+		if shouldMerge {
+			// Расширяем текущий регион до конца следующего
+			current.EndMs = next.EndMs
+		} else {
+			// Сохраняем текущий и начинаем новый
+			merged = append(merged, current)
+			current = next
+		}
+	}
+
+	// Добавляем последний регион
+	merged = append(merged, current)
+
+	return merged
 }
 
 // segmentsToText объединяет текст из сегментов для логирования
