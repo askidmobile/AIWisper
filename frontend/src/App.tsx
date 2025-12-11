@@ -1977,6 +1977,90 @@ function App() {
         return () => document.removeEventListener('click', handleClickOutside);
     }, [showShareMenu]);
 
+    // Горячие клавиши
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Игнорируем если фокус в текстовом поле
+            const target = e.target as HTMLElement;
+            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+                return;
+            }
+
+            // Cmd/Ctrl + модификаторы
+            const isMod = e.metaKey || e.ctrlKey;
+
+            // Space - Play/Pause (только если не записываем)
+            if (e.code === 'Space' && !isRecording && selectedSession) {
+                e.preventDefault();
+                if (playingAudio) {
+                    audioRef.current?.pause();
+                    setPlayingAudio(null);
+                } else {
+                    playFullRecording(selectedSession.id);
+                }
+                return;
+            }
+
+            // R - Start/Stop Recording
+            if (e.code === 'KeyR' && !isMod) {
+                e.preventDefault();
+                handleStartStop();
+                return;
+            }
+
+            // Cmd/Ctrl + C - Copy transcription (когда нет выделения)
+            if (isMod && e.code === 'KeyC' && !window.getSelection()?.toString() && selectedSession) {
+                // Не перехватываем стандартное копирование если есть выделение
+                return;
+            }
+
+            // Cmd/Ctrl + S - Download as txt
+            if (isMod && e.code === 'KeyS' && selectedSession) {
+                e.preventDefault();
+                handleDownloadFile();
+                return;
+            }
+
+            // Cmd/Ctrl + E - Export menu toggle
+            if (isMod && e.code === 'KeyE' && selectedSession) {
+                e.preventDefault();
+                setShowShareMenu(prev => !prev);
+                return;
+            }
+
+            // Escape - Close menus/modals
+            if (e.code === 'Escape') {
+                if (showShareMenu) {
+                    setShowShareMenu(false);
+                }
+                if (showModelManager) {
+                    setShowModelManager(false);
+                }
+                return;
+            }
+
+            // Arrow Left/Right - Seek (when playing)
+            if (playingAudio && audioRef.current) {
+                if (e.code === 'ArrowLeft') {
+                    e.preventDefault();
+                    audioRef.current.currentTime = Math.max(0, audioRef.current.currentTime - 5);
+                    return;
+                }
+                if (e.code === 'ArrowRight') {
+                    e.preventDefault();
+                    audioRef.current.currentTime = Math.min(
+                        audioRef.current.duration || 0,
+                        audioRef.current.currentTime + 5
+                    );
+                    return;
+                }
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [isRecording, selectedSession, playingAudio, showShareMenu, showModelManager, handleStartStop, handleDownloadFile]);
+
     const displaySession = selectedSession || currentSession;
     const chunks = displaySession?.chunks || [];
     const sessionDurationSeconds = normalizeDurationSeconds(displaySession?.totalDuration);
@@ -2200,6 +2284,7 @@ function App() {
                         className="btn-capsule"
                         onClick={handleStartStop}
                         disabled={status !== 'Connected' || isStopping || isRecording}
+                        title="Начать запись (R)"
                         style={{
                             width: '100%',
                             justifyContent: 'center',
@@ -2546,7 +2631,7 @@ function App() {
                                         {/* Big Play Button */}
                                         <button
                                             onClick={() => playFullRecording(selectedSession.id)}
-                                            title={playingAudio?.includes(selectedSession.id) ? 'Остановить' : 'Слушать запись'}
+                                            title={playingAudio?.includes(selectedSession.id) ? 'Остановить (Space)' : 'Слушать запись (Space)'}
                                             style={{
                                                 width: '56px',
                                                 height: '56px',
@@ -2615,7 +2700,7 @@ function App() {
                                             <div style={{ position: 'relative' }} data-share-menu>
                                                 <button
                                                     onClick={() => setShowShareMenu(!showShareMenu)}
-                                                    title="Экспорт"
+                                                    title="Экспорт (⌘E)"
                                                     style={{
                                                         width: '36px',
                                                         height: '36px',
