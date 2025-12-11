@@ -47,6 +47,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     const [ollamaModel, setOllamaModel] = useState('');
     const [enableStreaming, setEnableStreaming] = useState(false); // Streaming transcription
     const [pauseThreshold, setPauseThreshold] = useState(0.5); // Pause threshold for segmentation (seconds)
+    const [streamingChunkSeconds, setStreamingChunkSeconds] = useState(15); // Streaming chunk size
+    const [streamingConfirmationThreshold, setStreamingConfirmationThreshold] = useState(0.85); // Streaming confirmation threshold
 
     // Devices (fetched via navigator.mediaDevices usually, or Electron IPC)
     const [inputDevices, setInputDevices] = useState<any[]>([]);
@@ -85,6 +87,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                 if (p.ollamaModel) setOllamaModel(p.ollamaModel);
                 if (p.enableStreaming !== undefined) setEnableStreaming(p.enableStreaming);
                 if (p.pauseThreshold !== undefined) setPauseThreshold(p.pauseThreshold);
+                if (p.streamingChunkSeconds !== undefined) setStreamingChunkSeconds(p.streamingChunkSeconds);
+                if (p.streamingConfirmationThreshold !== undefined) setStreamingConfirmationThreshold(p.streamingConfirmationThreshold);
             }
         } catch (e) {
             console.error("Failed to load settings", e);
@@ -94,10 +98,11 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     // Save settings on change
     useEffect(() => {
         const settings = {
-            micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold
+            micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold,
+            streamingChunkSeconds, streamingConfirmationThreshold
         };
         localStorage.setItem('aiwisper_settings', JSON.stringify(settings));
-    }, [micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold]);
+    }, [micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold, streamingChunkSeconds, streamingConfirmationThreshold]);
 
     // Subscribe to model loading events
     useEffect(() => {
@@ -214,12 +219,16 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     // Auto enable/disable streaming transcription based on recording state and settings
     useEffect(() => {
         if (isRecording && enableStreaming) {
-            sendMessage({ type: 'enable_streaming' });
-            addLog('Streaming transcription enabled');
+            sendMessage({ 
+                type: 'enable_streaming',
+                streamingChunkSeconds: streamingChunkSeconds,
+                streamingConfirmationThreshold: streamingConfirmationThreshold
+            });
+            addLog(`Streaming transcription enabled (chunk=${streamingChunkSeconds}s, threshold=${Math.round(streamingConfirmationThreshold * 100)}%)`);
         } else if (!isRecording) {
             sendMessage({ type: 'disable_streaming' });
         }
-    }, [isRecording, enableStreaming, sendMessage, addLog]);
+    }, [isRecording, enableStreaming, streamingChunkSeconds, streamingConfirmationThreshold, sendMessage, addLog]);
 
     return (
         <div className="app-frame" style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)' }}>
@@ -330,6 +339,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                         setEnableStreaming={setEnableStreaming}
                         pauseThreshold={pauseThreshold}
                         setPauseThreshold={setPauseThreshold}
+                        streamingChunkSeconds={streamingChunkSeconds}
+                        setStreamingChunkSeconds={setStreamingChunkSeconds}
+                        streamingConfirmationThreshold={streamingConfirmationThreshold}
+                        setStreamingConfirmationThreshold={setStreamingConfirmationThreshold}
                     />
                 )}
 

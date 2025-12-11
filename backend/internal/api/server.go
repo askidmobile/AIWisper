@@ -939,13 +939,19 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			send(Message{Type: "error", Data: "Streaming transcription service not available"})
 			return
 		}
-		if err := s.StreamingTranscriptionService.Start(); err != nil {
+		// Создаём конфигурацию из параметров сообщения
+		streamingCfg := service.StreamingConfig{
+			ChunkSeconds:          msg.StreamingChunkSeconds,
+			ConfirmationThreshold: msg.StreamingConfirmationThreshold,
+		}
+		if err := s.StreamingTranscriptionService.StartWithConfig(streamingCfg); err != nil {
 			log.Printf("Failed to enable streaming transcription: %v", err)
 			send(Message{Type: "streaming_error", Error: err.Error()})
 			return
 		}
 		send(Message{Type: "streaming_enabled"})
-		log.Printf("Streaming transcription enabled")
+		log.Printf("Streaming transcription enabled (chunkSeconds=%.1f, confirmationThreshold=%.2f)",
+			streamingCfg.ChunkSeconds, streamingCfg.ConfirmationThreshold)
 
 	case "disable_streaming":
 		if s.StreamingTranscriptionService == nil {

@@ -34,8 +34,19 @@ func NewStreamingTranscriptionService(modelMgr *models.Manager) *StreamingTransc
 	}
 }
 
+// StreamingConfig параметры для streaming транскрипции
+type StreamingConfig struct {
+	ChunkSeconds          float64 // Размер чанка в секундах (default: 15.0)
+	ConfirmationThreshold float64 // Порог подтверждения (default: 0.85)
+}
+
 // Start запускает streaming транскрипцию
 func (s *StreamingTranscriptionService) Start() error {
+	return s.StartWithConfig(StreamingConfig{})
+}
+
+// StartWithConfig запускает streaming транскрипцию с настройками
+func (s *StreamingTranscriptionService) StartWithConfig(cfg StreamingConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -43,11 +54,21 @@ func (s *StreamingTranscriptionService) Start() error {
 		return nil // Уже запущен
 	}
 
+	// Применяем defaults
+	chunkSeconds := cfg.ChunkSeconds
+	if chunkSeconds <= 0 {
+		chunkSeconds = 15.0
+	}
+	confirmationThreshold := cfg.ConfirmationThreshold
+	if confirmationThreshold <= 0 {
+		confirmationThreshold = 0.85
+	}
+
 	// Создаём streaming engine
 	config := ai.StreamingFluidASRConfig{
 		ModelCacheDir:         s.modelMgr.GetModelsDir(),
-		ChunkSeconds:          15.0,
-		ConfirmationThreshold: 0.85,
+		ChunkSeconds:          chunkSeconds,
+		ConfirmationThreshold: confirmationThreshold,
 	}
 
 	engine, err := ai.NewStreamingFluidASREngine(config)

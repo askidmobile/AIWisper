@@ -28,6 +28,10 @@ interface SettingsPanelProps {
     setEnableStreaming?: (v: boolean) => void;
     pauseThreshold?: number;
     setPauseThreshold?: (v: number) => void;
+    streamingChunkSeconds?: number;
+    setStreamingChunkSeconds?: (v: number) => void;
+    streamingConfirmationThreshold?: number;
+    setStreamingConfirmationThreshold?: (v: number) => void;
 }
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
@@ -41,7 +45,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     enableStreaming = false,
     setEnableStreaming,
     pauseThreshold = 0.5,
-    setPauseThreshold
+    setPauseThreshold,
+    streamingChunkSeconds = 15,
+    setStreamingChunkSeconds,
+    streamingConfirmationThreshold = 0.85,
+    setStreamingConfirmationThreshold
 }) => {
     const { models, activeModelId, ollamaModels, ollamaError, ollamaModelsLoading } = useModelContext() as any;
     // Note: setShowModelManager is not in context yet. I need to add it or manage modal in parent.
@@ -159,30 +167,65 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 {/* Streaming Transcription Toggle */}
                 {setEnableStreaming && (
                     <label 
-                        data-chip 
-                        style={{ 
-                            display: 'flex', 
-                            alignItems: 'center', 
-                            gap: '0.4rem', 
-                            cursor: 'pointer', 
-                            padding: '0.35rem 0.75rem', 
-                            borderRadius: '12px', 
-                            border: '1px solid var(--border)', 
-                            background: 'var(--surface-strong)' 
-                        }}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer' }}
                         title="Включить real-time транскрипцию во время записи (требует Parakeet TDT v3)"
                     >
                         <input 
                             type="checkbox" 
                             checked={enableStreaming} 
                             disabled={settingsLocked} 
-                            onChange={e => setEnableStreaming(e.target.checked)} 
+                            onChange={e => setEnableStreaming?.(e.target.checked)} 
                         />
                         <span style={{ fontSize: '0.85rem' }}>Live Транскрипция</span>
                         <span style={{ fontSize: '0.65rem', color: 'var(--primary)', backgroundColor: 'rgba(108,92,231,0.12)', padding: '2px 5px', borderRadius: '999px' }}>
                             Beta
                         </span>
                     </label>
+                )}
+
+                {/* Streaming Settings (показываем только если streaming включен) */}
+                {enableStreaming && setStreamingChunkSeconds && setStreamingConfirmationThreshold && (
+                    <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center', marginLeft: '1rem', paddingLeft: '1rem', borderLeft: '2px solid var(--primary-alpha)' }}>
+                        {/* Chunk Seconds */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }} title="Размер чанка для обработки (меньше = быстрее, но менее точно)">
+                                Чанк:
+                            </span>
+                            <input
+                                type="range"
+                                min="1"
+                                max="30"
+                                step="1"
+                                value={streamingChunkSeconds}
+                                disabled={settingsLocked}
+                                onChange={e => setStreamingChunkSeconds(parseFloat(e.target.value))}
+                                style={{ width: '80px', cursor: 'pointer' }}
+                            />
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-primary)', minWidth: '35px' }}>
+                                {streamingChunkSeconds}s
+                            </span>
+                        </div>
+
+                        {/* Confirmation Threshold */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }} title="Порог уверенности для подтверждения текста (выше = точнее, но медленнее)">
+                                Порог:
+                            </span>
+                            <input
+                                type="range"
+                                min="0.5"
+                                max="0.99"
+                                step="0.01"
+                                value={streamingConfirmationThreshold}
+                                disabled={settingsLocked}
+                                onChange={e => setStreamingConfirmationThreshold(parseFloat(e.target.value))}
+                                style={{ width: '80px', cursor: 'pointer' }}
+                            />
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-primary)', minWidth: '40px' }}>
+                                {Math.round(streamingConfirmationThreshold * 100)}%
+                            </span>
+                        </div>
+                    </div>
                 )}
             </div>
 
