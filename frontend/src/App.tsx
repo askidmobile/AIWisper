@@ -1719,6 +1719,81 @@ function App() {
         addLog(`Файл ${filename} скачан`);
     }, [selectedSession, generateSRT, addLog]);
 
+    // Генерация WebVTT субтитров
+    const generateVTT = useCallback((session: Session): string => {
+        const sessionChunks = session.chunks || [];
+
+        // Собираем диалог с timestamps
+        const dialogue: TranscriptSegment[] = sessionChunks
+            .filter(c => c.status === 'completed')
+            .sort((a, b) => a.index - b.index)
+            .flatMap((c) => {
+                if (c.dialogue && c.dialogue.length > 0) {
+                    return c.dialogue.map(seg => ({
+                        ...seg,
+                        start: seg.start,
+                        end: seg.end
+                    }));
+                }
+                return [];
+            });
+
+        if (dialogue.length === 0) {
+            return '';
+        }
+
+        // Форматирование времени для VTT: HH:MM:SS.mmm
+        const formatVTTTime = (ms: number): string => {
+            const totalSeconds = Math.floor(ms / 1000);
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+            const milliseconds = ms % 1000;
+            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${milliseconds.toString().padStart(3, '0')}`;
+        };
+
+        // Генерация VTT (начинается с WEBVTT заголовка)
+        const header = 'WEBVTT\n\n';
+        const cues = dialogue.map((seg, index) => {
+            const { name: speaker } = getSpeakerDisplayName(seg.speaker);
+            const startTime = formatVTTTime(seg.start);
+            const endTime = formatVTTTime(seg.end);
+            return `${index + 1}\n${startTime} --> ${endTime}\n<v ${speaker}>${seg.text}`;
+        }).join('\n\n');
+
+        return header + cues;
+    }, [getSpeakerDisplayName]);
+
+    // Скачивание как VTT файл
+    const handleDownloadVTT = useCallback(() => {
+        if (!selectedSession) return;
+
+        const vtt = generateVTT(selectedSession);
+        if (!vtt) {
+            addLog('Нет данных для экспорта в VTT');
+            return;
+        }
+
+        const date = new Date(selectedSession.startTime);
+        const dateStr = date.toISOString().slice(0, 10);
+        const timeStr = date.toTimeString().slice(0, 5).replace(':', '-');
+        const filename = `transcription_${dateStr}_${timeStr}.vtt`;
+
+        const blob = new Blob([vtt], { type: 'text/vtt;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        setShowShareMenu(false);
+        addLog(`Файл ${filename} скачан`);
+    }, [selectedSession, generateVTT, addLog]);
+
     // Автоскролл только при создании новых чанков во время записи
     useEffect(() => {
         if (shouldAutoScroll && transcriptionRef.current) {
@@ -2430,6 +2505,9 @@ function App() {
                                                         </button>
                                                         <button onClick={handleDownloadSRT} style={{ width: '100%', padding: '0.6rem 1rem', background: 'none', border: 'none', color: 'var(--text-primary)', textAlign: 'left', cursor: 'pointer', fontSize: '0.85rem' }}>
                                                             🎬 Скачать .srt (субтитры)
+                                                        </button>
+                                                        <button onClick={handleDownloadVTT} style={{ width: '100%', padding: '0.6rem 1rem', background: 'none', border: 'none', color: 'var(--text-primary)', textAlign: 'left', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                                            🌐 Скачать .vtt (WebVTT)
                                                         </button>
                                                     </div>
                                                 )}
