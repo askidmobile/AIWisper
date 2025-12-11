@@ -119,16 +119,10 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
 
     const deleteSession = (id: string) => {
-        if (confirm('Are you sure you want to delete this session?')) {
-            sendMessage({ type: 'delete_session', sessionId: id });
-            if (selectedSession?.id === id) setSelectedSession(null);
-            // Optimistic update or wait for list refresh?
-            // Main logic relies on list refresh command usually sent by backend?
-            // Backend sends 'session_deleted' -> trigger reload
-            // We need separate handler for session_deleted to reload list
-            // Or just optimistic:
-            setSessions(prev => prev.filter(s => s.id !== id));
-        }
+        sendMessage({ type: 'delete_session', sessionId: id });
+        if (selectedSession?.id === id) setSelectedSession(null);
+        // Optimistic update
+        setSessions(prev => prev.filter(s => s.id !== id));
     };
 
     // Add handler for session_deleted to ensure sync

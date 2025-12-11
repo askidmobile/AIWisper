@@ -26,9 +26,11 @@ const openDataFolder = async () => {
 };
 
 export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
-    const { sessions, selectedSession, selectSession, isRecording } = useSessionContext();
+    const { sessions, selectedSession, selectSession, deleteSession, isRecording } = useSessionContext();
     const [showStats, setShowStats] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
+    const [hoveredSession, setHoveredSession] = useState<string | null>(null);
+    const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
 
     // Фильтрация сессий по поисковому запросу
     const filteredSessions = useMemo(() => {
@@ -382,13 +384,58 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                             {group.sessions.map((session) => {
                                 const isSelected = selectedSession?.id === session.id;
                                 const durationSec = session.totalDuration / 1000;
+                                const isHovered = hoveredSession === session.id;
 
                                 return (
                                     <div
                                         key={session.id}
                                         className={`session-item ${isSelected ? 'selected' : ''}`}
                                         onClick={() => selectSession(session.id)}
+                                        onMouseEnter={() => setHoveredSession(session.id)}
+                                        onMouseLeave={() => setHoveredSession(null)}
+                                        style={{ position: 'relative' }}
                                     >
+                                        {/* Delete button (on hover) */}
+                                        {isHovered && !isRecording && (
+                                            <button
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setDeleteConfirm(session.id);
+                                                }}
+                                                title="Удалить запись"
+                                                style={{
+                                                    position: 'absolute',
+                                                    top: '0.5rem',
+                                                    right: '0.5rem',
+                                                    width: '24px',
+                                                    height: '24px',
+                                                    padding: 0,
+                                                    display: 'flex',
+                                                    alignItems: 'center',
+                                                    justifyContent: 'center',
+                                                    background: 'rgba(239, 68, 68, 0.1)',
+                                                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                                                    borderRadius: '4px',
+                                                    cursor: 'pointer',
+                                                    color: '#ef4444',
+                                                    transition: 'all 0.2s',
+                                                }}
+                                                onMouseEnter={(e) => {
+                                                    e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';
+                                                }}
+                                                onMouseLeave={(e) => {
+                                                    e.currentTarget.style.background = 'rgba(239, 68, 68, 0.1)';
+                                                }}
+                                            >
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                    <polyline points="3 6 5 6 21 6"/>
+                                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                                                    <line x1="10" y1="11" x2="10" y2="17"/>
+                                                    <line x1="14" y1="11" x2="14" y2="17"/>
+                                                </svg>
+                                            </button>
+                                        )}
+
                                         {/* Title */}
                                         <div
                                             style={{
@@ -399,6 +446,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                                                 overflow: 'hidden',
                                                 textOverflow: 'ellipsis',
                                                 whiteSpace: 'nowrap',
+                                                paddingRight: isHovered ? '2rem' : 0,
                                             }}
                                         >
                                             {session.title || `Запись ${formatDate(session.startTime)}`}
@@ -483,6 +531,99 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                     )}
                 </button>
             </div>
+
+            {/* Delete Confirmation Modal */}
+            {deleteConfirm && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0, 0, 0, 0.5)',
+                        backdropFilter: 'blur(4px)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                    }}
+                    onClick={() => setDeleteConfirm(null)}
+                >
+                    <div
+                        style={{
+                            background: 'var(--surface-elevated)',
+                            borderRadius: 'var(--radius-lg)',
+                            padding: '1.5rem',
+                            maxWidth: '320px',
+                            width: '90%',
+                            boxShadow: 'var(--shadow-lg)',
+                            border: '1px solid var(--glass-border)',
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+                            <div
+                                style={{
+                                    width: '40px',
+                                    height: '40px',
+                                    borderRadius: '50%',
+                                    background: 'rgba(239, 68, 68, 0.1)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                }}
+                            >
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="3 6 5 6 21 6"/>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '1rem' }}>
+                                    Удалить запись?
+                                </div>
+                                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                                    Это действие нельзя отменить
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+                            <button
+                                onClick={() => setDeleteConfirm(null)}
+                                style={{
+                                    padding: '0.5rem 1rem',
+                                    borderRadius: 'var(--radius-md)',
+                                    border: '1px solid var(--glass-border)',
+                                    background: 'transparent',
+                                    color: 'var(--text-primary)',
+                                    cursor: 'pointer',
+                                    fontSize: '0.875rem',
+                                    fontWeight: 500,
+                                }}
+                            >
+                                Отмена
+                            </button>
+                            <button
+                                onClick={() => {
+                                    deleteSession(deleteConfirm);
+                                    setDeleteConfirm(null);
+                                }}
+                                style={{
+                                    padding: '0.5rem 1rem',
+                                    borderRadius: 'var(--radius-md)',
+                                    border: 'none',
+                                    background: '#ef4444',
+                                    color: 'white',
+                                    cursor: 'pointer',
+                                    fontSize: '0.875rem',
+                                    fontWeight: 500,
+                                }}
+                            >
+                                Удалить
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </aside>
     );
 };
