@@ -40,10 +40,11 @@ type Message struct {
 	ScreenCaptureKitAvailable bool                `json:"screenCaptureKitAvailable,omitempty"`
 
 	// Models
-	Models   []models.ModelState `json:"models,omitempty"`
-	ModelID  string              `json:"modelId,omitempty"`
-	Progress float64             `json:"progress,omitempty"`
-	Error    string              `json:"error,omitempty"`
+	Models    []models.ModelState `json:"models,omitempty"`
+	ModelID   string              `json:"modelId,omitempty"`
+	ModelName string              `json:"modelName,omitempty"` // Human-readable название модели
+	Progress  float64             `json:"progress,omitempty"`
+	Error     string              `json:"error,omitempty"`
 
 	// Summary
 	Summary string `json:"summary,omitempty"`

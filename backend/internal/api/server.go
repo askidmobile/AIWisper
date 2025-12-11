@@ -392,11 +392,34 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 					send(Message{Type: "error", Data: fmt.Sprintf("Model %s is not downloaded", msg.Model)})
 					return
 				}
+
+				// Получаем информацию о модели для отображения
+				modelInfo := models.GetModelByID(msg.Model)
+				modelName := msg.Model
+				if modelInfo != nil {
+					modelName = modelInfo.Name
+				}
+
+				// Проверяем, нужно ли загружать модель (если она ещё не активна)
+				needsLoading := s.EngineMgr.GetActiveModelID() != msg.Model
+
+				if needsLoading {
+					// Отправляем событие начала загрузки модели
+					send(Message{Type: "model_loading", ModelID: msg.Model, ModelName: modelName})
+				}
+
 				if err := s.EngineMgr.SetActiveModel(msg.Model); err != nil {
 					log.Printf("start_session: failed to set active model %s: %v", msg.Model, err)
+					send(Message{Type: "model_load_error", ModelID: msg.Model, ModelName: modelName, Error: err.Error()})
 					send(Message{Type: "error", Data: fmt.Sprintf("Failed to load model %s: %v", msg.Model, err)})
 					return
 				}
+
+				if needsLoading {
+					// Отправляем событие успешной загрузки модели
+					send(Message{Type: "model_loaded", ModelID: msg.Model, ModelName: modelName})
+				}
+
 				log.Printf("start_session: model %s activated successfully", msg.Model)
 				// Обновляем transcriber в Pipeline если диаризация включена
 				s.updatePipelineTranscriber()

@@ -33,7 +33,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
         activeModelId, models, fetchOllamaModels,
         downloadModel, cancelDownload, deleteModel, setActiveModel
     } = useModelContext();
-    const { sendMessage } = useWebSocketContext();
+    const { sendMessage, subscribe } = useWebSocketContext();
 
     // Audio Player
     const { play, playingUrl, seek, currentTime, duration } = useAudioPlayer();
@@ -53,6 +53,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
 
     // Modal state
     const [showModelManager, setShowModelManager] = useState(false);
+
+    // Model loading state
+    const [modelLoading, setModelLoading] = useState(false);
+    const [loadingModelName, setLoadingModelName] = useState('');
 
     // Initial Device Fetch & Load Settings
     useEffect(() => {
@@ -94,6 +98,33 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
         };
         localStorage.setItem('aiwisper_settings', JSON.stringify(settings));
     }, [micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold]);
+
+    // Subscribe to model loading events
+    useEffect(() => {
+        const unsubLoading = subscribe('model_loading', (msg: any) => {
+            setModelLoading(true);
+            setLoadingModelName(msg.modelName || msg.modelId || 'модель');
+            addLog(`Загрузка модели: ${msg.modelName || msg.modelId}...`);
+        });
+
+        const unsubLoaded = subscribe('model_loaded', (msg: any) => {
+            setModelLoading(false);
+            setLoadingModelName('');
+            addLog(`Модель загружена: ${msg.modelName || msg.modelId}`);
+        });
+
+        const unsubLoadError = subscribe('model_load_error', (msg: any) => {
+            setModelLoading(false);
+            setLoadingModelName('');
+            addLog(`Ошибка загрузки модели: ${msg.error}`);
+        });
+
+        return () => {
+            unsubLoading();
+            unsubLoaded();
+            unsubLoadError();
+        };
+    }, [subscribe, addLog]);
 
     // Start/Stop Handler
     const handleStartStop = async () => {
@@ -192,6 +223,83 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
 
     return (
         <div className="app-frame" style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)' }}>
+            {/* Model Loading Overlay */}
+            {modelLoading && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        background: 'rgba(0, 0, 0, 0.6)',
+                        backdropFilter: 'blur(8px)',
+                        WebkitBackdropFilter: 'blur(8px)',
+                        zIndex: 200,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                    }}
+                >
+                    <div
+                        style={{
+                            background: 'var(--surface-elevated)',
+                            borderRadius: 'var(--radius-xl)',
+                            padding: '2rem 3rem',
+                            textAlign: 'center',
+                            boxShadow: 'var(--shadow-lg)',
+                            border: '1px solid var(--glass-border)',
+                            maxWidth: '400px',
+                        }}
+                    >
+                        {/* Spinner */}
+                        <div
+                            style={{
+                                width: '48px',
+                                height: '48px',
+                                margin: '0 auto 1.5rem',
+                                border: '3px solid var(--glass-border)',
+                                borderTopColor: 'var(--primary)',
+                                borderRadius: '50%',
+                                animation: 'spin 1s linear infinite',
+                            }}
+                        />
+                        <div
+                            style={{
+                                fontSize: '1.1rem',
+                                fontWeight: 600,
+                                color: 'var(--text-primary)',
+                                marginBottom: '0.5rem',
+                            }}
+                        >
+                            Загрузка модели
+                        </div>
+                        <div
+                            style={{
+                                fontSize: '0.9rem',
+                                color: 'var(--text-muted)',
+                                marginBottom: '1rem',
+                            }}
+                        >
+                            {loadingModelName}
+                        </div>
+                        <div
+                            style={{
+                                fontSize: '0.8rem',
+                                color: 'var(--text-muted)',
+                                opacity: 0.7,
+                            }}
+                        >
+                            Первый запуск может занять до 30 секунд
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* CSS for spinner animation */}
+            <style>{`
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+            `}</style>
+
             {/* Recording Overlay - shows when recording */}
             <RecordingOverlay onStop={handleStartStop} />
             
