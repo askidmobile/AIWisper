@@ -227,6 +227,10 @@ func (s *TranscriptionService) HandleChunkSyncWithDiarization(chunk *session.Chu
 // - SYS channel (right): diarization to identify multiple speakers (Собеседник 1, 2, 3...)
 // Results are merged by timestamps into a dialogue
 func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk, useDiarizationFallback bool) {
+	// Засекаем время начала обработки
+	startTime := time.Now()
+	chunk.ProcessingStartTime = &startTime
+
 	// Get session to find MP3 path
 	sess, err := s.SessionMgr.GetSession(chunk.SessionID)
 	if err != nil {

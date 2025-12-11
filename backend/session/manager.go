@@ -232,6 +232,12 @@ func (m *Manager) UpdateChunkTranscription(sessionID, chunkID, text string, err 
 		if chunk.ID == chunkID {
 			now := time.Now()
 			chunk.TranscribedAt = &now
+
+			// Вычисляем время обработки если есть время начала
+			if chunk.ProcessingStartTime != nil {
+				chunk.ProcessingTime = now.Sub(*chunk.ProcessingStartTime).Milliseconds()
+			}
+
 			if err != nil {
 				chunk.Status = ChunkStatusFailed
 				chunk.Error = err.Error()
@@ -287,6 +293,12 @@ func (m *Manager) UpdateChunkStereoWithSegments(sessionID, chunkID, micText, sys
 		if chunk.ID == chunkID {
 			now := time.Now()
 			chunk.TranscribedAt = &now
+
+			// Вычисляем время обработки если есть время начала
+			if chunk.ProcessingStartTime != nil {
+				chunk.ProcessingTime = now.Sub(*chunk.ProcessingStartTime).Milliseconds()
+			}
+
 			if err != nil {
 				chunk.Status = ChunkStatusFailed
 				chunk.Error = err.Error()
@@ -346,6 +358,12 @@ func (m *Manager) UpdateChunkWithDiarizedSegments(sessionID, chunkID, text strin
 		if chunk.ID == chunkID {
 			now := time.Now()
 			chunk.TranscribedAt = &now
+
+			// Вычисляем время обработки если есть время начала
+			if chunk.ProcessingStartTime != nil {
+				chunk.ProcessingTime = now.Sub(*chunk.ProcessingStartTime).Milliseconds()
+			}
+
 			if err != nil {
 				chunk.Status = ChunkStatusFailed
 				chunk.Error = err.Error()

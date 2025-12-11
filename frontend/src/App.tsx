@@ -54,6 +54,7 @@ interface Chunk {
     micFilePath?: string;  // Путь к файлу микрофона
     sysFilePath?: string;  // Путь к файлу системного звука
     isStereo?: boolean;    // Флаг стерео режима
+    processingTime?: number; // Время обработки в миллисекундах
 }
 
 interface Session {
@@ -3276,6 +3277,11 @@ function App() {
                                                             }}>
                                                                 {chunk.status === 'completed' ? '✓' : chunk.status === 'failed' ? '✗' : '⏳'}
                                                             </span>
+                                                            {chunk.processingTime && chunk.processingTime > 0 && (
+                                                                <span style={{ marginLeft: '0.3rem', color: '#9c27b0', fontSize: '0.75rem' }} title="Real-Time Factor (скорость обработки)">
+                                                                    {((chunk.duration / 1000000000) / (chunk.processingTime / 1000)).toFixed(1)}x
+                                                                </span>
+                                                            )}
                                                         </span>
                                                         <div style={{ display: 'flex', gap: '0.3rem' }}>
                                                             {displaySession && (

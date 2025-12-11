@@ -93,9 +93,11 @@ type Chunk struct {
 	SysSegments []TranscriptSegment `json:"sysSegments,omitempty"`
 	Dialogue    []TranscriptSegment `json:"dialogue,omitempty"`
 
-	CreatedAt     time.Time  `json:"createdAt"`
-	TranscribedAt *time.Time `json:"transcribedAt,omitempty"`
-	Error         string     `json:"error,omitempty"`
+	CreatedAt           time.Time  `json:"createdAt"`
+	TranscribedAt       *time.Time `json:"transcribedAt,omitempty"`
+	Error               string     `json:"error,omitempty"`
+	ProcessingStartTime *time.Time `json:"-"`                        // Время начала обработки (не сериализуется)
+	ProcessingTime      int64      `json:"processingTime,omitempty"` // Время обработки в миллисекундах
 }
 
 // VADMode режим Voice Activity Detection
