@@ -383,3 +383,273 @@ func TestPostProcessDialogue(t *testing.T) {
 		t.Errorf("Expected first phrase to be 'Да конечно', got '%s'", result[0].Text)
 	}
 }
+
+// TestSplitSegmentsByWordGaps проверяет разбиение сегментов по разрывам между словами
+// Это критично для Whisper, который может возвращать один большой сегмент
+// с разрывами внутри (когда VAD compression склеивает регионы речи)
+func TestSplitSegmentsByWordGaps(t *testing.T) {
+	// Симулируем реальную проблему из chunk 002:
+	// SYS сегмент [77170-111180] содержит слова с большим разрывом:
+	// - "да" [77170-77670]
+	// - "конечно" [105080-105720] - разрыв 27 секунд!
+	sysSegment := TranscriptSegment{
+		Start:   77170,
+		End:     111180,
+		Speaker: "Собеседник 1",
+		Text:    "да конечно ну давай тебе расскажу по сути",
+		Words: []TranscriptWord{
+			{Start: 77170, End: 77670, Text: "да", Speaker: "Собеседник 1"},
+			{Start: 105080, End: 105720, Text: "конечно", Speaker: "Собеседник 1"}, // Разрыв 27 сек!
+			{Start: 105720, End: 105980, Text: "ну", Speaker: "Собеседник 1"},
+			{Start: 106150, End: 106760, Text: "давай", Speaker: "Собеседник 1"},
+			{Start: 106760, End: 107190, Text: "тебе", Speaker: "Собеседник 1"},
+			{Start: 107340, End: 108290, Text: "расскажу", Speaker: "Собеседник 1"},
+			{Start: 108410, End: 109260, Text: "по", Speaker: "Собеседник 1"},
+			{Start: 109260, End: 111170, Text: "сути", Speaker: "Собеседник 1"},
+		},
+	}
+
+	result := splitSegmentsByWordGaps([]TranscriptSegment{sysSegment})
+
+	// Ожидаем 2 фразы:
+	// 1. "да" [77170-77670]
+	// 2. "конечно ну давай тебе расскажу по сути" [105080-111170]
+	if len(result) != 2 {
+		t.Errorf("Expected 2 phrases after split, got %d", len(result))
+		for i, r := range result {
+			t.Logf("  [%d] [%d-%d] %s: %s", i, r.Start, r.End, r.Speaker, r.Text)
+		}
+		return
+	}
+
+	// Проверяем первую фразу
+	if result[0].Text != "да" {
+		t.Errorf("Expected first phrase to be 'да', got '%s'", result[0].Text)
+	}
+	if result[0].Start != 77170 || result[0].End != 77670 {
+		t.Errorf("Expected first phrase timestamps [77170-77670], got [%d-%d]", result[0].Start, result[0].End)
+	}
+
+	// Проверяем вторую фразу
+	if result[1].Start != 105080 {
+		t.Errorf("Expected second phrase start 105080, got %d", result[1].Start)
+	}
+	if result[1].End != 111170 {
+		t.Errorf("Expected second phrase end 111170, got %d", result[1].End)
+	}
+
+	t.Log("Result after split:")
+	for i, r := range result {
+		t.Logf("  [%d] [%d-%d] %s: %s", i, r.Start, r.End, r.Speaker, r.Text)
+	}
+}
+
+// TestSplitSegmentsByWordGaps_NoSplit проверяет что сегменты без разрывов не разбиваются
+func TestSplitSegmentsByWordGaps_NoSplit(t *testing.T) {
+	// Сегмент с непрерывными словами (без больших разрывов)
+	segment := TranscriptSegment{
+		Start:   0,
+		End:     3000,
+		Speaker: "Вы",
+		Text:    "Привет как дела",
+		Words: []TranscriptWord{
+			{Start: 0, End: 500, Text: "Привет", Speaker: "Вы"},
+			{Start: 600, End: 1000, Text: "как", Speaker: "Вы"},   // Разрыв 100ms - OK
+			{Start: 1100, End: 1500, Text: "дела", Speaker: "Вы"}, // Разрыв 100ms - OK
+		},
+	}
+
+	result := splitSegmentsByWordGaps([]TranscriptSegment{segment})
+
+	// Ожидаем 1 фразу (без разбиения)
+	if len(result) != 1 {
+		t.Errorf("Expected 1 phrase (no split), got %d", len(result))
+		for i, r := range result {
+			t.Logf("  [%d] [%d-%d] %s: %s", i, r.Start, r.End, r.Speaker, r.Text)
+		}
+	}
+}
+
+// TestSplitSegmentsByWordGaps_GigaAM проверяет что GigaAM сегменты (без слов) не ломаются
+// GigaAM E2E возвращает сегменты БЕЗ word-level timestamps
+func TestSplitSegmentsByWordGaps_GigaAM(t *testing.T) {
+	// Симулируем вывод GigaAM E2E - один сегмент без слов
+	gigaamSegment := TranscriptSegment{
+		Start:   66700,
+		End:     109400,
+		Speaker: "Вы",
+		Text:    "А-а, подготовьте, пожалуйста, слайд с анализом пересечений сервисов TFr в периметре продукта.",
+		Words:   nil, // GigaAM E2E не возвращает word-level timestamps!
+	}
+
+	result := splitSegmentsByWordGaps([]TranscriptSegment{gigaamSegment})
+
+	// Ожидаем 1 фразу (без изменений) - сегмент должен остаться как есть
+	if len(result) != 1 {
+		t.Errorf("Expected 1 phrase (GigaAM unchanged), got %d", len(result))
+		for i, r := range result {
+			t.Logf("  [%d] [%d-%d] %s: %s", i, r.Start, r.End, r.Speaker, r.Text)
+		}
+		return
+	}
+
+	// Проверяем что сегмент не изменился
+	if result[0].Start != gigaamSegment.Start || result[0].End != gigaamSegment.End {
+		t.Errorf("GigaAM segment timestamps changed: expected [%d-%d], got [%d-%d]",
+			gigaamSegment.Start, gigaamSegment.End, result[0].Start, result[0].End)
+	}
+	if result[0].Text != gigaamSegment.Text {
+		t.Errorf("GigaAM segment text changed")
+	}
+
+	t.Logf("GigaAM segment preserved: [%d-%d] %s", result[0].Start, result[0].End, result[0].Text[:50])
+}
+
+// TestSplitSegmentsByWordGaps_Parakeet проверяет что Parakeet сегменты (без слов) не ломаются
+// Parakeet также возвращает сегменты БЕЗ word-level timestamps
+func TestSplitSegmentsByWordGaps_Parakeet(t *testing.T) {
+	// Симулируем вывод Parakeet С word-level timestamps (новое поведение!)
+	// Parakeet теперь возвращает tokenTimings, которые конвертируются в Words
+	parakeetSegments := []TranscriptSegment{
+		{
+			Start:   67900,
+			End:     112780,
+			Speaker: "Вы",
+			Text:    "Подготовьте, пожалуйста, слайд. Да, конечно. Ну, давай начать тебе расскажу.",
+			Words: []TranscriptWord{
+				// Первая фраза
+				{Start: 67900, End: 68500, Text: "Подготовьте", Speaker: "Вы"},
+				{Start: 68500, End: 69000, Text: ",", Speaker: "Вы"},
+				{Start: 69000, End: 69500, Text: "пожалуйста", Speaker: "Вы"},
+				{Start: 69500, End: 70000, Text: ",", Speaker: "Вы"},
+				{Start: 70000, End: 70500, Text: "слайд", Speaker: "Вы"},
+				{Start: 70500, End: 75180, Text: ".", Speaker: "Вы"},
+				// Большой разрыв (>2 секунд) - должен разбить на новый сегмент
+				// Вторая фраза начинается через 29+ секунд
+				{Start: 104700, End: 105000, Text: "Да", Speaker: "Вы"},
+				{Start: 105000, End: 105500, Text: ",", Speaker: "Вы"},
+				{Start: 105500, End: 106000, Text: "конечно", Speaker: "Вы"},
+				{Start: 106000, End: 106500, Text: ".", Speaker: "Вы"},
+				{Start: 106500, End: 107000, Text: "Ну", Speaker: "Вы"},
+				{Start: 107000, End: 107500, Text: ",", Speaker: "Вы"},
+				{Start: 107500, End: 108000, Text: "давай", Speaker: "Вы"},
+				{Start: 108000, End: 109000, Text: "начать", Speaker: "Вы"},
+				{Start: 109000, End: 110000, Text: "тебе", Speaker: "Вы"},
+				{Start: 110000, End: 112780, Text: "расскажу", Speaker: "Вы"},
+			},
+		},
+	}
+
+	result := splitSegmentsByWordGaps(parakeetSegments)
+
+	// Ожидаем 2 фразы - алгоритм должен разбить по большому разрыву (29+ секунд)
+	if len(result) != 2 {
+		t.Errorf("Expected 2 phrases (Parakeet with word gaps), got %d", len(result))
+		for i, r := range result {
+			t.Logf("  [%d] [%d-%d] %s: %s", i, r.Start, r.End, r.Speaker, r.Text)
+		}
+		return
+	}
+
+	// Проверяем первый сегмент
+	if result[0].Start != 67900 || result[0].End != 75180 {
+		t.Errorf("First segment timestamps wrong: got [%d-%d], expected [67900-75180]",
+			result[0].Start, result[0].End)
+	}
+
+	// Проверяем второй сегмент
+	if result[1].Start != 104700 || result[1].End != 112780 {
+		t.Errorf("Second segment timestamps wrong: got [%d-%d], expected [104700-112780]",
+			result[1].Start, result[1].End)
+	}
+
+	t.Logf("Parakeet segments split correctly: %d -> %d segments", len(parakeetSegments), len(result))
+	for i, r := range result {
+		t.Logf("  [%d] [%d-%d] %s", i, r.Start, r.End, r.Text[:min(50, len(r.Text))]+"...")
+	}
+}
+
+// TestMergeWordsToDialogue_WhisperWithGaps тестирует полный pipeline слияния
+// с реальными данными из проблемного чанка (Whisper с разрывами)
+func TestMergeWordsToDialogue_WhisperWithGaps(t *testing.T) {
+	// Симулируем данные из chunk 002 (упрощённо)
+	micSegments := []TranscriptSegment{
+		{
+			Start:   67080,
+			End:     101120,
+			Speaker: "Вы",
+			Text:    "Подготовьте пожалуйста слайд",
+			Words: []TranscriptWord{
+				{Start: 67080, End: 68950, Text: "Подготовьте", Speaker: "Вы"},
+				{Start: 68950, End: 69400, Text: "пожалуйста", Speaker: "Вы"},
+				{Start: 69400, End: 69860, Text: "слайд", Speaker: "Вы"},
+			},
+		},
+		{
+			Start:   101450,
+			End:     104000,
+			Speaker: "Вы",
+			Text:    "погоди погоди",
+			Words: []TranscriptWord{
+				{Start: 101450, End: 102000, Text: "погоди", Speaker: "Вы"},
+				{Start: 102000, End: 104000, Text: "погоди", Speaker: "Вы"},
+			},
+		},
+	}
+
+	sysSegments := []TranscriptSegment{
+		{
+			Start:   77170,
+			End:     111180,
+			Speaker: "Собеседник 1",
+			Text:    "да конечно ну давай расскажу",
+			Words: []TranscriptWord{
+				{Start: 77170, End: 77670, Text: "да", Speaker: "Собеседник 1"},
+				// Большой разрыв 27 секунд!
+				{Start: 105080, End: 105720, Text: "конечно", Speaker: "Собеседник 1"},
+				{Start: 105720, End: 105980, Text: "ну", Speaker: "Собеседник 1"},
+				{Start: 106150, End: 106760, Text: "давай", Speaker: "Собеседник 1"},
+				{Start: 107340, End: 108290, Text: "расскажу", Speaker: "Собеседник 1"},
+			},
+		},
+	}
+
+	result := mergeWordsToDialogue(micSegments, sysSegments)
+
+	t.Log("Result after merge:")
+	for i, r := range result {
+		t.Logf("  [%d] [%d-%d] %s: %s", i, r.Start, r.End, r.Speaker, r.Text)
+	}
+
+	// Ожидаем правильный порядок:
+	// 1. Вы: "Подготовьте пожалуйста слайд" [67080-69860]
+	// 2. Собеседник 1: "да" [77170-77670]
+	// 3. Вы: "погоди погоди" [101450-104000]
+	// 4. Собеседник 1: "конечно ну давай расскажу" [105080-108290]
+
+	if len(result) < 3 {
+		t.Errorf("Expected at least 3 phrases, got %d", len(result))
+		return
+	}
+
+	// Проверяем что "да" от собеседника идёт ПОСЛЕ первой фразы "Вы"
+	// и ПЕРЕД "погоди погоди"
+	foundDa := false
+	daIndex := -1
+	for i, r := range result {
+		if r.Text == "да" && r.Speaker == "Собеседник 1" {
+			foundDa = true
+			daIndex = i
+			break
+		}
+	}
+
+	if !foundDa {
+		t.Error("Expected to find 'да' from Собеседник 1 as separate phrase")
+	} else {
+		// "да" должно быть после первой фразы "Вы" (index 0) и перед "погоди" (index 2)
+		if daIndex != 1 {
+			t.Errorf("Expected 'да' at index 1, got index %d", daIndex)
+		}
+	}
+}

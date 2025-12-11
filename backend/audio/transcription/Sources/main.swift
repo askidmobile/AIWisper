@@ -25,10 +25,19 @@ import FluidAudio
 //   "model_version": "v3"
 // }
 
+// Word-level timestamp для детального анализа
+struct TranscriptionWord: Codable {
+    let start: Double
+    let end: Double
+    let text: String
+    let confidence: Float?
+}
+
 struct TranscriptionSegment: Codable {
     let start: Double
     let end: Double
     let text: String
+    let words: [TranscriptionWord]?  // Word-level timestamps для dialogue merge
 }
 
 struct TranscriptionResult: Codable {
@@ -104,6 +113,67 @@ func configureModelCache(customPath: String?) {
         
         fputs("[transcription-fluid] Using custom model cache: \(cachePath)\n", stderr)
     }
+}
+
+// Группирует токены (subwords) в слова
+// Токен начинающийся с пробела = начало нового слова
+func groupTokensIntoWords(_ tokens: [TokenTiming]) -> [TranscriptionWord] {
+    guard !tokens.isEmpty else { return [] }
+    
+    var words: [TranscriptionWord] = []
+    var currentWordText = ""
+    var currentWordStart: TimeInterval = 0
+    var currentWordEnd: TimeInterval = 0
+    var currentWordConfidence: Float = 0
+    var tokenCount = 0
+    
+    for token in tokens {
+        let text = token.token
+        
+        // Токен начинается с пробела = новое слово
+        if text.hasPrefix(" ") {
+            // Сохраняем предыдущее слово если есть
+            if !currentWordText.isEmpty {
+                words.append(TranscriptionWord(
+                    start: currentWordStart,
+                    end: currentWordEnd,
+                    text: currentWordText.trimmingCharacters(in: .whitespaces),
+                    confidence: tokenCount > 0 ? currentWordConfidence / Float(tokenCount) : token.confidence
+                ))
+            }
+            // Начинаем новое слово
+            currentWordText = String(text.dropFirst()) // убираем пробел
+            currentWordStart = token.startTime
+            currentWordEnd = token.endTime
+            currentWordConfidence = token.confidence
+            tokenCount = 1
+        } else if currentWordText.isEmpty {
+            // Первый токен без пробела
+            currentWordText = text
+            currentWordStart = token.startTime
+            currentWordEnd = token.endTime
+            currentWordConfidence = token.confidence
+            tokenCount = 1
+        } else {
+            // Продолжение слова (subword)
+            currentWordText += text
+            currentWordEnd = token.endTime
+            currentWordConfidence += token.confidence
+            tokenCount += 1
+        }
+    }
+    
+    // Добавляем последнее слово
+    if !currentWordText.isEmpty {
+        words.append(TranscriptionWord(
+            start: currentWordStart,
+            end: currentWordEnd,
+            text: currentWordText.trimmingCharacters(in: .whitespaces),
+            confidence: tokenCount > 0 ? currentWordConfidence / Float(tokenCount) : 0
+        ))
+    }
+    
+    return words
 }
 
 // Enum для версии модели
@@ -257,14 +327,20 @@ struct TranscriptionCLI {
                         
                         if isLastToken || hasLongPause {
                             // Создаём сегмент из накопленных токенов
+                            // Используем joined() для склейки токенов (они уже содержат пробелы где нужно)
                             let segmentText = currentSegmentTokens.map { $0.token }.joined()
                             let segmentStart = currentSegmentTokens.first!.startTime
                             let segmentEnd = currentSegmentTokens.last!.endTime
                             
+                            // Группируем токены (subwords) в слова
+                            // Токен начинающийся с пробела = начало нового слова
+                            let words = groupTokensIntoWords(currentSegmentTokens)
+                            
                             segments.append(TranscriptionSegment(
                                 start: segmentStart,
                                 end: segmentEnd,
-                                text: segmentText.trimmingCharacters(in: .whitespaces)
+                                text: segmentText.trimmingCharacters(in: .whitespaces),
+                                words: words
                             ))
                             
                             currentSegmentTokens.removeAll()
@@ -275,7 +351,8 @@ struct TranscriptionCLI {
                     segments.append(TranscriptionSegment(
                         start: 0.0,
                         end: result.duration,
-                        text: result.text
+                        text: result.text,
+                        words: nil
                     ))
                 }
                 

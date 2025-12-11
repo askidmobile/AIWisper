@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.0] - 2025-12-12
+
+### Added
+- **Word-Level Timestamps for Parakeet TDT v3**: FluidAudio now returns precise word-level timestamps
+  - Enables accurate dialogue merge algorithm for Parakeet (same as Whisper)
+  - `splitSegmentsByWordGaps()` now works correctly with all three ASR engines
+  - Tokens (subwords) are properly grouped into words with correct timestamps
+
+### Fixed
+- **Parakeet Transcription Text**: Fixed broken text with spaces between syllables
+  - **Problem**: Parakeet returns BPE tokens (subwords), displayed as "Мо же т быть" instead of "Может быть"
+  - **Solution**: Added `groupTokensIntoWords()` function to merge tokens into proper words
+  - Text now displays correctly: "Может быть, у меня есть смысл"
+
+### Technical
+- `backend/audio/transcription/Sources/main.swift`:
+  - Added `TranscriptionWord` struct with start, end, text, confidence
+  - Added `groupTokensIntoWords()` function for BPE token merging
+  - `TranscriptionSegment` now includes optional `words` array
+- `backend/ai/transcription_fluid.go`:
+  - Added `fluidTranscriptWord` struct for JSON parsing
+  - Updated segment conversion to include word-level timestamps
+- `backend/ai/transcription_fluid_e2e_test.go`:
+  - Added `TestFluidASREngineWordTimestamps` test
+- `backend/session/dialogue_merge_test.go`:
+  - Updated `TestSplitSegmentsByWordGaps_Parakeet` for new behavior
+
 ## [1.25.1] - 2025-12-11
 
 ### Improved

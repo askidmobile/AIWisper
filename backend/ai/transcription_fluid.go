@@ -56,10 +56,19 @@ type fluidTranscriptionResult struct {
 	Error        string                   `json:"error,omitempty"`
 }
 
+// fluidTranscriptWord структура для word-level timestamps от FluidAudio
+type fluidTranscriptWord struct {
+	Start      float64  `json:"start"`
+	End        float64  `json:"end"`
+	Text       string   `json:"text"`
+	Confidence *float32 `json:"confidence,omitempty"`
+}
+
 type fluidTranscriptSegment struct {
-	Start float64 `json:"start"`
-	End   float64 `json:"end"`
-	Text  string  `json:"text"`
+	Start float64               `json:"start"`
+	End   float64               `json:"end"`
+	Text  string                `json:"text"`
+	Words []fluidTranscriptWord `json:"words,omitempty"` // Word-level timestamps для dialogue merge
 }
 
 // getFluidASRBinaryPath ищет transcription-fluid binary в нескольких местах
@@ -256,11 +265,29 @@ func (e *FluidASREngine) TranscribeWithSegments(samples []float32) ([]Transcript
 	// Конвертируем в наш формат
 	segments := make([]TranscriptSegment, len(result.Segments))
 	for i, seg := range result.Segments {
+		// Конвертируем word-level timestamps если есть
+		var words []TranscriptWord
+		if len(seg.Words) > 0 {
+			words = make([]TranscriptWord, len(seg.Words))
+			for j, w := range seg.Words {
+				var confidence float32
+				if w.Confidence != nil {
+					confidence = *w.Confidence
+				}
+				words[j] = TranscriptWord{
+					Start: int64(w.Start * 1000), // секунды -> миллисекунды
+					End:   int64(w.End * 1000),
+					Text:  w.Text,
+					P:     confidence,
+				}
+			}
+		}
+
 		segments[i] = TranscriptSegment{
 			Start: int64(seg.Start * 1000), // секунды -> миллисекунды
 			End:   int64(seg.End * 1000),
 			Text:  seg.Text,
-			Words: nil, // FluidAudio пока не возвращает word-level timestamps
+			Words: words, // Word-level timestamps для dialogue merge
 		}
 	}
 

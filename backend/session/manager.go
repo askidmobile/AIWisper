@@ -569,13 +569,22 @@ func mergeWordsToDialogue(micSegments, sysSegments []TranscriptSegment) []Transc
 	micSegments = fixAnomalousTimestamps(micSegments)
 	sysSegments = fixAnomalousTimestamps(sysSegments)
 
-	// 2. Используем segment-level алгоритм
+	// 2. ВАЖНО: Разбиваем сегменты на фразы на основе word-level timestamps
+	// Это критично для Whisper, который может возвращать один большой сегмент
+	// с разрывами внутри (когда VAD compression склеивает регионы речи)
+	micSegments = splitSegmentsByWordGaps(micSegments)
+	sysSegments = splitSegmentsByWordGaps(sysSegments)
+
+	log.Printf("mergeWordsToDialogue: after split - mic=%d, sys=%d segments",
+		len(micSegments), len(sysSegments))
+
+	// 3. Используем segment-level алгоритм
 	result := mergeSegmentsWithOverlapHandling(micSegments, sysSegments)
 
-	// 3. Постобработка: объединение коротких фраз одного спикера
+	// 4. Постобработка: объединение коротких фраз одного спикера
 	result = postProcessDialogue(result)
 
-	log.Printf("mergeWordsToDialogue (v3 segment-level): mic=%d, sys=%d -> %d phrases",
+	log.Printf("mergeWordsToDialogue (v4 with word-gap split): mic=%d, sys=%d -> %d phrases",
 		len(micSegments), len(sysSegments), len(result))
 
 	return result
@@ -615,6 +624,80 @@ func fixAnomalousTimestamps(segments []TranscriptSegment) []TranscriptSegment {
 	}
 
 	return segments
+}
+
+// splitSegmentsByWordGaps разбивает сегменты на фразы на основе разрывов между словами
+// Это критично для Whisper, который может возвращать один большой сегмент
+// с разрывами внутри (когда VAD compression склеивает регионы речи)
+// Порог разрыва: 2 секунды между словами = новая фраза
+func splitSegmentsByWordGaps(segments []TranscriptSegment) []TranscriptSegment {
+	const wordGapThresholdMs int64 = 2000 // Разрыв > 2 сек = новая фраза
+
+	var result []TranscriptSegment
+
+	for _, seg := range segments {
+		// Если нет слов или мало слов - оставляем как есть
+		if len(seg.Words) < 2 {
+			result = append(result, seg)
+			continue
+		}
+
+		// Ищем разрывы между словами
+		var currentPhrase TranscriptSegment
+		var currentWords []TranscriptWord
+		var currentTexts []string
+
+		for i, word := range seg.Words {
+			if i == 0 {
+				// Начинаем первую фразу
+				currentPhrase = TranscriptSegment{
+					Start:   word.Start,
+					End:     word.End,
+					Speaker: seg.Speaker,
+				}
+				currentWords = []TranscriptWord{word}
+				currentTexts = []string{word.Text}
+				continue
+			}
+
+			prevWord := seg.Words[i-1]
+			gap := word.Start - prevWord.End
+
+			if gap > wordGapThresholdMs {
+				// Большой разрыв - завершаем текущую фразу и начинаем новую
+				currentPhrase.End = prevWord.End
+				currentPhrase.Text = strings.Join(currentTexts, " ")
+				currentPhrase.Words = currentWords
+				result = append(result, currentPhrase)
+
+				log.Printf("splitSegmentsByWordGaps: split at gap %dms after '%s' (speaker: %s)",
+					gap, prevWord.Text, seg.Speaker)
+
+				// Начинаем новую фразу
+				currentPhrase = TranscriptSegment{
+					Start:   word.Start,
+					End:     word.End,
+					Speaker: seg.Speaker,
+				}
+				currentWords = []TranscriptWord{word}
+				currentTexts = []string{word.Text}
+			} else {
+				// Продолжаем текущую фразу
+				currentPhrase.End = word.End
+				currentWords = append(currentWords, word)
+				currentTexts = append(currentTexts, word.Text)
+			}
+		}
+
+		// Добавляем последнюю фразу
+		if len(currentTexts) > 0 {
+			currentPhrase.Text = strings.Join(currentTexts, " ")
+			currentPhrase.Words = currentWords
+			result = append(result, currentPhrase)
+		}
+	}
+
+	return result
 }
 
 // taggedSegment - сегмент с меткой источника (mic/sys)

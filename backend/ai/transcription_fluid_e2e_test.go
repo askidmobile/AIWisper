@@ -229,6 +229,90 @@ func TestFluidASREngineParallel(t *testing.T) {
 	t.Logf("Average time per worker: %.2fs", elapsed.Seconds()/float64(numWorkers))
 }
 
+// TestFluidASREngineWordTimestamps тестирует word-level timestamps
+func TestFluidASREngineWordTimestamps(t *testing.T) {
+	engine, err := NewFluidASREngine(FluidASRConfig{
+		BinaryPath: "../audio/transcription/.build/release/transcription-fluid",
+	})
+
+	if err != nil {
+		t.Skipf("Skipping test: %v (build transcription-fluid first)", err)
+		return
+	}
+
+	defer engine.Close()
+
+	// Используем JFK аудио для теста
+	testFile := "../whisper.cpp/samples/jfk.wav"
+	if _, err := os.Stat(testFile); os.IsNotExist(err) {
+		t.Skipf("Test file not found: %s", testFile)
+		return
+	}
+
+	samples, err := loadWAVFile(testFile)
+	if err != nil {
+		t.Fatalf("Failed to load audio: %v", err)
+	}
+
+	segments, err := engine.TranscribeWithSegments(samples)
+	if err != nil {
+		t.Fatalf("Transcription failed: %v", err)
+	}
+
+	if len(segments) == 0 {
+		t.Fatal("Expected at least one segment")
+	}
+
+	// Проверяем наличие word-level timestamps
+	seg := segments[0]
+	t.Logf("Segment: start=%dms, end=%dms, text=%q", seg.Start, seg.End, seg.Text)
+	t.Logf("Words count: %d", len(seg.Words))
+
+	if len(seg.Words) == 0 {
+		t.Error("Expected word-level timestamps, but Words array is empty")
+		return
+	}
+
+	// Проверяем структуру word timestamps
+	for i, word := range seg.Words {
+		if i < 10 { // Логируем первые 10 слов
+			t.Logf("  Word[%d]: start=%dms, end=%dms, text=%q, confidence=%.2f",
+				i, word.Start, word.End, word.Text, word.P)
+		}
+
+		// Проверки валидности
+		if word.Start < 0 || word.End < 0 {
+			t.Errorf("Word %d has negative timestamp: start=%d, end=%d", i, word.Start, word.End)
+		}
+		if word.Start > word.End {
+			t.Errorf("Word %d has invalid timestamps: start=%d > end=%d", i, word.Start, word.End)
+		}
+		if word.Text == "" {
+			t.Errorf("Word %d has empty text", i)
+		}
+	}
+
+	// Проверяем что слова покрывают сегмент
+	if len(seg.Words) > 0 {
+		firstWord := seg.Words[0]
+		lastWord := seg.Words[len(seg.Words)-1]
+
+		// Первое слово должно начинаться примерно в начале сегмента
+		if firstWord.Start > seg.Start+1000 { // допуск 1 секунда
+			t.Logf("Warning: First word starts significantly after segment start: word=%dms, segment=%dms",
+				firstWord.Start, seg.Start)
+		}
+
+		// Последнее слово должно заканчиваться примерно в конце сегмента
+		if lastWord.End < seg.End-1000 { // допуск 1 секунда
+			t.Logf("Warning: Last word ends significantly before segment end: word=%dms, segment=%dms",
+				lastWord.End, seg.End)
+		}
+	}
+
+	t.Logf("Word-level timestamps test PASSED: %d words with valid timestamps", len(seg.Words))
+}
+
 // loadWAVFile загружает WAV файл и возвращает samples
 func loadWAVFile(path string) ([]float32, error) {
 	file, err := os.Open(path)
