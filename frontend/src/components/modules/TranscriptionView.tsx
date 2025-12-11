@@ -22,12 +22,15 @@ interface TranscriptionViewProps {
     onSeek: (time: number) => void;
     // Session speakers for custom names
     sessionSpeakers?: SessionSpeaker[];
+    // Retranscribe all chunks
+    onRetranscribeAll?: () => void;
 }
 
 export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     onPlayChunk, playingUrl, ollamaModel,
     isPlaying, onPlaySession, onPauseSession, currentTime, duration, onSeek,
-    sessionSpeakers = []
+    sessionSpeakers = [],
+    onRetranscribeAll
 }) => {
     const {
         currentSession, selectedSession, isRecording,
@@ -266,7 +269,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                             onSeek={onSeek}
                             currentTime={currentTime}
                             duration={duration || displaySession.totalDuration / 1000} // Fallback to session duration
-                            onRetranscribe={() => { /* TODO: Implement global retranscribe */ alert('Retranscribe All (TODO)'); }}
+                            onRetranscribe={() => onRetranscribeAll?.()}
                             onImprove={() => setActiveTab('summary')}
                         />
                     )}

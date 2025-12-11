@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { SettingsPanel } from '../modules/SettingsPanel';
@@ -27,7 +27,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
 }) => {
     const API_BASE = `http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}`;
     const {
-        startSession, stopSession, isRecording
+        startSession, stopSession, isRecording, selectedSession
     } = useSessionContext();
     const {
         activeModelId, models, fetchOllamaModels,
@@ -136,6 +136,41 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
         play(url);
     };
 
+    // Retranscribe all chunks in session
+    const handleRetranscribeAll = useCallback(() => {
+        if (!selectedSession) {
+            addLog('No session selected for retranscription');
+            return;
+        }
+
+        // Get active model
+        const activeModel = models.find(m => m.id === activeModelId);
+        const modelId = activeModel?.id || activeModelId;
+
+        // Check model status
+        const isModelReady = activeModel?.status === 'downloaded' || activeModel?.status === 'active';
+        if (!isModelReady && activeModelId) {
+            addLog(`Model not downloaded (status: ${activeModel?.status}). Open model manager to download.`);
+            setShowModelManager(true);
+            return;
+        }
+
+        if (!modelId) {
+            addLog('No model selected. Please select a model in settings.');
+            setShowModelManager(true);
+            return;
+        }
+
+        sendMessage({
+            type: 'retranscribe_full',
+            sessionId: selectedSession.id,
+            model: modelId,
+            language: language,
+            diarizationEnabled: false // Can be made configurable later
+        });
+        addLog(`Starting full retranscription with model: ${activeModel?.name || modelId}`);
+    }, [selectedSession, models, activeModelId, language, sendMessage, addLog]);
+
     // Derived
     const settingsLocked = isRecording;
 
@@ -199,6 +234,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                         onSeek={seek}
                         // Session speakers - пока пустой массив, т.к. MainLayout не использует WebSocket напрямую
                         sessionSpeakers={[]}
+                        // Retranscribe all chunks
+                        onRetranscribeAll={handleRetranscribeAll}
                     />
                 </ErrorBoundary>
             </div>
