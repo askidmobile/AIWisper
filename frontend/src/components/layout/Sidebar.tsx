@@ -28,8 +28,27 @@ const openDataFolder = async () => {
 export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
     const { sessions, selectedSession, selectSession, isRecording } = useSessionContext();
     const [showStats, setShowStats] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
 
-    const groupedSessions = useMemo(() => groupSessionsByTime(sessions), [sessions]);
+    // Фильтрация сессий по поисковому запросу
+    const filteredSessions = useMemo(() => {
+        if (!searchQuery.trim()) return sessions;
+        
+        const query = searchQuery.toLowerCase().trim();
+        return sessions.filter(session => {
+            // Поиск по названию
+            const title = session.title || `Запись ${formatDate(session.startTime)}`;
+            if (title.toLowerCase().includes(query)) return true;
+            
+            // Поиск по дате
+            const dateStr = formatDate(session.startTime);
+            if (dateStr.toLowerCase().includes(query)) return true;
+            
+            return false;
+        });
+    }, [sessions, searchQuery]);
+
+    const groupedSessions = useMemo(() => groupSessionsByTime(filteredSessions), [filteredSessions]);
 
     // Вычисляем статистику
     const stats = useMemo((): SessionStats => {
@@ -192,6 +211,101 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                 </div>
             </div>
 
+            {/* Search Field */}
+            <div
+                style={{
+                    padding: '0 1rem 0.75rem',
+                }}
+            >
+                <div
+                    style={{
+                        position: 'relative',
+                        display: 'flex',
+                        alignItems: 'center',
+                    }}
+                >
+                    <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="var(--text-muted)"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        style={{
+                            position: 'absolute',
+                            left: '0.75rem',
+                            pointerEvents: 'none',
+                            opacity: 0.6,
+                        }}
+                    >
+                        <circle cx="11" cy="11" r="8"/>
+                        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    <input
+                        type="text"
+                        placeholder="Поиск записей..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        style={{
+                            width: '100%',
+                            padding: '0.5rem 0.75rem 0.5rem 2.25rem',
+                            borderRadius: 'var(--radius-md)',
+                            border: '1px solid var(--glass-border-subtle)',
+                            background: 'var(--surface-alpha)',
+                            color: 'var(--text-primary)',
+                            fontSize: '0.85rem',
+                            outline: 'none',
+                            transition: 'border-color 0.2s, box-shadow 0.2s',
+                        }}
+                        onFocus={(e) => {
+                            e.target.style.borderColor = 'var(--primary)';
+                            e.target.style.boxShadow = '0 0 0 2px var(--primary-alpha)';
+                        }}
+                        onBlur={(e) => {
+                            e.target.style.borderColor = 'var(--glass-border-subtle)';
+                            e.target.style.boxShadow = 'none';
+                        }}
+                    />
+                    {searchQuery && (
+                        <button
+                            onClick={() => setSearchQuery('')}
+                            style={{
+                                position: 'absolute',
+                                right: '0.5rem',
+                                padding: '0.25rem',
+                                background: 'transparent',
+                                border: 'none',
+                                cursor: 'pointer',
+                                color: 'var(--text-muted)',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                borderRadius: '50%',
+                            }}
+                            title="Очистить поиск"
+                        >
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    )}
+                </div>
+                {searchQuery && (
+                    <div
+                        style={{
+                            marginTop: '0.5rem',
+                            fontSize: '0.75rem',
+                            color: 'var(--text-muted)',
+                        }}
+                    >
+                        Найдено: {filteredSessions.length} из {sessions.length}
+                    </div>
+                )}
+            </div>
+
             {/* Stats Panel */}
             {showStats && sessions.length > 0 && (
                 <div
@@ -247,7 +361,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                     paddingBottom: '1rem',
                 }}
             >
-                {sessions.length === 0 ? (
+                {filteredSessions.length === 0 ? (
                     <div
                         style={{
                             padding: '2rem 1rem',
@@ -256,7 +370,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                             fontSize: '0.9rem',
                         }}
                     >
-                        Нет записей
+                        {sessions.length === 0 ? 'Нет записей' : 'Ничего не найдено'}
                     </div>
                 ) : (
                     groupedSessions.map((group) => (
