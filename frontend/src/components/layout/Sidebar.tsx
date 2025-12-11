@@ -1,6 +1,14 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useSessionContext } from '../../context/SessionContext';
 import { groupSessionsByTime, formatDuration, formatDate, formatTime } from '../../utils/groupSessions';
+
+// Интерфейс для статистики
+interface SessionStats {
+    totalSessions: number;
+    totalDuration: number; // в секундах
+    avgDuration: number; // в секундах
+    totalChunks: number;
+}
 
 interface SidebarProps {
     onStartRecording: () => void;
@@ -19,8 +27,33 @@ const openDataFolder = async () => {
 
 export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
     const { sessions, selectedSession, selectSession, isRecording } = useSessionContext();
+    const [showStats, setShowStats] = useState(false);
 
     const groupedSessions = useMemo(() => groupSessionsByTime(sessions), [sessions]);
+
+    // Вычисляем статистику
+    const stats = useMemo((): SessionStats => {
+        if (sessions.length === 0) {
+            return { totalSessions: 0, totalDuration: 0, avgDuration: 0, totalChunks: 0 };
+        }
+
+        let totalDuration = 0;
+        let totalChunks = 0;
+
+        sessions.forEach(session => {
+            // Длительность в секундах
+            totalDuration += (session.totalDuration || 0) / 1000;
+            // Количество чанков
+            totalChunks += session.chunksCount || 0;
+        });
+
+        return {
+            totalSessions: sessions.length,
+            totalDuration,
+            avgDuration: totalDuration / sessions.length,
+            totalChunks
+        };
+    }, [sessions]);
 
     return (
         <aside
@@ -140,8 +173,70 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                         </svg>
                     </button>
+                    <button
+                        className="btn-icon btn-icon-sm"
+                        onClick={() => setShowStats(!showStats)}
+                        title="Статистика"
+                        style={{
+                            width: '32px',
+                            height: '32px',
+                            background: showStats ? 'var(--primary-alpha)' : undefined,
+                        }}
+                    >
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="18" y1="20" x2="18" y2="10"/>
+                            <line x1="12" y1="20" x2="12" y2="4"/>
+                            <line x1="6" y1="20" x2="6" y2="14"/>
+                        </svg>
+                    </button>
                 </div>
             </div>
+
+            {/* Stats Panel */}
+            {showStats && sessions.length > 0 && (
+                <div
+                    style={{
+                        padding: '0.75rem 1rem',
+                        borderBottom: '1px solid var(--glass-border-subtle)',
+                        background: 'var(--surface-alpha)',
+                    }}
+                >
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                        <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--primary)' }}>
+                                {stats.totalSessions}
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                Записей
+                            </div>
+                        </div>
+                        <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--success)' }}>
+                                {formatDuration(stats.totalDuration)}
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                Всего
+                            </div>
+                        </div>
+                        <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--warning)' }}>
+                                {formatDuration(stats.avgDuration)}
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                Средняя
+                            </div>
+                        </div>
+                        <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--info)' }}>
+                                {stats.totalChunks}
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                Чанков
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Sessions List */}
             <div
