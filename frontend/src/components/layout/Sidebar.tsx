@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef, useEffect } from 'react';
 import { useSessionContext } from '../../context/SessionContext';
+import { useWebSocketContext } from '../../context/WebSocketContext';
 import { groupSessionsByTime, formatDuration, formatDate, formatTime } from '../../utils/groupSessions';
 
 // Интерфейс для статистики
@@ -27,10 +28,41 @@ const openDataFolder = async () => {
 
 export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
     const { sessions, selectedSession, selectSession, deleteSession, isRecording } = useSessionContext();
+    const { sendMessage } = useWebSocketContext();
     const [showStats, setShowStats] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [hoveredSession, setHoveredSession] = useState<string | null>(null);
     const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+    const [editingSession, setEditingSession] = useState<string | null>(null);
+    const [editTitle, setEditTitle] = useState('');
+    const editInputRef = useRef<HTMLInputElement>(null);
+
+    // Focus input when editing starts
+    useEffect(() => {
+        if (editingSession && editInputRef.current) {
+            editInputRef.current.focus();
+            editInputRef.current.select();
+        }
+    }, [editingSession]);
+
+    // Handle rename session
+    const handleStartEdit = (sessionId: string, currentTitle: string) => {
+        setEditingSession(sessionId);
+        setEditTitle(currentTitle);
+    };
+
+    const handleSaveTitle = (sessionId: string) => {
+        if (editTitle.trim()) {
+            sendMessage({ type: 'rename_session', sessionId, data: editTitle.trim() });
+        }
+        setEditingSession(null);
+        setEditTitle('');
+    };
+
+    const handleCancelEdit = () => {
+        setEditingSession(null);
+        setEditTitle('');
+    };
 
     // Фильтрация сессий по поисковому запросу
     const filteredSessions = useMemo(() => {
@@ -437,20 +469,58 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                                         )}
 
                                         {/* Title */}
-                                        <div
-                                            style={{
-                                                fontSize: '0.95rem',
-                                                fontWeight: 'var(--font-weight-semibold)',
-                                                color: 'var(--text-primary)',
-                                                marginBottom: '0.35rem',
-                                                overflow: 'hidden',
-                                                textOverflow: 'ellipsis',
-                                                whiteSpace: 'nowrap',
-                                                paddingRight: isHovered ? '2rem' : 0,
-                                            }}
-                                        >
-                                            {session.title || `Запись ${formatDate(session.startTime)}`}
-                                        </div>
+                                        {editingSession === session.id ? (
+                                            <input
+                                                ref={editInputRef}
+                                                type="text"
+                                                value={editTitle}
+                                                onChange={(e) => setEditTitle(e.target.value)}
+                                                onBlur={() => handleSaveTitle(session.id)}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === 'Enter') {
+                                                        handleSaveTitle(session.id);
+                                                    } else if (e.key === 'Escape') {
+                                                        handleCancelEdit();
+                                                    }
+                                                }}
+                                                onClick={(e) => e.stopPropagation()}
+                                                style={{
+                                                    width: '100%',
+                                                    fontSize: '0.95rem',
+                                                    fontWeight: 'var(--font-weight-semibold)',
+                                                    color: 'var(--text-primary)',
+                                                    marginBottom: '0.35rem',
+                                                    padding: '0.125rem 0.25rem',
+                                                    border: '1px solid var(--primary)',
+                                                    borderRadius: '4px',
+                                                    background: 'var(--surface-alpha)',
+                                                    outline: 'none',
+                                                }}
+                                            />
+                                        ) : (
+                                            <div
+                                                onDoubleClick={(e) => {
+                                                    e.stopPropagation();
+                                                    if (!isRecording) {
+                                                        handleStartEdit(session.id, session.title || `Запись ${formatDate(session.startTime)}`);
+                                                    }
+                                                }}
+                                                title="Двойной клик для редактирования"
+                                                style={{
+                                                    fontSize: '0.95rem',
+                                                    fontWeight: 'var(--font-weight-semibold)',
+                                                    color: 'var(--text-primary)',
+                                                    marginBottom: '0.35rem',
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                    paddingRight: isHovered ? '2rem' : 0,
+                                                    cursor: isRecording ? 'default' : 'text',
+                                                }}
+                                            >
+                                                {session.title || `Запись ${formatDate(session.startTime)}`}
+                                            </div>
+                                        )}
 
                                         {/* Meta Info */}
                                         <div

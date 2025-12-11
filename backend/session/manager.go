@@ -160,6 +160,26 @@ func (m *Manager) ListSessions() []*Session {
 	return sessions
 }
 
+// SetSessionTitle устанавливает название сессии
+func (m *Manager) SetSessionTitle(id string, title string) error {
+	m.mu.Lock()
+	session, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	session.Title = title
+	m.mu.Unlock()
+
+	// Сохраняем метаданные (SaveSessionMeta использует свой лок)
+	if err := m.SaveSessionMeta(session); err != nil {
+		return fmt.Errorf("failed to save session meta: %w", err)
+	}
+
+	return nil
+}
+
 // DeleteSession удаляет сессию и её файлы
 func (m *Manager) DeleteSession(id string) error {
 	m.mu.Lock()

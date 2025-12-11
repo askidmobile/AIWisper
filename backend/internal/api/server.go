@@ -383,6 +383,33 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 		s.SessionMgr.DeleteSession(msg.SessionID)
 		send(Message{Type: "session_deleted", SessionID: msg.SessionID})
 
+	case "rename_session":
+		if msg.SessionID == "" {
+			send(Message{Type: "error", Data: "sessionId is required"})
+			return
+		}
+		title := msg.Data // Используем поле Data для нового названия
+		if title == "" {
+			send(Message{Type: "error", Data: "title is required"})
+			return
+		}
+		if err := s.SessionMgr.SetSessionTitle(msg.SessionID, title); err != nil {
+			send(Message{Type: "error", Data: err.Error()})
+			return
+		}
+		send(Message{Type: "session_renamed", SessionID: msg.SessionID, Data: title})
+		// Отправляем обновлённый список сессий
+		sessions := s.SessionMgr.ListSessions()
+		infos := make([]*SessionInfo, len(sessions))
+		for i, sess := range sessions {
+			infos[i] = &SessionInfo{
+				ID: sess.ID, StartTime: sess.StartTime, Status: string(sess.Status),
+				TotalDuration: int64(sess.TotalDuration / time.Millisecond),
+				ChunksCount:   len(sess.Chunks), Title: sess.Title,
+			}
+		}
+		send(Message{Type: "sessions_list", Sessions: infos})
+
 	case "start_session":
 		// Configure Engine Model first, then Language
 		if s.EngineMgr != nil {
