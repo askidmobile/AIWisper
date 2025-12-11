@@ -7,6 +7,17 @@ import FluidAudio
 // Использование:
 //   diarization-fluid <audio.wav>
 //   diarization-fluid --samples  # читает float32 samples из stdin
+//   diarization-fluid --samples --clustering-threshold 0.70
+//   diarization-fluid --samples --min-segment-duration 0.2
+//   diarization-fluid --samples --vbx-max-iterations 30
+//   diarization-fluid --samples --debug
+//
+// Параметры:
+//   --clustering-threshold <0.0-1.0>  Порог кластеризации (default: 0.70)
+//   --min-segment-duration <sec>      Мин. длительность сегмента (default: 0.2)
+//   --vbx-max-iterations <int>        Макс. итераций VBx (default: 30)
+//   --min-gap-duration <sec>          Мин. пауза между сегментами (default: 0.15)
+//   --debug                           Включить отладочный вывод
 //
 // Вывод (JSON):
 // {
@@ -70,38 +81,92 @@ func readSamplesFromStdin() -> [Float]? {
     return samples.isEmpty ? nil : samples
 }
 
+// Конфигурация диаризации с параметрами по умолчанию
+struct DiarizationConfig {
+    var clusteringThreshold: Double = 0.70  // Снижено с 0.82 для лучшего баланса
+    var minSegmentDuration: Double = 0.2    // Снижено с 0.3 для коротких реплик
+    var vbxMaxIterations: Int = 30          // Увеличено с 20 для лучшей сходимости
+    var minGapDuration: Double = 0.15       // Мин. пауза между сегментами
+    var fa: Double = 0.07                   // PLDA precision
+    var fb: Double = 0.8                    // PLDA recall
+    var debug: Bool = false
+}
+
 @main
 struct DiarizationCLI {
     static func main() async {
         let args = CommandLine.arguments
         
         var samples: [Float]?
+        var config = DiarizationConfig()
+        var isStdinMode = false
+        var audioPath: String?
         
-        if args.count >= 2 {
-            if args[1] == "--samples" {
-                // Режим чтения из stdin
-                samples = readSamplesFromStdin()
-                if samples == nil {
-                    printError("Failed to read samples from stdin")
-                    return
+        // Парсим аргументы
+        var i = 1
+        while i < args.count {
+            let arg = args[i]
+            
+            if arg == "--samples" {
+                isStdinMode = true
+            } else if arg == "--clustering-threshold" {
+                if i + 1 < args.count, let value = Double(args[i + 1]) {
+                    config.clusteringThreshold = value
+                    i += 1
                 }
-            } else {
-                // Режим чтения файла
-                let audioPath = args[1]
-                
-                guard FileManager.default.fileExists(atPath: audioPath) else {
-                    printError("File not found: \(audioPath)")
-                    return
+            } else if arg == "--min-segment-duration" {
+                if i + 1 < args.count, let value = Double(args[i + 1]) {
+                    config.minSegmentDuration = value
+                    i += 1
                 }
-                
-                samples = loadAudioSamples(from: audioPath)
-                if samples == nil {
-                    printError("Failed to load audio file: \(audioPath)")
-                    return
+            } else if arg == "--vbx-max-iterations" {
+                if i + 1 < args.count, let value = Int(args[i + 1]) {
+                    config.vbxMaxIterations = value
+                    i += 1
                 }
+            } else if arg == "--min-gap-duration" {
+                if i + 1 < args.count, let value = Double(args[i + 1]) {
+                    config.minGapDuration = value
+                    i += 1
+                }
+            } else if arg == "--fa" {
+                if i + 1 < args.count, let value = Double(args[i + 1]) {
+                    config.fa = value
+                    i += 1
+                }
+            } else if arg == "--fb" {
+                if i + 1 < args.count, let value = Double(args[i + 1]) {
+                    config.fb = value
+                    i += 1
+                }
+            } else if arg == "--debug" {
+                config.debug = true
+            } else if !arg.hasPrefix("--") {
+                audioPath = arg
+            }
+            
+            i += 1
+        }
+        
+        // Загружаем аудио
+        if isStdinMode {
+            samples = readSamplesFromStdin()
+            if samples == nil {
+                printError("Failed to read samples from stdin")
+                return
+            }
+        } else if let path = audioPath {
+            guard FileManager.default.fileExists(atPath: path) else {
+                printError("File not found: \(path)")
+                return
+            }
+            samples = loadAudioSamples(from: path)
+            if samples == nil {
+                printError("Failed to load audio file: \(path)")
+                return
             }
         } else {
-            printError("Usage: diarization-fluid <audio.wav> or diarization-fluid --samples")
+            printError("Usage: diarization-fluid <audio.wav> or diarization-fluid --samples [options]")
             return
         }
         
@@ -112,29 +177,39 @@ struct DiarizationCLI {
         
         // Выполняем диаризацию с FluidAudio
         do {
-            // Используем Offline pipeline (более точный, VBx clustering)
-            // Параметры кластеризации VBx (оптимизированы для реальных записей):
-            // - clusteringThreshold: 0.82 (стандарт FluidAudio 0.6 слишком склеивает)
-            // - Fa: 0.07 (стандарт) - precision параметр PLDA
-            // - Fb: 0.8 (стандарт) - recall параметр PLDA
-            // 
-            // Тестирование: c06f6e38 (4 спикера) → 4, d822227d (3-4 спикера) → 4
-            let config = OfflineDiarizerConfig(
-                clusteringThreshold: 0.82,  // Оптимизирован для разделения похожих голосов
-                Fa: 0.07,                   // Стандарт FluidAudio
-                Fb: 0.8,                    // Стандарт FluidAudio
-                minSegmentDuration: 0.3     // Короткие реплики ОК
+            // Используем Offline pipeline (VBx clustering)
+            // Параметры оптимизированы для разговорного аудио (2-4 спикера)
+            let offlineConfig = OfflineDiarizerConfig(
+                clusteringThreshold: config.clusteringThreshold,
+                Fa: config.fa,
+                Fb: config.fb,
+                minSegmentDuration: config.minSegmentDuration,
+                minGapDuration: config.minGapDuration,
+                maxVBxIterations: config.vbxMaxIterations
             )
-            let manager = OfflineDiarizerManager(config: config)
+            let manager = OfflineDiarizerManager(config: offlineConfig)
+            
+            if config.debug {
+                fputs("[FluidAudio] Config: threshold=\(config.clusteringThreshold), minSeg=\(config.minSegmentDuration), vbxIter=\(config.vbxMaxIterations), minGap=\(config.minGapDuration)\n", stderr)
+            }
             
             // Загружаем модели (скачиваются автоматически при первом запуске)
             try await manager.prepareModels()
             
             // Выполняем диаризацию
-            fputs("[FluidAudio] Starting diarization on \(audioSamples.count) samples (\(Double(audioSamples.count)/16000.0) sec)\n", stderr)
-            let result = try await manager.process(audio: audioSamples)
+            let audioDuration = Double(audioSamples.count) / 16000.0
+            if config.debug {
+                fputs("[FluidAudio] Starting diarization on \(audioSamples.count) samples (\(audioDuration) sec)\n", stderr)
+            }
             
-            fputs("[FluidAudio] Raw result: \(result.segments.count) segments\n", stderr)
+            let startTime = Date()
+            let result = try await manager.process(audio: audioSamples)
+            let elapsed = Date().timeIntervalSince(startTime)
+            
+            if config.debug {
+                fputs("[FluidAudio] Completed in \(String(format: "%.2f", elapsed))s (RTFx: \(String(format: "%.1f", audioDuration / elapsed)))\n", stderr)
+                fputs("[FluidAudio] Raw result: \(result.segments.count) segments\n", stderr)
+            }
             
             // Конвертируем результат в наш формат
             var segments: [DiarizationSegment] = []
@@ -151,7 +226,7 @@ struct DiarizationCLI {
                 }
                 
                 // Debug: выводим первые 10 сегментов
-                if idx < 10 {
+                if config.debug && idx < 10 {
                     fputs("[FluidAudio] Segment[\(idx)]: speaker=\(segment.speakerId) (\(speakerId)), start=\(segment.startTimeSeconds), end=\(segment.endTimeSeconds)\n", stderr)
                 }
                 
@@ -163,7 +238,9 @@ struct DiarizationCLI {
                 speakerSet.insert(speakerId)
             }
             
-            fputs("[FluidAudio] Final: \(segments.count) segments, \(speakerSet.count) unique speakers: \(speakerSet.sorted())\n", stderr)
+            if config.debug {
+                fputs("[FluidAudio] Final: \(segments.count) segments, \(speakerSet.count) unique speakers: \(speakerSet.sorted())\n", stderr)
+            }
             
             let output = DiarizationResult(
                 segments: segments,

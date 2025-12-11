@@ -20,14 +20,37 @@ import (
 // Использует subprocess для вызова diarization-fluid binary
 // Это обеспечивает стабильную работу без memory leak (каждый вызов = новый процесс)
 type FluidDiarizer struct {
-	binaryPath  string
-	mu          sync.Mutex
-	initialized bool
+	binaryPath          string
+	clusteringThreshold float64
+	minSegmentDuration  float64
+	vbxMaxIterations    int
+	minGapDuration      float64
+	debug               bool
+	mu                  sync.Mutex
+	initialized         bool
 }
 
 // FluidDiarizerConfig конфигурация для FluidDiarizer
 type FluidDiarizerConfig struct {
 	BinaryPath string // Путь к diarization-fluid binary (опционально)
+
+	// Параметры диаризации (опционально, используются defaults если не заданы)
+	ClusteringThreshold float64 // Порог кластеризации (0.0-1.0), default: 0.70
+	MinSegmentDuration  float64 // Мин. длительность сегмента (сек), default: 0.2
+	VBxMaxIterations    int     // Макс. итераций VBx, default: 30
+	MinGapDuration      float64 // Мин. пауза между сегментами (сек), default: 0.15
+	Debug               bool    // Включить отладочный вывод
+}
+
+// DefaultFluidDiarizerConfig возвращает оптимальные параметры для разговорного аудио
+func DefaultFluidDiarizerConfig() FluidDiarizerConfig {
+	return FluidDiarizerConfig{
+		ClusteringThreshold: 0.70,
+		MinSegmentDuration:  0.2,
+		VBxMaxIterations:    30,
+		MinGapDuration:      0.15,
+		Debug:               false,
+	}
 }
 
 // fluidDiarizationResult структура JSON ответа от diarization-fluid
@@ -81,11 +104,35 @@ func NewFluidDiarizer(config FluidDiarizerConfig) (*FluidDiarizer, error) {
 		return nil, fmt.Errorf("diarization-fluid binary not found at %s", binaryPath)
 	}
 
-	log.Printf("FluidDiarizer: using binary at %s", binaryPath)
+	// Применяем defaults если параметры не заданы
+	clusteringThreshold := config.ClusteringThreshold
+	if clusteringThreshold <= 0 {
+		clusteringThreshold = 0.70
+	}
+	minSegmentDuration := config.MinSegmentDuration
+	if minSegmentDuration <= 0 {
+		minSegmentDuration = 0.2
+	}
+	vbxMaxIterations := config.VBxMaxIterations
+	if vbxMaxIterations <= 0 {
+		vbxMaxIterations = 30
+	}
+	minGapDuration := config.MinGapDuration
+	if minGapDuration <= 0 {
+		minGapDuration = 0.15
+	}
+
+	log.Printf("FluidDiarizer: using binary at %s (threshold=%.2f, minSeg=%.2f, vbxIter=%d)",
+		binaryPath, clusteringThreshold, minSegmentDuration, vbxMaxIterations)
 
 	return &FluidDiarizer{
-		binaryPath:  binaryPath,
-		initialized: true,
+		binaryPath:          binaryPath,
+		clusteringThreshold: clusteringThreshold,
+		minSegmentDuration:  minSegmentDuration,
+		vbxMaxIterations:    vbxMaxIterations,
+		minGapDuration:      minGapDuration,
+		debug:               config.Debug,
+		initialized:         true,
 	}, nil
 }
 
@@ -105,8 +152,17 @@ func (d *FluidDiarizer) Diarize(samples []float32) ([]SpeakerSegment, error) {
 
 	startTime := time.Now()
 
-	// Запускаем subprocess с режимом --samples (читает из stdin)
-	cmd := exec.Command(d.binaryPath, "--samples")
+	// Запускаем subprocess с режимом --samples и параметрами
+	args := []string{"--samples"}
+	args = append(args, "--clustering-threshold", fmt.Sprintf("%.2f", d.clusteringThreshold))
+	args = append(args, "--min-segment-duration", fmt.Sprintf("%.2f", d.minSegmentDuration))
+	args = append(args, "--vbx-max-iterations", fmt.Sprintf("%d", d.vbxMaxIterations))
+	args = append(args, "--min-gap-duration", fmt.Sprintf("%.2f", d.minGapDuration))
+	if d.debug {
+		args = append(args, "--debug")
+	}
+
+	cmd := exec.Command(d.binaryPath, args...)
 
 	// Подготавливаем stdin с бинарными float32 данными
 	stdin, err := cmd.StdinPipe()
@@ -181,8 +237,17 @@ func (d *FluidDiarizer) DiarizeFile(audioPath string) ([]SpeakerSegment, error) 
 
 	startTime := time.Now()
 
-	// Запускаем subprocess с путём к файлу
-	cmd := exec.Command(d.binaryPath, audioPath)
+	// Запускаем subprocess с путём к файлу и параметрами
+	args := []string{audioPath}
+	args = append(args, "--clustering-threshold", fmt.Sprintf("%.2f", d.clusteringThreshold))
+	args = append(args, "--min-segment-duration", fmt.Sprintf("%.2f", d.minSegmentDuration))
+	args = append(args, "--vbx-max-iterations", fmt.Sprintf("%d", d.vbxMaxIterations))
+	args = append(args, "--min-gap-duration", fmt.Sprintf("%.2f", d.minGapDuration))
+	if d.debug {
+		args = append(args, "--debug")
+	}
+
+	cmd := exec.Command(d.binaryPath, args...)
 
 	// Разделяем stdout (JSON) и stderr (profiling logs)
 	var stdout bytes.Buffer
