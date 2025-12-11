@@ -32,6 +32,8 @@ interface SettingsPanelProps {
     setStreamingChunkSeconds?: (v: number) => void;
     streamingConfirmationThreshold?: number;
     setStreamingConfirmationThreshold?: (v: number) => void;
+    theme?: 'light' | 'dark';
+    setTheme?: (v: 'light' | 'dark') => void;
 }
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
@@ -49,7 +51,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     streamingChunkSeconds = 15,
     setStreamingChunkSeconds,
     streamingConfirmationThreshold = 0.85,
-    setStreamingConfirmationThreshold
+    setStreamingConfirmationThreshold,
+    theme = 'dark',
+    setTheme
 }) => {
     const { models, activeModelId, ollamaModels, ollamaError, ollamaModelsLoading } = useModelContext() as any;
     // Note: setShowModelManager is not in context yet. I need to add it or manage modal in parent.
@@ -226,6 +230,30 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                             </span>
                         </div>
                     </div>
+                )}
+
+                {/* Theme Toggle */}
+                {setTheme && (
+                    <button
+                        onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.4rem',
+                            padding: '0.35rem 0.75rem',
+                            borderRadius: '12px',
+                            border: '1px solid var(--border)',
+                            background: 'var(--surface-strong)',
+                            color: 'var(--text-primary)',
+                            cursor: 'pointer',
+                            fontSize: '0.85rem',
+                            transition: 'all 0.2s ease'
+                        }}
+                        title={theme === 'dark' ? 'Переключить на светлую тему' : 'Переключить на тёмную тему'}
+                    >
+                        <span style={{ fontSize: '1rem' }}>{theme === 'dark' ? '☀️' : '🌙'}</span>
+                        <span>{theme === 'dark' ? 'Светлая' : 'Тёмная'}</span>
+                    </button>
                 )}
             </div>
 

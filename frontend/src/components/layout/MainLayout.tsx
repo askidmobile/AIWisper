@@ -23,7 +23,7 @@ interface MainLayoutProps {
 }
 
 export const MainLayout: React.FC<MainLayoutProps> = ({
-    language, logs, addLog
+    theme, toggleTheme, language, logs, addLog
 }) => {
     const API_BASE = `http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}`;
     const {
@@ -343,6 +343,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                         setStreamingChunkSeconds={setStreamingChunkSeconds}
                         streamingConfirmationThreshold={streamingConfirmationThreshold}
                         setStreamingConfirmationThreshold={setStreamingConfirmationThreshold}
+                        theme={theme}
+                        setTheme={() => toggleTheme()}
                     />
                 )}
 
