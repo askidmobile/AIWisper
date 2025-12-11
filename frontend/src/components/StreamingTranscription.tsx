@@ -34,6 +34,21 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
     const [, setLastUpdate] = useState<number>(0);
     const containerRef = useRef<HTMLDivElement>(null);
     const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+    const [copied, setCopied] = useState(false);
+
+    // Копирование текста в буфер обмена
+    const handleCopy = async () => {
+        const textToCopy = confirmedText + (volatileText ? ' ' + volatileText : '');
+        if (!textToCopy.trim()) return;
+
+        try {
+            await navigator.clipboard.writeText(textToCopy.trim());
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+        } catch (err) {
+            console.error('Failed to copy text:', err);
+        }
+    };
 
     // Подписка на streaming updates
     useEffect(() => {
@@ -144,41 +159,80 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                     </span>
                 </div>
 
-                {/* Confidence indicator */}
+                {/* Actions */}
                 {hasContent && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
-                            Уверенность:
-                        </span>
-                        <div
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        {/* Confidence indicator */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                Уверенность:
+                            </span>
+                            <div
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.25rem',
+                                    padding: '0.125rem 0.5rem',
+                                    borderRadius: '12px',
+                                    background: 'rgba(255, 255, 255, 0.8)',
+                                    border: `1px solid ${confidenceColor}20`
+                                }}
+                            >
+                                <div
+                                    style={{
+                                        width: '6px',
+                                        height: '6px',
+                                        borderRadius: '50%',
+                                        background: confidenceColor
+                                    }}
+                                />
+                                <span
+                                    style={{
+                                        fontSize: '0.75rem',
+                                        fontWeight: 600,
+                                        color: confidenceColor
+                                    }}
+                                >
+                                    {confidencePercent}%
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* Copy button */}
+                        <button
+                            onClick={handleCopy}
+                            title="Копировать текст"
                             style={{
                                 display: 'flex',
                                 alignItems: 'center',
                                 gap: '0.25rem',
-                                padding: '0.125rem 0.5rem',
-                                borderRadius: '12px',
-                                background: 'rgba(255, 255, 255, 0.8)',
-                                border: `1px solid ${confidenceColor}20`
+                                padding: '0.25rem 0.5rem',
+                                borderRadius: '6px',
+                                border: '1px solid rgba(59, 130, 246, 0.3)',
+                                background: copied ? 'rgba(16, 185, 129, 0.1)' : 'rgba(255, 255, 255, 0.8)',
+                                cursor: 'pointer',
+                                fontSize: '0.75rem',
+                                color: copied ? '#10b981' : '#6b7280',
+                                transition: 'all 0.2s ease'
                             }}
                         >
-                            <div
-                                style={{
-                                    width: '6px',
-                                    height: '6px',
-                                    borderRadius: '50%',
-                                    background: confidenceColor
-                                }}
-                            />
-                            <span
-                                style={{
-                                    fontSize: '0.75rem',
-                                    fontWeight: 600,
-                                    color: confidenceColor
-                                }}
-                            >
-                                {confidencePercent}%
-                            </span>
-                        </div>
+                            {copied ? (
+                                <>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="20 6 9 17 4 12"/>
+                                    </svg>
+                                    <span>Скопировано</span>
+                                </>
+                            ) : (
+                                <>
+                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                    </svg>
+                                    <span>Копировать</span>
+                                </>
+                            )}
+                        </button>
                     </div>
                 )}
             </div>
