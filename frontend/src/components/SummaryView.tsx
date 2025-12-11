@@ -8,6 +8,7 @@ interface SummaryViewProps {
     onGenerate: () => void;
     hasTranscription: boolean;
     sessionDate?: string; // Для имени файла при скачивании
+    ollamaModel?: string; // Модель для отображения
 }
 
 export default function SummaryView({
@@ -16,7 +17,8 @@ export default function SummaryView({
     error,
     onGenerate,
     hasTranscription,
-    sessionDate
+    sessionDate,
+    ollamaModel = 'GPT-OSS'
 }: SummaryViewProps) {
     const [copySuccess, setCopySuccess] = useState(false);
     const [showExportMenu, setShowExportMenu] = useState(false);
@@ -341,49 +343,176 @@ export default function SummaryView({
         );
     }
 
-    // Нет summary - показываем кнопку генерации
+    // Нет summary - показываем кнопку генерации в стиле Welcome Screen
     return (
         <div style={{
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
-            padding: '3rem'
+            padding: '2rem',
+            maxWidth: '600px',
+            margin: '0 auto',
+            height: '100%'
         }}>
-            <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>📋</div>
-            <div style={{ color: '#888', marginBottom: '1.5rem', textAlign: 'center' }}>
-                <div style={{ marginBottom: '0.5rem' }}>Summary ещё не создан</div>
-                <div style={{ fontSize: '0.85rem', color: '#666' }}>
-                    Нажмите кнопку чтобы сгенерировать краткое содержание записи
-                </div>
+            {/* App Icon */}
+            <div style={{ 
+                width: '80px', 
+                height: '80px', 
+                borderRadius: '20px',
+                background: 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                marginBottom: '1.5rem',
+                boxShadow: 'var(--shadow-glow-primary)'
+            }}>
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <line x1="16" y1="13" x2="8" y2="13" />
+                    <line x1="16" y1="17" x2="8" y2="17" />
+                    <polyline points="10 9 9 9 8 9" />
+                </svg>
             </div>
+
+            <h1 style={{ 
+                fontSize: '1.5rem', 
+                fontWeight: 'var(--font-weight-bold)',
+                color: 'var(--text-primary)',
+                marginBottom: '0.5rem',
+                textAlign: 'center'
+            }}>
+                Summary ещё не создан
+            </h1>
+            
+            <p style={{ 
+                fontSize: '0.95rem', 
+                color: 'var(--text-secondary)',
+                marginBottom: '2rem',
+                textAlign: 'center'
+            }}>
+                Нажмите кнопку чтобы сгенерировать краткое содержание записи
+            </p>
+
             <button
                 onClick={onGenerate}
                 style={{
                     padding: '0.8rem 2rem',
-                    backgroundColor: '#6c5ce7',
+                    backgroundColor: 'var(--primary)',
                     color: '#fff',
                     border: 'none',
-                    borderRadius: '8px',
+                    borderRadius: 'var(--radius-lg)',
                     cursor: 'pointer',
                     fontSize: '1rem',
-                    fontWeight: 'bold',
+                    fontWeight: 'var(--font-weight-semibold)',
                     display: 'flex',
                     alignItems: 'center',
                     gap: '0.5rem',
-                    boxShadow: '0 4px 12px rgba(108, 92, 231, 0.3)'
+                    boxShadow: 'var(--shadow-glow-primary)',
+                    transition: 'all 0.2s ease',
+                    marginBottom: '1.5rem'
+                }}
+                onMouseEnter={e => {
+                    e.currentTarget.style.transform = 'translateY(-2px)';
+                    e.currentTarget.style.boxShadow = '0 8px 24px rgba(139, 92, 246, 0.4)';
+                }}
+                onMouseLeave={e => {
+                    e.currentTarget.style.transform = 'translateY(0)';
+                    e.currentTarget.style.boxShadow = 'var(--shadow-glow-primary)';
                 }}
             >
                 <span>🤖</span>
                 <span>Создать Summary</span>
             </button>
+
+            {/* Info Card */}
             <div style={{ 
-                marginTop: '1rem', 
-                fontSize: '0.75rem', 
-                color: '#555',
-                textAlign: 'center'
+                width: '100%',
+                background: 'var(--glass-bg)',
+                backdropFilter: 'blur(var(--glass-blur-light))',
+                borderRadius: 'var(--radius-lg)',
+                border: '1px solid var(--glass-border)',
+                padding: '1.25rem',
             }}>
-                Используется модель GPT-OSS для анализа текста
+                <h3 style={{ 
+                    fontSize: '0.85rem', 
+                    fontWeight: 'var(--font-weight-semibold)',
+                    color: 'var(--text-muted)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                    marginBottom: '1rem'
+                }}>
+                    Информация
+                </h3>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
+                        <div style={{ 
+                            width: '28px', 
+                            height: '28px', 
+                            borderRadius: '50%',
+                            background: 'var(--glass-bg-elevated)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                            fontSize: '0.85rem',
+                        }}>🤖</div>
+                        <div>
+                            <div style={{ color: 'var(--text-primary)', fontSize: '0.9rem', fontWeight: 'var(--font-weight-medium)' }}>
+                                Модель: {ollamaModel || 'GPT-OSS'}
+                            </div>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '2px' }}>
+                                Используется для анализа текста
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
+                        <div style={{ 
+                            width: '28px', 
+                            height: '28px', 
+                            borderRadius: '50%',
+                            background: 'var(--glass-bg-elevated)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                            fontSize: '0.85rem',
+                        }}>⚡</div>
+                        <div>
+                            <div style={{ color: 'var(--text-primary)', fontSize: '0.9rem', fontWeight: 'var(--font-weight-medium)' }}>
+                                Структурированный анализ
+                            </div>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '2px' }}>
+                                Тема, ключевые моменты, решения, следующие шаги
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
+                        <div style={{ 
+                            width: '28px', 
+                            height: '28px', 
+                            borderRadius: '50%',
+                            background: 'var(--glass-bg-elevated)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                            fontSize: '0.85rem',
+                        }}>📤</div>
+                        <div>
+                            <div style={{ color: 'var(--text-primary)', fontSize: '0.9rem', fontWeight: 'var(--font-weight-medium)' }}>
+                                Экспорт в Markdown
+                            </div>
+                            <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '2px' }}>
+                                Копирование или скачивание файла
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     );

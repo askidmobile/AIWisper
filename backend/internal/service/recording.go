@@ -13,6 +13,7 @@ import (
 )
 
 type AudioLevelCallback func(micLevel, sysLevel float64)
+type AudioStreamCallback func(samples []float32)
 
 type RecordingService struct {
 	SessionMgr *session.Manager
@@ -26,7 +27,8 @@ type RecordingService struct {
 	mu             sync.Mutex
 
 	// Callbacks
-	OnAudioLevel AudioLevelCallback
+	OnAudioLevel  AudioLevelCallback
+	OnAudioStream AudioStreamCallback // Для streaming transcription
 }
 
 func NewRecordingService(sessMgr *session.Manager, capture *audio.Capture) *RecordingService {
@@ -323,6 +325,11 @@ func (s *RecordingService) processAudio(sess *session.Session, echoCancel float3
 				// Это даёт разделение "Вы" / "Собеседник" при транскрипции
 				if chunkBuf != nil {
 					chunkBuf.ProcessStereo(micBuffer[:minLen], systemBuffer[:minLen])
+				}
+
+				// Streaming transcription (только микрофон, моно)
+				if s.OnAudioStream != nil {
+					s.OnAudioStream(micBuffer[:minLen])
 				}
 
 				micBuffer = consume(micBuffer, minLen)

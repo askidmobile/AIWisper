@@ -5,8 +5,9 @@ package models
 type ModelType string
 
 const (
-	ModelTypeGGML ModelType = "ggml" // whisper.cpp GGML модели
-	ModelTypeONNX ModelType = "onnx" // ONNX модели (GigaAM и др.)
+	ModelTypeGGML   ModelType = "ggml"   // whisper.cpp GGML модели
+	ModelTypeONNX   ModelType = "onnx"   // ONNX модели (GigaAM и др.)
+	ModelTypeCoreML ModelType = "coreml" // CoreML модели (FluidAudio)
 )
 
 // EngineType тип движка транскрипции
@@ -15,6 +16,7 @@ type EngineType string
 const (
 	EngineTypeWhisper     EngineType = "whisper"     // whisper.cpp
 	EngineTypeGigaAM      EngineType = "gigaam"      // GigaAM ONNX
+	EngineTypeFluidASR    EngineType = "fluid-asr"   // FluidAudio CoreML (Parakeet TDT v3)
 	EngineTypeSpeaker     EngineType = "speaker"     // Speaker Recognition
 	EngineTypeDiarization EngineType = "diarization" // Speaker Diarization (segmentation + embedding)
 )
@@ -144,6 +146,23 @@ var Registry = []ModelInfo{
 		Speed:       "~1x",
 		Recommended: true,
 		DownloadURL: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+	},
+
+	// ===== CoreML модели (FluidAudio) =====
+	{
+		ID:          "parakeet-tdt-v3",
+		Name:        "Parakeet TDT v3 (Multilingual)",
+		Type:        ModelTypeCoreML,
+		Engine:      EngineTypeFluidASR,
+		Size:        "~640 MB",
+		SizeBytes:   640_000_000,
+		Description: "NVIDIA Parakeet 0.6B - 25 европейских языков, WER 1.93%, работает на Apple Neural Engine",
+		Languages:   []string{"multi", "en", "de", "es", "fr", "it", "pt", "pl", "nl", "ru", "uk", "cs", "sk", "hr", "sl", "bg", "ro", "hu", "el", "lt", "lv", "et", "fi", "sv", "da", "no", "is"},
+		WER:         "1.93%",
+		Speed:       "~110x",
+		Recommended: true,
+		// Модель скачивается автоматически FluidAudio при первом использовании
+		DownloadURL: "", // Управляется FluidAudio
 	},
 
 	// ===== ONNX модели (GigaAM) =====

@@ -510,10 +510,22 @@ func (s *LLMService) diarizeDialogueBatch(dialogue []session.TranscriptSegment, 
 }
 
 // parseDiarizedDialogue парсит результат диаризации от LLM
+// ВАЖНО: Использует fuzzy matching по тексту для сопоставления timestamps
+// Это гарантирует что реплики "Вы" не потеряются даже если LLM изменит порядок
 func (s *LLMService) parseDiarizedDialogue(diarizedText string, originalDialogue []session.TranscriptSegment) []session.TranscriptSegment {
 	lines := strings.Split(diarizedText, "\n")
 	var result []session.TranscriptSegment
-	origIdx := 0
+
+	// Создаём карту оригинальных реплик для fuzzy matching
+	// Ключ - нормализованный текст (lowercase, без пробелов по краям)
+	type origSegment struct {
+		seg  session.TranscriptSegment
+		used bool
+	}
+	origMap := make([]origSegment, len(originalDialogue))
+	for i, seg := range originalDialogue {
+		origMap[i] = origSegment{seg: seg, used: false}
+	}
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -553,12 +565,46 @@ func (s *LLMService) parseDiarizedDialogue(diarizedText string, originalDialogue
 			continue
 		}
 
-		// Берём timestamps из оригинального диалога
+		// Ищем наиболее похожую оригинальную реплику для timestamps
 		var start, end int64
-		if origIdx < len(originalDialogue) {
-			start = originalDialogue[origIdx].Start
-			end = originalDialogue[origIdx].End
-			origIdx++
+		bestMatchIdx := -1
+		bestMatchScore := 0.0
+
+		normalizedText := strings.ToLower(strings.TrimSpace(text))
+
+		for i, orig := range origMap {
+			if orig.used {
+				continue
+			}
+
+			origText := strings.ToLower(strings.TrimSpace(orig.seg.Text))
+
+			// Вычисляем схожесть текстов
+			score := textSimilarity(normalizedText, origText)
+
+			// Бонус за совпадение типа спикера (mic vs sys)
+			origIsMic := orig.seg.Speaker == "mic" || orig.seg.Speaker == "Вы"
+			newIsMic := speaker == "mic"
+			if origIsMic == newIsMic {
+				score += 0.1
+			}
+
+			if score > bestMatchScore {
+				bestMatchScore = score
+				bestMatchIdx = i
+			}
+		}
+
+		// Если нашли хорошее совпадение (>50%) - используем его timestamps
+		if bestMatchIdx >= 0 && bestMatchScore > 0.5 {
+			start = origMap[bestMatchIdx].seg.Start
+			end = origMap[bestMatchIdx].seg.End
+			origMap[bestMatchIdx].used = true
+		} else if len(result) > 0 {
+			// Если не нашли - интерполируем от предыдущей реплики
+			prev := result[len(result)-1]
+			start = prev.End
+			end = start + 2000 // +2 секунды
 		}
 
 		result = append(result, session.TranscriptSegment{
@@ -569,10 +615,78 @@ func (s *LLMService) parseDiarizedDialogue(diarizedText string, originalDialogue
 		})
 	}
 
+	// Добавляем неиспользованные оригинальные реплики (которые LLM пропустил)
+	for _, orig := range origMap {
+		if !orig.used {
+			// Сохраняем оригинальную реплику с её timestamps
+			result = append(result, orig.seg)
+		}
+	}
+
+	// Сортируем по времени начала
+	sortSegmentsByTime(result)
+
 	if len(result) == 0 {
 		return originalDialogue
 	}
 	return result
+}
+
+// textSimilarity вычисляет схожесть двух строк (0.0 - 1.0)
+// Использует Jaccard similarity на основе слов
+func textSimilarity(a, b string) float64 {
+	wordsA := strings.Fields(a)
+	wordsB := strings.Fields(b)
+
+	if len(wordsA) == 0 && len(wordsB) == 0 {
+		return 1.0
+	}
+	if len(wordsA) == 0 || len(wordsB) == 0 {
+		return 0.0
+	}
+
+	// Создаём множества слов
+	setA := make(map[string]bool)
+	for _, w := range wordsA {
+		setA[w] = true
+	}
+
+	setB := make(map[string]bool)
+	for _, w := range wordsB {
+		setB[w] = true
+	}
+
+	// Считаем пересечение и объединение
+	intersection := 0
+	for w := range setA {
+		if setB[w] {
+			intersection++
+		}
+	}
+
+	union := len(setA)
+	for w := range setB {
+		if !setA[w] {
+			union++
+		}
+	}
+
+	if union == 0 {
+		return 0.0
+	}
+
+	return float64(intersection) / float64(union)
+}
+
+// sortSegmentsByTime сортирует сегменты по времени начала
+func sortSegmentsByTime(segments []session.TranscriptSegment) {
+	for i := 0; i < len(segments)-1; i++ {
+		for j := i + 1; j < len(segments); j++ {
+			if segments[j].Start < segments[i].Start {
+				segments[i], segments[j] = segments[j], segments[i]
+			}
+		}
+	}
 }
 
 // GetOllamaModels gets models list from Ollama

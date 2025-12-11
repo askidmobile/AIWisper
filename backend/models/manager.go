@@ -89,6 +89,12 @@ func (m *Manager) IsModelDownloaded(modelID string) bool {
 		return false
 	}
 
+	// Для CoreML моделей (FluidAudio) - модели скачиваются автоматически при первом использовании
+	// Считаем что модель всегда "доступна"
+	if info.Type == ModelTypeCoreML {
+		return true
+	}
+
 	// Для архивных моделей проверяем существование директории
 	if info.IsArchive {
 		extractDir := filepath.Join(m.modelsDir, modelID)

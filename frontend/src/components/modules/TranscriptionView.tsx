@@ -1,10 +1,11 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useSessionContext } from '../../context/SessionContext';
 import { useWebSocketContext } from '../../context/WebSocketContext';
 import SessionTabs, { TabType } from '../SessionTabs';
 import SummaryView from '../SummaryView';
 import { SessionControls } from './SessionControls';
 import { TranscriptSegment } from '../../types/session';
+import { SessionSpeaker } from '../../types/voiceprint';
 
 const API_BASE = `http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}`;
 
@@ -19,11 +20,14 @@ interface TranscriptionViewProps {
     currentTime: number;
     duration: number;
     onSeek: (time: number) => void;
+    // Session speakers for custom names
+    sessionSpeakers?: SessionSpeaker[];
 }
 
 export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     onPlayChunk, playingUrl, ollamaModel,
-    isPlaying, onPlaySession, onPauseSession, currentTime, duration, onSeek
+    isPlaying, onPlaySession, onPauseSession, currentTime, duration, onSeek,
+    sessionSpeakers = []
 }) => {
     const {
         currentSession, selectedSession, isRecording,
@@ -37,8 +41,10 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
 
     // Refs
     const transcriptionRef = useRef<HTMLDivElement>(null);
+    const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map());
     const [highlightedChunkId, setHighlightedChunkId] = useState<string | null>(null);
     const [transcribingChunkId, setTranscribingChunkId] = useState<string | null>(null);
+    const [autoScrollToPlayback, setAutoScrollToPlayback] = useState(true);
 
     // Derived state
     const displaySession = selectedSession || currentSession;
@@ -71,27 +77,153 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     }, [shouldAutoScroll]);
 
     // Compute Dialogue with defensive null checks
-    const allDialogue: TranscriptSegment[] = (chunks || [])
+    // ВАЖНО: Backend уже применяет chunk.StartMs к timestamps сегментов (transcription.go:390-397)
+    // Поэтому НЕ добавляем chunkOffset здесь - timestamps уже глобальные
+    const allDialogue: TranscriptSegment[] = useMemo(() => (chunks || [])
         .filter(c => c && c.status === 'completed')
         .sort((a, b) => (a.index || 0) - (b.index || 0))
         .flatMap((c) => {
             if (c.dialogue && Array.isArray(c.dialogue) && c.dialogue.length > 0) {
-                const chunkOffset = (chunks || [])
-                    .filter(prev => prev && (prev.index || 0) < (c.index || 0))
-                    .reduce((sum, prev) => sum + ((prev.duration || 0) / 1000000), 0);
-
                 return c.dialogue
                     .filter(seg => seg && typeof seg.start === 'number')
                     .map(seg => ({
                         ...seg,
-                        start: (seg.start || 0) + chunkOffset,
-                        end: (seg.end || 0) + chunkOffset,
+                        start: seg.start || 0,
+                        end: seg.end || 0,
                         text: seg.text || '',
                         speaker: seg.speaker || 'unknown'
                     }));
             }
             return [];
-        });
+        }), [chunks]);
+
+    // Находим текущий сегмент по времени воспроизведения
+    const currentTimeMs = currentTime * 1000; // секунды -> миллисекунды
+    const currentSegmentIndex = useMemo(() => {
+        if (!isPlaying || allDialogue.length === 0) return -1;
+        
+        // Ищем сегмент, в который попадает текущее время
+        for (let i = 0; i < allDialogue.length; i++) {
+            const seg = allDialogue[i];
+            if (currentTimeMs >= seg.start && currentTimeMs < seg.end) {
+                return i;
+            }
+            // Если между сегментами - показываем предыдущий
+            if (i < allDialogue.length - 1 && currentTimeMs >= seg.end && currentTimeMs < allDialogue[i + 1].start) {
+                return i;
+            }
+        }
+        // Если после последнего сегмента
+        if (allDialogue.length > 0 && currentTimeMs >= allDialogue[allDialogue.length - 1].start) {
+            return allDialogue.length - 1;
+        }
+        return -1;
+    }, [currentTimeMs, isPlaying, allDialogue]);
+
+    // Вычисляем позицию индикатора на скроллбаре (0-100%)
+    const scrollbarIndicatorPosition = useMemo(() => {
+        if (allDialogue.length === 0 || duration <= 0) return 0;
+        return Math.min(100, Math.max(0, (currentTime / duration) * 100));
+    }, [currentTime, duration, allDialogue.length]);
+
+    // Автоскролл к текущему сегменту при воспроизведении
+    useEffect(() => {
+        if (!isPlaying || !autoScrollToPlayback || currentSegmentIndex < 0) return;
+        
+        const segmentEl = segmentRefs.current.get(currentSegmentIndex);
+        if (segmentEl && transcriptionRef.current) {
+            const container = transcriptionRef.current;
+            const segmentRect = segmentEl.getBoundingClientRect();
+            const containerRect = container.getBoundingClientRect();
+            
+            // Скроллим только если сегмент вне видимой области
+            const isVisible = segmentRect.top >= containerRect.top && segmentRect.bottom <= containerRect.bottom;
+            if (!isVisible) {
+                segmentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    }, [currentSegmentIndex, isPlaying, autoScrollToPlayback]);
+
+    // Обработчик клика по сегменту для перемотки
+    const handleSegmentClick = useCallback((segmentStart: number) => {
+        const timeInSeconds = segmentStart / 1000;
+        onSeek(timeInSeconds);
+    }, [onSeek]);
+
+    // Сохраняем ref для сегмента
+    const setSegmentRef = useCallback((idx: number, el: HTMLDivElement | null) => {
+        if (el) {
+            segmentRefs.current.set(idx, el);
+        } else {
+            segmentRefs.current.delete(idx);
+        }
+    }, []);
+
+    // Функция для получения отображаемого имени спикера
+    // Приоритет: sessionSpeakers (кастомные имена) > дефолтные имена
+    const getSpeakerDisplayName = useCallback((speaker: string): { name: string; color: string } => {
+        const defaultColors = {
+            mic: '#4caf50',
+            sys: '#2196f3',
+            speakers: ['#2196f3', '#00bcd4', '#3f51b5', '#03a9f4', '#673ab7', '#5c6bc0']
+        };
+
+        // Проверяем кастомные имена из sessionSpeakers
+        if (sessionSpeakers.length > 0) {
+            // Ищем по разным форматам спикера
+            const found = sessionSpeakers.find(s => {
+                if (speaker === 'mic' || speaker === 'Вы') {
+                    return s.isMic;
+                }
+                if (speaker === 'sys' || speaker === 'Собеседник') {
+                    return !s.isMic && s.localId === 0;
+                }
+                if (speaker.startsWith('Speaker ')) {
+                    const num = parseInt(speaker.replace('Speaker ', ''), 10);
+                    return !s.isMic && s.localId === num;
+                }
+                if (speaker.startsWith('Собеседник ')) {
+                    const num = parseInt(speaker.replace('Собеседник ', ''), 10);
+                    return !s.isMic && s.localId === (num - 1);
+                }
+                // Прямое совпадение по displayName (для уже переименованных)
+                return s.displayName === speaker;
+            });
+
+            if (found) {
+                const colorIdx = found.isMic ? -1 : found.localId;
+                const color = found.isMic 
+                    ? defaultColors.mic 
+                    : defaultColors.speakers[Math.abs(colorIdx) % defaultColors.speakers.length];
+                return { name: found.displayName, color };
+            }
+        }
+
+        // Дефолтная логика если не нашли в sessionSpeakers
+        if (speaker === 'mic') {
+            return { name: 'Вы', color: defaultColors.mic };
+        }
+        if (speaker === 'sys' || speaker === 'Собеседник') {
+            return { name: 'Собеседник', color: defaultColors.sys };
+        }
+        if (speaker.startsWith('Speaker ')) {
+            const num = parseInt(speaker.replace('Speaker ', ''), 10) || 0;
+            return { 
+                name: `Собеседник ${num + 1}`, 
+                color: defaultColors.speakers[Math.abs(num) % defaultColors.speakers.length] 
+            };
+        }
+        if (speaker.startsWith('Собеседник ')) {
+            const num = parseInt(speaker.replace('Собеседник ', ''), 10) || 1;
+            return { 
+                name: speaker, 
+                color: defaultColors.speakers[Math.abs(num - 1) % defaultColors.speakers.length] 
+            };
+        }
+
+        // Кастомное имя - возвращаем как есть
+        return { name: speaker, color: defaultColors.sys };
+    }, [sessionSpeakers]);
 
     // Handlers
     const handleRetranscribe = (chunkId: string) => {
@@ -152,7 +284,35 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                 </div>
             )}
 
-            <div ref={transcriptionRef} style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto', overflowX: 'hidden' }}>
+            <div 
+                ref={transcriptionRef} 
+                style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto', overflowX: 'hidden', position: 'relative' }}
+                onScroll={() => {
+                    // Отключаем автоскролл при ручной прокрутке во время воспроизведения
+                    if (isPlaying) setAutoScrollToPlayback(false);
+                }}
+            >
+                {/* Индикатор позиции воспроизведения на скроллбаре */}
+                {isPlaying && allDialogue.length > 0 && (
+                    <div 
+                        style={{
+                            position: 'fixed',
+                            right: '8px',
+                            top: `calc(${scrollbarIndicatorPosition}% + 100px)`, // +100px для header offset
+                            width: '6px',
+                            height: '20px',
+                            backgroundColor: 'var(--primary)',
+                            borderRadius: '3px',
+                            zIndex: 100,
+                            boxShadow: '0 0 8px var(--primary)',
+                            transition: 'top 0.1s linear',
+                            cursor: 'pointer',
+                            pointerEvents: 'auto'
+                        }}
+                        onClick={() => setAutoScrollToPlayback(true)}
+                        title="Нажмите для автоскролла к текущей позиции"
+                    />
+                )}
                 {/* Empty State - Welcome Screen */}
                 {chunks.length === 0 && !isRecording && !selectedSession ? (
                     <div style={{ 
@@ -377,48 +537,83 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                             <>
                                 {allDialogue.length > 0 ? (
                                     <div style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: 'var(--surface)', borderRadius: '8px', lineHeight: '1.9', fontSize: '0.95rem' }}>
-                                        <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                                            <h4 style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
+                                            {isPlaying && (
+                                                <button
+                                                    onClick={() => setAutoScrollToPlayback(!autoScrollToPlayback)}
+                                                    style={{
+                                                        padding: '4px 8px',
+                                                        fontSize: '0.75rem',
+                                                        backgroundColor: autoScrollToPlayback ? 'var(--primary)' : 'transparent',
+                                                        color: autoScrollToPlayback ? 'white' : 'var(--text-muted)',
+                                                        border: '1px solid var(--border)',
+                                                        borderRadius: '4px',
+                                                        cursor: 'pointer',
+                                                        transition: 'all 0.2s'
+                                                    }}
+                                                    title={autoScrollToPlayback ? 'Автоскролл включён' : 'Автоскролл выключен'}
+                                                >
+                                                    {autoScrollToPlayback ? '📍 Следить' : '📍 Не следить'}
+                                                </button>
+                                            )}
+                                        </div>
                                         {allDialogue.map((seg, idx) => {
-                                            const isMic = seg.speaker === 'mic';
                                             const totalMs = seg.start || 0;
                                             const mins = Math.floor(totalMs / 60000) || 0;
                                             const secs = Math.floor((totalMs % 60000) / 1000) || 0;
                                             const ms = Math.floor((totalMs % 1000) / 100) || 0;
                                             const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
 
-                                            // Определяем имя спикера и цвет
-                                            let speakerName: string;
-                                            let speakerColor: string;
-                                            if (isMic) {
-                                                speakerName = 'Вы';
-                                                speakerColor = '#4caf50';
-                                            } else if (seg.speaker?.startsWith('Speaker ')) {
-                                                // Извлекаем номер спикера (Speaker 0 -> Собеседник 1)
-                                                const speakerNum = parseInt(seg.speaker.replace('Speaker ', ''), 10) || 0;
-                                                speakerName = `Собеседник ${speakerNum + 1}`;
-                                                // Разные цвета для разных спикеров (оттенки синего/голубого/фиолетового)
-                                                const colors = [
-                                                    '#2196f3', // Blue
-                                                    '#00bcd4', // Cyan
-                                                    '#3f51b5', // Indigo
-                                                    '#03a9f4', // Light Blue
-                                                    '#673ab7', // Deep Purple
-                                                    '#5c6bc0'  // Indigo Light
-                                                ];
-                                                speakerColor = colors[Math.abs(speakerNum) % colors.length];
-                                            } else if (seg.speaker === 'sys') {
-                                                speakerName = 'Собеседник';
-                                                speakerColor = '#2196f3';
-                                            } else {
-                                                speakerName = seg.speaker || 'Собеседник';
-                                                speakerColor = '#2196f3';
-                                            }
+                                            // Получаем имя и цвет спикера (с учётом кастомных имён из sessionSpeakers)
+                                            const { name: speakerName, color: speakerColor } = getSpeakerDisplayName(seg.speaker || '');
+
+                                            const isCurrentSegment = idx === currentSegmentIndex;
 
                                             return (
-                                                <div key={idx} style={{ marginBottom: '0.5rem', paddingLeft: '0.5rem', borderLeft: `3px solid ${speakerColor}` }}>
-                                                    <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontFamily: 'monospace' }}>[{timeStr}]</span>{' '}
+                                                <div 
+                                                    key={idx} 
+                                                    ref={(el) => setSegmentRef(idx, el)}
+                                                    onClick={() => handleSegmentClick(seg.start)}
+                                                    style={{ 
+                                                        marginBottom: '0.5rem', 
+                                                        paddingLeft: '0.5rem', 
+                                                        paddingRight: '0.5rem',
+                                                        paddingTop: '0.25rem',
+                                                        paddingBottom: '0.25rem',
+                                                        borderLeft: `3px solid ${speakerColor}`,
+                                                        backgroundColor: isCurrentSegment ? 'rgba(138, 43, 226, 0.15)' : 'transparent',
+                                                        borderRadius: isCurrentSegment ? '0 4px 4px 0' : '0',
+                                                        transition: 'background-color 0.2s ease',
+                                                        cursor: 'pointer',
+                                                        position: 'relative'
+                                                    }}
+                                                >
+                                                    {/* Индикатор текущего сегмента */}
+                                                    {isCurrentSegment && (
+                                                        <div style={{
+                                                            position: 'absolute',
+                                                            left: '-3px',
+                                                            top: 0,
+                                                            bottom: 0,
+                                                            width: '3px',
+                                                            backgroundColor: 'var(--primary)',
+                                                            boxShadow: '0 0 8px var(--primary)',
+                                                            animation: 'pulse 1.5s ease-in-out infinite'
+                                                        }} />
+                                                    )}
+                                                    <span 
+                                                        style={{ 
+                                                            color: isCurrentSegment ? 'var(--primary)' : 'var(--text-muted)', 
+                                                            fontSize: '0.8rem', 
+                                                            fontFamily: 'monospace',
+                                                            fontWeight: isCurrentSegment ? 'bold' : 'normal'
+                                                        }}
+                                                    >
+                                                        [{timeStr}]
+                                                    </span>{' '}
                                                     <span style={{ color: speakerColor, fontWeight: 'bold' }}>{speakerName}:</span>{' '}
-                                                    <span style={{ color: 'var(--text-primary)' }}>{seg.text || ''}</span>
+                                                    <span style={{ color: isCurrentSegment ? 'var(--text-primary)' : 'var(--text-primary)' }}>{seg.text || ''}</span>
                                                 </div>
                                             );
                                         })}
@@ -469,6 +664,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                 onGenerate={handleGenerateSummary}
                                 hasTranscription={chunks.some(c => c.status === 'completed')}
                                 sessionDate={displaySession.startTime}
+                                ollamaModel={ollamaModel}
                             />
                         )}
                     </>

@@ -283,31 +283,38 @@ struct ScreenCaptureAudio {
         
         let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: signalQueue)
         sigintSource.setEventHandler {
+            fputs("SIGINT received, starting cleanup...\n", stderr)
             let semaphore = DispatchSemaphore(value: 0)
             Task {
                 await performCleanup()
                 semaphore.signal()
             }
-            // Ждём завершения cleanup с таймаутом 3 секунды
-            let result = semaphore.wait(timeout: .now() + 3.0)
+            // Ждём завершения cleanup с таймаутом 5 секунд (увеличено для надёжности)
+            let result = semaphore.wait(timeout: .now() + 5.0)
             if result == .timedOut {
                 fputs("WARNING: Cleanup timed out\n", stderr)
             }
+            fputs("Exiting process (SIGINT)...\n", stderr)
+            fflush(stderr)
             exit(0)
         }
         sigintSource.resume()
         
         let sigtermSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: signalQueue)
         sigtermSource.setEventHandler {
+            fputs("SIGTERM received, starting cleanup...\n", stderr)
             let semaphore = DispatchSemaphore(value: 0)
             Task {
                 await performCleanup()
                 semaphore.signal()
             }
-            let result = semaphore.wait(timeout: .now() + 3.0)
+            // Ждём завершения cleanup с таймаутом 5 секунд
+            let result = semaphore.wait(timeout: .now() + 5.0)
             if result == .timedOut {
                 fputs("WARNING: Cleanup timed out\n", stderr)
             }
+            fputs("Exiting process (SIGTERM)...\n", stderr)
+            fflush(stderr)
             exit(0)
         }
         sigtermSource.resume()

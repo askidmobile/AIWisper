@@ -59,6 +59,8 @@ const (
 	EngineTypeWhisper EngineType = "whisper"
 	// EngineTypeGigaAM - GigaAM ONNX движок
 	EngineTypeGigaAM EngineType = "gigaam"
+	// EngineTypeFluidASR - FluidAudio CoreML движок (Parakeet TDT v3)
+	EngineTypeFluidASR EngineType = "fluid-asr"
 )
 
 // EngineConfig конфигурация для создания движка

@@ -8,6 +8,7 @@ import { RecordingOverlay } from '../RecordingOverlay';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { useSessionContext } from '../../context/SessionContext';
 import { useModelContext } from '../../context/ModelContext';
+import { useWebSocketContext } from '../../context/WebSocketContext';
 import ModelManager from '../ModelManager';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { AudioMeterBar } from '../common/AudioMeterBar';
@@ -32,7 +33,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
         activeModelId, models, fetchOllamaModels,
         downloadModel, cancelDownload, deleteModel, setActiveModel
     } = useModelContext();
-    // WebSocketContext isConnected unused here, removed
+    const { sendMessage } = useWebSocketContext();
 
     // Audio Player
     const { play, playingUrl, seek, currentTime, duration } = useAudioPlayer();
@@ -44,6 +45,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     const [useVoiceIsolation, setUseVoiceIsolation] = useState(false); // Default false for proper channel separation
     const [echoCancel, setEchoCancel] = useState(0.5);
     const [ollamaModel, setOllamaModel] = useState('');
+    const [enableStreaming, setEnableStreaming] = useState(false); // Streaming transcription
 
     // Devices (fetched via navigator.mediaDevices usually, or Electron IPC)
     const [inputDevices, setInputDevices] = useState<any[]>([]);
@@ -76,6 +78,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                 if (p.useVoiceIsolation !== undefined) setUseVoiceIsolation(p.useVoiceIsolation);
                 if (p.echoCancel !== undefined) setEchoCancel(p.echoCancel);
                 if (p.ollamaModel) setOllamaModel(p.ollamaModel);
+                if (p.enableStreaming !== undefined) setEnableStreaming(p.enableStreaming);
             }
         } catch (e) {
             console.error("Failed to load settings", e);
@@ -85,10 +88,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     // Save settings on change
     useEffect(() => {
         const settings = {
-            micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel
+            micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming
         };
         localStorage.setItem('aiwisper_settings', JSON.stringify(settings));
-    }, [micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel]);
+    }, [micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming]);
 
     // Start/Stop Handler
     const handleStartStop = async () => {
@@ -139,6 +142,16 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     // Load Ollama models on focus
     const loadOllama = () => fetchOllamaModels('http://localhost:11434');
 
+    // Auto enable/disable streaming transcription based on recording state and settings
+    useEffect(() => {
+        if (isRecording && enableStreaming) {
+            sendMessage({ type: 'enable_streaming' });
+            addLog('Streaming transcription enabled');
+        } else if (!isRecording) {
+            sendMessage({ type: 'disable_streaming' });
+        }
+    }, [isRecording, enableStreaming, sendMessage, addLog]);
+
     return (
         <div className="app-frame" style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)' }}>
             {/* Recording Overlay - shows when recording */}
@@ -167,6 +180,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                         ollamaModel={ollamaModel} setOllamaModel={setOllamaModel}
                         loadOllamaModels={loadOllama}
                         onShowModelManager={() => setShowModelManager(true)}
+                        enableStreaming={enableStreaming}
+                        setEnableStreaming={setEnableStreaming}
                     />
                 )}
 
@@ -182,6 +197,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                         currentTime={currentTime}
                         duration={duration}
                         onSeek={seek}
+                        // Session speakers - пока пустой массив, т.к. MainLayout не использует WebSocket напрямую
+                        sessionSpeakers={[]}
                     />
                 </ErrorBoundary>
             </div>

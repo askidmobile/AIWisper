@@ -1,7 +1,7 @@
 // Типы для менеджера моделей
 
-export type ModelType = 'ggml' | 'onnx';
-export type EngineType = 'whisper' | 'gigaam' | 'speaker' | 'diarization';
+export type ModelType = 'ggml' | 'onnx' | 'coreml';
+export type EngineType = 'whisper' | 'gigaam' | 'fluid-asr' | 'speaker' | 'diarization';
 export type DiarizationModelType = 'segmentation' | 'embedding';
 
 export type ModelStatus =

@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VU Meter Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 20px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 { color: #4ecdc4; }
+        h2 { color: #95a5a6; margin-top: 2em; }
+        
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 20px;
+            background: #4ecdc4;
+            border: none;
+            border-radius: 5px;
+            color: #1a1a2e;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover { background: #45b7aa; }
+        button:disabled { background: #666; cursor: not-allowed; }
+        
+        .meter-container {
+            display: flex;
+            gap: 20px;
+            align-items: flex-end;
+            height: 200px;
+            background: #16213e;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+        .meter {
+            width: 40px;
+            background: #0f0f23;
+            border-radius: 5px;
+            position: relative;
+            height: 100%;
+        }
+        .meter-fill {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(to top, #2ecc71, #f1c40f 70%, #e74c3c 90%);
+            border-radius: 5px;
+            transition: height 0.05s ease-out;
+        }
+        .meter-label {
+            text-align: center;
+            margin-top: 10px;
+            font-size: 12px;
+            color: #95a5a6;
+        }
+        .meter-value {
+            text-align: center;
+            font-size: 14px;
+            font-weight: bold;
+            color: #4ecdc4;
+        }
+        
+        .params {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+            padding: 20px;
+            background: #16213e;
+            border-radius: 10px;
+        }
+        .param {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .param label {
+            font-size: 12px;
+            color: #95a5a6;
+        }
+        .param input[type="range"] {
+            width: 100%;
+        }
+        .param-value {
+            font-size: 14px;
+            color: #4ecdc4;
+        }
+        
+        .log {
+            background: #0f0f23;
+            padding: 15px;
+            border-radius: 10px;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .log-entry { margin: 2px 0; }
+        .log-entry.info { color: #3498db; }
+        .log-entry.success { color: #2ecc71; }
+        .log-entry.warning { color: #f1c40f; }
+        .log-entry.error { color: #e74c3c; }
+
+        audio { width: 100%; margin: 10px 0; }
+        
+        .test-results {
+            background: #16213e;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px 0;
+        }
+        .test-result {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px;
+            border-bottom: 1px solid #2a2a4e;
+        }
+        .test-result:last-child { border-bottom: none; }
+        .test-pass { color: #2ecc71; }
+        .test-fail { color: #e74c3c; }
+    </style>
+</head>
+<body>
+    <h1>🎚️ VU Meter Test Suite</h1>
+    
+    <h2>1. Параметры AnalyserNode</h2>
+    <div class="params">
+        <div class="param">
+            <label>FFT Size (меньше = быстрее реакция)</label>
+            <input type="range" id="fftSize" min="5" max="11" value="8" step="1">
+            <span class="param-value" id="fftSizeValue">256</span>
+        </div>
+        <div class="param">
+            <label>Smoothing (0 = мгновенно, 1 = очень плавно)</label>
+            <input type="range" id="smoothing" min="0" max="100" value="30" step="5">
+            <span class="param-value" id="smoothingValue">0.30</span>
+        </div>
+        <div class="param">
+            <label>Min dB (нижняя граница)</label>
+            <input type="range" id="minDb" min="-100" max="-20" value="-60" step="5">
+            <span class="param-value" id="minDbValue">-60 dB</span>
+        </div>
+        <div class="param">
+            <label>Update Rate (FPS)</label>
+            <input type="range" id="updateRate" min="15" max="120" value="60" step="5">
+            <span class="param-value" id="updateRateValue">60 FPS</span>
+        </div>
+    </div>
+
+    <h2>2. Тест с аудио файлом</h2>
+    <div class="controls">
+        <input type="file" id="audioFile" accept="audio/*">
+        <button id="playBtn" disabled>▶️ Play</button>
+        <button id="stopBtn" disabled>⏹️ Stop</button>
+    </div>
+    <audio id="audioElement" controls></audio>
+    
+    <div class="meter-container">
+        <div>
+            <div class="meter">
+                <div class="meter-fill" id="meterLeft" style="height: 0%"></div>
+            </div>
+            <div class="meter-label">LEFT</div>
+            <div class="meter-value" id="valueLeft">0%</div>
+        </div>
+        <div>
+            <div class="meter">
+                <div class="meter-fill" id="meterRight" style="height: 0%"></div>
+            </div>
+            <div class="meter-label">RIGHT</div>
+            <div class="meter-value" id="valueRight">0%</div>
+        </div>
+        <div style="flex: 1; padding-left: 20px;">
+            <div><strong>RMS Left:</strong> <span id="rmsLeft">0.000</span></div>
+            <div><strong>RMS Right:</strong> <span id="rmsRight">0.000</span></div>
+            <div><strong>dB Left:</strong> <span id="dbLeft">-∞</span></div>
+            <div><strong>dB Right:</strong> <span id="dbRight">-∞</span></div>
+            <div><strong>Latency:</strong> <span id="latency">0</span> ms</div>
+            <div><strong>Frames:</strong> <span id="frames">0</span></div>
+        </div>
+    </div>
+
+    <h2>3. Тест с микрофоном</h2>
+    <div class="controls">
+        <button id="micBtn">🎤 Start Microphone</button>
+    </div>
+
+    <h2>4. Результаты тестов</h2>
+    <div class="test-results" id="testResults">
+        <div class="test-result">
+            <span>Реакция на тишину (должен быть 0%)</span>
+            <span id="testSilence">⏳ Ожидание...</span>
+        </div>
+        <div class="test-result">
+            <span>Реакция на звук (должен быть > 20%)</span>
+            <span id="testSound">⏳ Ожидание...</span>
+        </div>
+        <div class="test-result">
+            <span>Время реакции < 100ms</span>
+            <span id="testLatency">⏳ Ожидание...</span>
+        </div>
+        <div class="test-result">
+            <span>Стабильность (не скачет без звука)</span>
+            <span id="testStability">⏳ Ожидание...</span>
+        </div>
+    </div>
+
+    <h2>5. Лог</h2>
+    <div class="log" id="log"></div>
+
+    <script>
+        // State
+        let audioContext = null;
+        let analyserLeft = null;
+        let analyserRight = null;
+        let source = null;
+        let rafId = null;
+        let frameCount = 0;
+        let lastFrameTime = 0;
+        let leftData = null;
+        let rightData = null;
+        
+        // Test state
+        let silenceValues = [];
+        let soundValues = [];
+        let reactionStartTime = 0;
+        let reactionDetected = false;
+        
+        // DOM elements
+        const audioElement = document.getElementById('audioElement');
+        const meterLeft = document.getElementById('meterLeft');
+        const meterRight = document.getElementById('meterRight');
+        const valueLeft = document.getElementById('valueLeft');
+        const valueRight = document.getElementById('valueRight');
+        const rmsLeftEl = document.getElementById('rmsLeft');
+        const rmsRightEl = document.getElementById('rmsRight');
+        const dbLeftEl = document.getElementById('dbLeft');
+        const dbRightEl = document.getElementById('dbRight');
+        const latencyEl = document.getElementById('latency');
+        const framesEl = document.getElementById('frames');
+        const logEl = document.getElementById('log');
+        
+        // Parameters
+        const fftSizeInput = document.getElementById('fftSize');
+        const smoothingInput = document.getElementById('smoothing');
+        const minDbInput = document.getElementById('minDb');
+        const updateRateInput = document.getElementById('updateRate');
+        
+        function log(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+        
+        function getParams() {
+            return {
+                fftSize: Math.pow(2, parseInt(fftSizeInput.value)),
+                smoothing: parseInt(smoothingInput.value) / 100,
+                minDb: parseInt(minDbInput.value),
+                updateRate: parseInt(updateRateInput.value)
+            };
+        }
+        
+        function updateParamDisplay() {
+            const params = getParams();
+            document.getElementById('fftSizeValue').textContent = params.fftSize;
+            document.getElementById('smoothingValue').textContent = params.smoothing.toFixed(2);
+            document.getElementById('minDbValue').textContent = `${params.minDb} dB`;
+            document.getElementById('updateRateValue').textContent = `${params.updateRate} FPS`;
+        }
+        
+        // Update displays when params change
+        [fftSizeInput, smoothingInput, minDbInput, updateRateInput].forEach(input => {
+            input.addEventListener('input', () => {
+                updateParamDisplay();
+                if (analyserLeft && analyserRight) {
+                    const params = getParams();
+                    analyserLeft.fftSize = params.fftSize;
+                    analyserRight.fftSize = params.fftSize;
+                    analyserLeft.smoothingTimeConstant = params.smoothing;
+                    analyserRight.smoothingTimeConstant = params.smoothing;
+                    leftData = new Float32Array(params.fftSize);
+                    rightData = new Float32Array(params.fftSize);
+                    log(`Updated: fftSize=${params.fftSize}, smoothing=${params.smoothing}`, 'info');
+                }
+            });
+        });
+        updateParamDisplay();
+        
+        function calculateRMS(data) {
+            let sum = 0;
+            for (let i = 0; i < data.length; i++) {
+                sum += data[i] * data[i];
+            }
+            return Math.sqrt(sum / data.length);
+        }
+        
+        function rmsToVuLevel(rms, minDb = -60) {
+            if (rms <= 0) return 0;
+            const db = 20 * Math.log10(rms);
+            const percent = ((db - minDb) / (0 - minDb)) * 100;
+            return Math.max(0, Math.min(100, percent));
+        }
+        
+        function setupAudioGraph(sourceNode) {
+            const params = getParams();
+            
+            if (!audioContext) {
+                audioContext = new AudioContext();
+            }
+            
+            const splitter = audioContext.createChannelSplitter(2);
+            analyserLeft = audioContext.createAnalyser();
+            analyserRight = audioContext.createAnalyser();
+            
+            analyserLeft.fftSize = params.fftSize;
+            analyserRight.fftSize = params.fftSize;
+            analyserLeft.smoothingTimeConstant = params.smoothing;
+            analyserRight.smoothingTimeConstant = params.smoothing;
+            
+            leftData = new Float32Array(params.fftSize);
+            rightData = new Float32Array(params.fftSize);
+            
+            const merger = audioContext.createChannelMerger(2);
+            
+            sourceNode.connect(splitter);
+            splitter.connect(analyserLeft, 0);
+            splitter.connect(analyserRight, 1);
+            analyserLeft.connect(merger, 0, 0);
+            analyserRight.connect(merger, 0, 1);
+            merger.connect(audioContext.destination);
+            
+            log(`Audio graph setup: fftSize=${params.fftSize}, smoothing=${params.smoothing}`, 'success');
+            
+            return { analyserLeft, analyserRight };
+        }
+        
+        function startAnalysis() {
+            frameCount = 0;
+            lastFrameTime = performance.now();
+            
+            const params = getParams();
+            const frameInterval = 1000 / params.updateRate;
+            let lastUpdateTime = 0;
+            
+            function analyze(timestamp) {
+                // Throttle to target FPS
+                if (timestamp - lastUpdateTime < frameInterval) {
+                    rafId = requestAnimationFrame(analyze);
+                    return;
+                }
+                lastUpdateTime = timestamp;
+                
+                frameCount++;
+                const now = performance.now();
+                const delta = now - lastFrameTime;
+                lastFrameTime = now;
+                
+                if (!analyserLeft || !analyserRight) {
+                    rafId = requestAnimationFrame(analyze);
+                    return;
+                }
+                
+                analyserLeft.getFloatTimeDomainData(leftData);
+                analyserRight.getFloatTimeDomainData(rightData);
+                
+                const rmsL = calculateRMS(leftData);
+                const rmsR = calculateRMS(rightData);
+                
+                const minDb = getParams().minDb;
+                const levelL = rmsToVuLevel(rmsL, minDb);
+                const levelR = rmsToVuLevel(rmsR, minDb);
+                
+                const dbL = rmsL > 0 ? 20 * Math.log10(rmsL) : -Infinity;
+                const dbR = rmsR > 0 ? 20 * Math.log10(rmsR) : -Infinity;
+                
+                // Update UI
+                meterLeft.style.height = `${levelL}%`;
+                meterRight.style.height = `${levelR}%`;
+                valueLeft.textContent = `${Math.round(levelL)}%`;
+                valueRight.textContent = `${Math.round(levelR)}%`;
+                rmsLeftEl.textContent = rmsL.toFixed(4);
+                rmsRightEl.textContent = rmsR.toFixed(4);
+                dbLeftEl.textContent = isFinite(dbL) ? `${dbL.toFixed(1)} dB` : '-∞ dB';
+                dbRightEl.textContent = isFinite(dbR) ? `${dbR.toFixed(1)} dB` : '-∞ dB';
+                latencyEl.textContent = delta.toFixed(1);
+                framesEl.textContent = frameCount;
+                
+                // Test: collect data
+                if (levelL < 5 && levelR < 5) {
+                    silenceValues.push(Math.max(levelL, levelR));
+                }
+                if (levelL > 20 || levelR > 20) {
+                    soundValues.push(Math.max(levelL, levelR));
+                    if (!reactionDetected && reactionStartTime > 0) {
+                        const reactionTime = performance.now() - reactionStartTime;
+                        document.getElementById('testLatency').textContent = 
+                            reactionTime < 100 ? `✅ ${reactionTime.toFixed(0)}ms` : `❌ ${reactionTime.toFixed(0)}ms`;
+                        document.getElementById('testLatency').className = reactionTime < 100 ? 'test-pass' : 'test-fail';
+                        reactionDetected = true;
+                    }
+                }
+                
+                // Update test results
+                if (silenceValues.length > 30) {
+                    const avgSilence = silenceValues.slice(-30).reduce((a, b) => a + b, 0) / 30;
+                    const stable = silenceValues.slice(-30).every(v => v < 5);
+                    document.getElementById('testSilence').textContent = avgSilence < 5 ? `✅ ${avgSilence.toFixed(1)}%` : `❌ ${avgSilence.toFixed(1)}%`;
+                    document.getElementById('testSilence').className = avgSilence < 5 ? 'test-pass' : 'test-fail';
+                    document.getElementById('testStability').textContent = stable ? '✅ Стабильно' : '❌ Скачет';
+                    document.getElementById('testStability').className = stable ? 'test-pass' : 'test-fail';
+                }
+                if (soundValues.length > 10) {
+                    const avgSound = soundValues.slice(-10).reduce((a, b) => a + b, 0) / 10;
+                    document.getElementById('testSound').textContent = avgSound > 20 ? `✅ ${avgSound.toFixed(1)}%` : `❌ ${avgSound.toFixed(1)}%`;
+                    document.getElementById('testSound').className = avgSound > 20 ? 'test-pass' : 'test-fail';
+                }
+                
+                rafId = requestAnimationFrame(analyze);
+            }
+            
+            rafId = requestAnimationFrame(analyze);
+            log('Analysis started', 'success');
+        }
+        
+        function stopAnalysis() {
+            if (rafId) {
+                cancelAnimationFrame(rafId);
+                rafId = null;
+            }
+            meterLeft.style.height = '0%';
+            meterRight.style.height = '0%';
+            valueLeft.textContent = '0%';
+            valueRight.textContent = '0%';
+            log('Analysis stopped', 'info');
+        }
+        
+        // File input
+        document.getElementById('audioFile').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                audioElement.src = url;
+                document.getElementById('playBtn').disabled = false;
+                document.getElementById('stopBtn').disabled = false;
+                log(`Loaded: ${file.name}`, 'success');
+            }
+        });
+        
+        // Play button
+        document.getElementById('playBtn').addEventListener('click', async () => {
+            if (!audioContext) {
+                audioContext = new AudioContext();
+            }
+            if (audioContext.state === 'suspended') {
+                await audioContext.resume();
+            }
+            
+            if (!source) {
+                source = audioContext.createMediaElementSource(audioElement);
+                setupAudioGraph(source);
+            }
+            
+            silenceValues = [];
+            soundValues = [];
+            reactionStartTime = performance.now();
+            reactionDetected = false;
+            
+            audioElement.play();
+            startAnalysis();
+        });
+        
+        // Stop button
+        document.getElementById('stopBtn').addEventListener('click', () => {
+            audioElement.pause();
+            audioElement.currentTime = 0;
+            stopAnalysis();
+        });
+        
+        // Audio element events
+        audioElement.addEventListener('ended', () => {
+            stopAnalysis();
+            log('Playback ended', 'info');
+        });
+        
+        // Microphone button
+        document.getElementById('micBtn').addEventListener('click', async () => {
+            const btn = document.getElementById('micBtn');
+            
+            if (btn.textContent.includes('Start')) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    
+                    if (!audioContext) {
+                        audioContext = new AudioContext();
+                    }
+                    if (audioContext.state === 'suspended') {
+                        await audioContext.resume();
+                    }
+                    
+                    const micSource = audioContext.createMediaStreamSource(stream);
+                    setupAudioGraph(micSource);
+                    
+                    silenceValues = [];
+                    soundValues = [];
+                    reactionStartTime = performance.now();
+                    reactionDetected = false;
+                    
+                    startAnalysis();
+                    btn.textContent = '🛑 Stop Microphone';
+                    log('Microphone started', 'success');
+                } catch (err) {
+                    log(`Microphone error: ${err.message}`, 'error');
+                }
+            } else {
+                stopAnalysis();
+                btn.textContent = '🎤 Start Microphone';
+            }
+        });
+        
+        log('VU Meter Test Suite loaded', 'success');
+        log('Рекомендуемые параметры для быстрой реакции:', 'info');
+        log('  - FFT Size: 256 или 128', 'info');
+        log('  - Smoothing: 0.1-0.3 (меньше = быстрее)', 'info');
+        log('  - Min dB: -50 до -60', 'info');
+    </script>
+</body>
+</html>

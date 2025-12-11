@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useSessionContext } from '../context/SessionContext';
+import { StreamingTranscription } from './StreamingTranscription';
 
 const formatDuration = (seconds: number): string => {
     const hrs = Math.floor(seconds / 3600);
@@ -19,6 +20,7 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
     const { isRecording, currentSession } = useSessionContext();
     const [duration, setDuration] = useState(0);
     const [waveData, setWaveData] = useState<number[]>(Array(32).fill(0.3));
+    const [showStreaming, setShowStreaming] = useState(false);
     const animationRef = useRef<number | null>(null);
 
     // Timer
@@ -60,6 +62,7 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
     if (!isRecording) return null;
 
     return (
+        <>
         <div
             style={{
                 position: 'fixed',
@@ -168,6 +171,49 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
                 {formatDuration(duration)}
             </div>
 
+            {/* Streaming Toggle Button */}
+            <button
+                onClick={() => setShowStreaming(!showStreaming)}
+                title={showStreaming ? "Скрыть live транскрипцию" : "Показать live транскрипцию"}
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.4rem',
+                    padding: '0.5rem 0.9rem',
+                    background: showStreaming ? 'rgba(108, 92, 231, 0.9)' : 'rgba(255, 255, 255, 0.15)',
+                    border: showStreaming ? '1px solid rgba(108, 92, 231, 0.5)' : '1px solid rgba(255, 255, 255, 0.3)',
+                    borderRadius: '9999px',
+                    color: 'white',
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease',
+                    boxShadow: showStreaming ? '0 2px 12px rgba(108, 92, 231, 0.4)' : 'none',
+                    WebkitAppRegion: 'no-drag',
+                } as React.CSSProperties}
+                onMouseEnter={(e) => {
+                    if (showStreaming) {
+                        e.currentTarget.style.background = 'rgba(98, 82, 221, 1)';
+                    } else {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.25)';
+                    }
+                    e.currentTarget.style.transform = 'scale(1.02)';
+                }}
+                onMouseLeave={(e) => {
+                    if (showStreaming) {
+                        e.currentTarget.style.background = 'rgba(108, 92, 231, 0.9)';
+                    } else {
+                        e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)';
+                    }
+                    e.currentTarget.style.transform = 'scale(1)';
+                }}
+            >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
+                Live
+            </button>
+
             {/* Stop Button */}
             <button
                 onClick={onStop}
@@ -215,6 +261,84 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
                 }
             `}</style>
         </div>
+
+        {/* Streaming Transcription Panel */}
+        {showStreaming && (
+            <div
+                style={{
+                    position: 'fixed',
+                    top: '60px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    width: '90%',
+                    maxWidth: '800px',
+                    maxHeight: '40vh',
+                    zIndex: 99,
+                    background: 'var(--surface)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '12px',
+                    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.2)',
+                    overflow: 'hidden',
+                    animation: 'slideDown 0.2s ease-out',
+                }}
+            >
+                <div
+                    style={{
+                        padding: '0.75rem 1rem',
+                        borderBottom: '1px solid var(--border)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        background: 'var(--surface-strong)',
+                    }}
+                >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                            Live Транскрипция
+                        </span>
+                        <span
+                            style={{
+                                fontSize: '0.7rem',
+                                color: 'var(--success)',
+                                backgroundColor: 'rgba(0, 184, 148, 0.14)',
+                                padding: '2px 6px',
+                                borderRadius: '999px',
+                            }}
+                        >
+                            Real-time
+                        </span>
+                    </div>
+                    <button
+                        onClick={() => setShowStreaming(false)}
+                        style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                            fontSize: '1.2rem',
+                            padding: '0.25rem',
+                            lineHeight: 1,
+                        }}
+                    >
+                        ×
+                    </button>
+                </div>
+                <StreamingTranscription enabled={showStreaming} />
+                <style>{`
+                    @keyframes slideDown {
+                        from {
+                            opacity: 0;
+                            transform: translateX(-50%) translateY(-10px);
+                        }
+                        to {
+                            opacity: 1;
+                            transform: translateX(-50%) translateY(0);
+                        }
+                    }
+                `}</style>
+            </div>
+        )}
+        </>
     );
 };
 

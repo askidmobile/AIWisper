@@ -49,3 +49,19 @@ echo "==> Building FluidAudio diarization module (Swift)"
 )
 cp "$ROOT_DIR/backend/audio/diarization/.build/release/diarization-fluid" "$ROOT_DIR/build/resources/diarization-fluid"
 echo "Built diarization-fluid -> build/resources/diarization-fluid"
+
+echo "==> Building FluidAudio transcription module (Swift)"
+(
+  cd "$ROOT_DIR/backend/audio/transcription"
+  swift build -c release
+)
+cp "$ROOT_DIR/backend/audio/transcription/.build/release/transcription-fluid" "$ROOT_DIR/build/resources/transcription-fluid"
+echo "Built transcription-fluid -> build/resources/transcription-fluid"
+
+echo "==> Building FluidAudio streaming transcription module (Swift)"
+(
+  cd "$ROOT_DIR/backend/audio/transcription-stream"
+  swift build -c release
+)
+cp "$ROOT_DIR/backend/audio/transcription-stream/.build/release/transcription-fluid-stream" "$ROOT_DIR/build/resources/transcription-fluid-stream"
+echo "Built transcription-fluid-stream -> build/resources/transcription-fluid-stream"

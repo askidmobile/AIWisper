@@ -69,16 +69,17 @@ func (c *grpcClient) Close() error {
 }
 
 type Server struct {
-	Config               *config.Config
-	SessionMgr           *session.Manager
-	EngineMgr            *ai.EngineManager
-	ModelMgr             *models.Manager
-	Capture              *audio.Capture
-	TranscriptionService *service.TranscriptionService
-	RecordingService     *service.RecordingService
-	LLMService           *service.LLMService
-	VoicePrintStore      *voiceprint.Store   // Хранилище голосовых отпечатков
-	VoicePrintMatcher    *voiceprint.Matcher // Matcher для поиска совпадений
+	Config                        *config.Config
+	SessionMgr                    *session.Manager
+	EngineMgr                     *ai.EngineManager
+	ModelMgr                      *models.Manager
+	Capture                       *audio.Capture
+	TranscriptionService          *service.TranscriptionService
+	RecordingService              *service.RecordingService
+	LLMService                    *service.LLMService
+	StreamingTranscriptionService *service.StreamingTranscriptionService // Real-time streaming транскрипция
+	VoicePrintStore               *voiceprint.Store                      // Хранилище голосовых отпечатков
+	VoicePrintMatcher             *voiceprint.Matcher                    // Matcher для поиска совпадений
 
 	clients map[transportClient]bool
 	mu      sync.Mutex
@@ -97,22 +98,24 @@ func NewServer(
 	transSvc *service.TranscriptionService,
 	recSvc *service.RecordingService,
 	llmSvc *service.LLMService,
+	streamingSvc *service.StreamingTranscriptionService,
 	vpStore *voiceprint.Store,
 	vpMatcher *voiceprint.Matcher,
 ) *Server {
 	s := &Server{
-		Config:               cfg,
-		SessionMgr:           sessMgr,
-		EngineMgr:            engMgr,
-		ModelMgr:             modMgr,
-		Capture:              cap,
-		TranscriptionService: transSvc,
-		RecordingService:     recSvc,
-		LLMService:           llmSvc,
-		VoicePrintStore:      vpStore,
-		VoicePrintMatcher:    vpMatcher,
-		clients:              make(map[transportClient]bool),
-		retranscribeCancels:  make(map[string]func()),
+		Config:                        cfg,
+		SessionMgr:                    sessMgr,
+		EngineMgr:                     engMgr,
+		ModelMgr:                      modMgr,
+		Capture:                       cap,
+		TranscriptionService:          transSvc,
+		RecordingService:              recSvc,
+		LLMService:                    llmSvc,
+		StreamingTranscriptionService: streamingSvc,
+		VoicePrintStore:               vpStore,
+		VoicePrintMatcher:             vpMatcher,
+		clients:                       make(map[transportClient]bool),
+		retranscribeCancels:           make(map[string]func()),
 	}
 	s.setupCallbacks()
 	return s
@@ -153,6 +156,28 @@ func (s *Server) setupCallbacks() {
 				Type:        "audio_level",
 				MicLevel:    micLevel,
 				SystemLevel: sysLevel,
+			})
+		}
+
+		// Audio Stream for Streaming Transcription
+		s.RecordingService.OnAudioStream = func(samples []float32) {
+			if s.StreamingTranscriptionService != nil && s.StreamingTranscriptionService.IsActive() {
+				if err := s.StreamingTranscriptionService.StreamAudio(samples); err != nil {
+					log.Printf("StreamingTranscription: failed to stream audio: %v", err)
+				}
+			}
+		}
+	}
+
+	// Streaming Transcription Updates
+	if s.StreamingTranscriptionService != nil {
+		s.StreamingTranscriptionService.OnUpdate = func(update service.StreamingTranscriptionUpdate) {
+			s.broadcast(Message{
+				Type:                 "streaming_update",
+				StreamingText:        update.Text,
+				StreamingIsConfirmed: update.IsConfirmed,
+				StreamingConfidence:  update.Confidence,
+				StreamingTimestamp:   update.Timestamp.UnixMilli(),
 			})
 		}
 	}
@@ -853,6 +878,45 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			DiarizationProvider: provider,
 		})
 
+	// === Streaming Transcription ===
+	case "enable_streaming":
+		if s.StreamingTranscriptionService == nil {
+			send(Message{Type: "error", Data: "Streaming transcription service not available"})
+			return
+		}
+		if err := s.StreamingTranscriptionService.Start(); err != nil {
+			log.Printf("Failed to enable streaming transcription: %v", err)
+			send(Message{Type: "streaming_error", Error: err.Error()})
+			return
+		}
+		send(Message{Type: "streaming_enabled"})
+		log.Printf("Streaming transcription enabled")
+
+	case "disable_streaming":
+		if s.StreamingTranscriptionService == nil {
+			send(Message{Type: "error", Data: "Streaming transcription service not available"})
+			return
+		}
+		if err := s.StreamingTranscriptionService.Stop(); err != nil {
+			log.Printf("Failed to disable streaming transcription: %v", err)
+			send(Message{Type: "streaming_error", Error: err.Error()})
+			return
+		}
+		send(Message{Type: "streaming_disabled"})
+		log.Printf("Streaming transcription disabled")
+
+	case "get_streaming_status":
+		if s.StreamingTranscriptionService == nil {
+			send(Message{Type: "streaming_status", Data: "false"})
+			return
+		}
+		isActive := s.StreamingTranscriptionService.IsActive()
+		status := "false"
+		if isActive {
+			status = "true"
+		}
+		send(Message{Type: "streaming_status", Data: status})
+
 	// === VoicePrint (глобальные спикеры) ===
 	case "get_voiceprints":
 		if s.VoicePrintStore == nil {
@@ -1105,6 +1169,9 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 	}
 
 	// Собираем информацию о спикерах из диалога
+	// Спикеры могут быть в разных форматах:
+	// - "mic" или "Вы" - микрофон пользователя
+	// - "sys", "Speaker 0", "Speaker 1", "Собеседник", "Собеседник 1" - собеседники
 	speakerMap := make(map[string]*voiceprint.SessionSpeaker)
 
 	for _, chunk := range sess.Chunks {
@@ -1114,28 +1181,55 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 				continue
 			}
 
-			if _, ok := speakerMap[speaker]; !ok {
-				localID := -1 // По умолчанию для "Вы"
-				isMic := false
+			// Нормализуем ключ для группировки
+			normalizedKey := speaker
 
-				if speaker == "Вы" {
+			if _, ok := speakerMap[normalizedKey]; !ok {
+				localID := 0
+				isMic := false
+				displayName := speaker
+
+				// Определяем тип спикера и формируем displayName
+				switch {
+				case speaker == "mic" || speaker == "Вы":
 					isMic = true
-				} else if strings.HasPrefix(speaker, "Собеседник ") {
+					localID = -1
+					displayName = "Вы"
+
+				case speaker == "sys" || speaker == "Собеседник":
+					localID = 0
+					displayName = "Собеседник 1"
+
+				case strings.HasPrefix(speaker, "Speaker "):
+					// "Speaker 0" -> localID = 0, displayName = "Собеседник 1"
+					var num int
+					fmt.Sscanf(speaker, "Speaker %d", &num)
+					localID = num
+					displayName = fmt.Sprintf("Собеседник %d", num+1)
+
+				case strings.HasPrefix(speaker, "Собеседник "):
 					// "Собеседник 1" -> localID = 0
 					var num int
 					fmt.Sscanf(speaker, "Собеседник %d", &num)
 					localID = num - 1
+					displayName = speaker // Уже в нужном формате
+
+				default:
+					// Кастомное имя (уже переименованный спикер)
+					// Пытаемся определить localID по позиции
+					localID = len(speakerMap) // Присваиваем следующий ID
+					displayName = speaker
 				}
 
-				speakerMap[speaker] = &voiceprint.SessionSpeaker{
+				speakerMap[normalizedKey] = &voiceprint.SessionSpeaker{
 					LocalID:      localID,
-					DisplayName:  speaker,
+					DisplayName:  displayName,
 					IsMic:        isMic,
 					IsRecognized: false,
 				}
 			}
 
-			sp := speakerMap[speaker]
+			sp := speakerMap[normalizedKey]
 			sp.SegmentCount++
 			sp.TotalDuration += float32(seg.End-seg.Start) / 1000.0 // мс -> сек
 		}
@@ -1150,16 +1244,44 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 
 // renameSpeakerInSession переименовывает спикера во всех сегментах сессии
 func (s *Server) renameSpeakerInSession(sessionID string, localSpeakerID int, newName string) error {
-	// Определяем старое имя по localSpeakerID
-	oldName := ""
+	// Определяем все возможные варианты старого имени по localSpeakerID
+	// Спикер может быть в разных форматах в зависимости от источника
+	var oldNames []string
+
 	if localSpeakerID < 0 {
-		oldName = "Вы"
+		oldNames = []string{"Вы", "mic"}
 	} else {
-		oldName = fmt.Sprintf("Собеседник %d", localSpeakerID+1)
+		// Собеседники могут быть в форматах:
+		// - "Speaker N" (из диаризации)
+		// - "Собеседник N+1" (после конвертации)
+		// - "sys" (если только один собеседник)
+		// - "Собеседник" (без номера)
+		oldNames = []string{
+			fmt.Sprintf("Speaker %d", localSpeakerID),
+			fmt.Sprintf("Собеседник %d", localSpeakerID+1),
+		}
+		if localSpeakerID == 0 {
+			oldNames = append(oldNames, "sys", "Собеседник")
+		}
 	}
 
-	// Используем метод SessionManager для переименования
-	return s.SessionMgr.UpdateSpeakerName(sessionID, oldName, newName)
+	// Пробуем переименовать каждый вариант
+	var lastErr error
+	renamed := false
+	for _, oldName := range oldNames {
+		err := s.SessionMgr.UpdateSpeakerName(sessionID, oldName, newName)
+		if err == nil {
+			renamed = true
+			log.Printf("Renamed speaker '%s' -> '%s' in session %s", oldName, newName, sessionID)
+		} else {
+			lastErr = err
+		}
+	}
+
+	if !renamed && lastErr != nil {
+		return lastErr
+	}
+	return nil
 }
 
 // updatePipelineTranscriber обновляет transcriber в Pipeline после смены модели

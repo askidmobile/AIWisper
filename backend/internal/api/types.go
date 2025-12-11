@@ -71,6 +71,12 @@ type Message struct {
 	SaveAsVoiceprint bool                        `json:"saveAsVoiceprint,omitempty"`
 	VoicePrintID     string                      `json:"voiceprintId,omitempty"`
 	Similarity       float32                     `json:"similarity,omitempty"`
+
+	// Streaming Transcription (real-time updates)
+	StreamingText        string  `json:"streamingText,omitempty"`        // Текущий текст (volatile или confirmed)
+	StreamingIsConfirmed bool    `json:"streamingIsConfirmed,omitempty"` // true = confirmed, false = volatile
+	StreamingConfidence  float32 `json:"streamingConfidence,omitempty"`  // Уверенность модели (0.0-1.0)
+	StreamingTimestamp   int64   `json:"streamingTimestamp,omitempty"`   // Unix timestamp в миллисекундах
 }
 
 type OllamaModel struct {

@@ -70,6 +70,7 @@ func main() {
 	transcriptionService := service.NewTranscriptionService(sessionMgr, engineMgr)
 	recordingService := service.NewRecordingService(sessionMgr, capture)
 	llmService := service.NewLLMService()
+	streamingTranscriptionService := service.NewStreamingTranscriptionService(modelMgr)
 
 	// Настраиваем LLM для автоулучшения транскрипции
 	transcriptionService.SetLLMService(llmService)
@@ -89,7 +90,7 @@ func main() {
 	}
 
 	// 5. Initialize API Server
-	server := api.NewServer(cfg, sessionMgr, engineMgr, modelMgr, capture, transcriptionService, recordingService, llmService, vpStore, vpMatcher)
+	server := api.NewServer(cfg, sessionMgr, engineMgr, modelMgr, capture, transcriptionService, recordingService, llmService, streamingTranscriptionService, vpStore, vpMatcher)
 
 	// 5. Start Server
 	log.Println("Starting AIWisper Backend...")

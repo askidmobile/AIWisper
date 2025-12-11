@@ -4,7 +4,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-13+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-1.22.1-orange)
+![Version](https://img.shields.io/badge/version-1.24.0-orange)
 
 ## Возможности
 
@@ -15,6 +15,8 @@
 - **AI-сводка** — генерация краткого содержания через Ollama
 - **GPU ускорение** — Metal и CoreML на Apple Silicon
 - **Полностью офлайн** — никакие данные не покидают устройство
+- **Live Транскрипция** — real-time транскрипция речи во время записи с минимальной задержкой (<500ms)
+- **Live Транскрипция** — real-time транскрипция речи во время записи с минимальной задержкой (<500ms)
 
 ## Системные требования
 
@@ -90,7 +92,7 @@ AIWisper автоматически определяет кто говорит �
 
 ### FluidAudio
 
-Нативный движок диаризации для macOS на базе [FluidAudio](https://github.com/afterxleep/FluidAudio), использующий Apple Neural Engine через CoreML:
+Нативный движок диаризации для macOS на базе [FluidAudio](https://github.com/FluidInference/FluidAudio?tab=readme-ov-file), использующий Apple Neural Engine через CoreML:
 
 | Компонент | Модель | Описание |
 |-----------|--------|----------|
@@ -247,7 +249,7 @@ MIT License. См. [LICENSE](LICENSE).
 
 - [whisper.cpp](https://github.com/ggerganov/whisper.cpp) — движок транскрипции
 - [GigaAM](https://github.com/salute-developers/GigaAM) — русскоязычная модель от Sber
-- [FluidAudio](https://github.com/afterxleep/FluidAudio) — нативная диаризация для macOS
+- [FluidAudio](https://github.com/FluidInference/FluidAudio?tab=readme-ov-file) — нативная диаризация для macOS
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — кроссплатформенная диаризация
 - [pyannote.audio](https://github.com/pyannote/pyannote-audio) — модели сегментации
 - [Electron](https://www.electronjs.org/) — десктопный фреймворк

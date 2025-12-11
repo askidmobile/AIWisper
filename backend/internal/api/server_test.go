@@ -112,8 +112,9 @@ func startTestServer(t *testing.T, socketPath string) *Server {
 	transcriptionService := service.NewTranscriptionService(sessMgr, engineMgr)
 	recordingService := service.NewRecordingService(sessMgr, capture)
 	llmService := service.NewLLMService()
+	streamingService := service.NewStreamingTranscriptionService(modelMgr)
 
-	s := NewServer(cfg, sessMgr, engineMgr, modelMgr, capture, transcriptionService, recordingService, llmService)
+	s := NewServer(cfg, sessMgr, engineMgr, modelMgr, capture, transcriptionService, recordingService, llmService, streamingService, nil, nil)
 
 	go s.startGRPCServer()
 	time.Sleep(300 * time.Millisecond) // дать сокету создаться

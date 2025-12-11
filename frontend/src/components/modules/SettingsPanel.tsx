@@ -24,6 +24,8 @@ interface SettingsPanelProps {
     setOllamaModel: (v: string) => void;
     loadOllamaModels: () => void;
     onShowModelManager: () => void;
+    enableStreaming?: boolean;
+    setEnableStreaming?: (v: boolean) => void;
 }
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
@@ -33,7 +35,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     useVoiceIsolation, setUseVoiceIsolation,
     echoCancel, setEchoCancel,
     ollamaModel, setOllamaModel, loadOllamaModels,
-    onShowModelManager
+    onShowModelManager,
+    enableStreaming = false,
+    setEnableStreaming
 }) => {
     const { models, activeModelId, ollamaModels, ollamaError, ollamaModelsLoading } = useModelContext() as any;
     // Note: setShowModelManager is not in context yet. I need to add it or manage modal in parent.
@@ -126,6 +130,35 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                             {Math.round(echoCancel * 100)}%
                         </span>
                     </div>
+                )}
+
+                {/* Streaming Transcription Toggle */}
+                {setEnableStreaming && (
+                    <label 
+                        data-chip 
+                        style={{ 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            gap: '0.4rem', 
+                            cursor: 'pointer', 
+                            padding: '0.35rem 0.75rem', 
+                            borderRadius: '12px', 
+                            border: '1px solid var(--border)', 
+                            background: 'var(--surface-strong)' 
+                        }}
+                        title="Включить real-time транскрипцию во время записи (требует Parakeet TDT v3)"
+                    >
+                        <input 
+                            type="checkbox" 
+                            checked={enableStreaming} 
+                            disabled={settingsLocked} 
+                            onChange={e => setEnableStreaming(e.target.checked)} 
+                        />
+                        <span style={{ fontSize: '0.85rem' }}>Live Транскрипция</span>
+                        <span style={{ fontSize: '0.65rem', color: 'var(--primary)', backgroundColor: 'rgba(108,92,231,0.12)', padding: '2px 5px', borderRadius: '999px' }}>
+                            Beta
+                        </span>
+                    </label>
                 )}
             </div>
 

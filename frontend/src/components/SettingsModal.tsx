@@ -83,7 +83,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const [selectedEmbModel, setSelectedEmbModel] = useState(
         embeddingModels.find((m) => m.recommended)?.id || embeddingModels[0]?.id || ''
     );
-    const [selectedProvider, setSelectedProvider] = useState<string>('auto');
+    // FluidAudio всегда использует coreml - переменная provider больше не нужна
 
     // Обновляем выбор при изменении списка моделей
     useEffect(() => {
@@ -104,14 +104,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const activeModel = models.find((m) => m.id === activeModelId);
     const inputDevices = devices.filter((d) => d.isInput);
 
-    // Проверяем готовность моделей диаризации
-    const segModelReady = segmentationModels.find(
-        (m) => m.id === selectedSegModel && (m.status === 'downloaded' || m.status === 'active')
-    );
-    const embModelReady = embeddingModels.find(
-        (m) => m.id === selectedEmbModel && (m.status === 'downloaded' || m.status === 'active')
-    );
-    const canEnableDiarization = segModelReady && embModelReady && !diarizationStatus?.enabled;
+    // FluidAudio скачивает модели автоматически - проверка готовности не нужна
 
     const sectionStyle: React.CSSProperties = {
         marginBottom: '1.5rem',
@@ -575,11 +568,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 alignItems: 'center',
                                 gap: '0.5rem',
                                 marginBottom: '1rem',
-                                padding: '0.5rem 0.75rem',
+                                padding: '0.6rem 0.85rem',
                                 background: diarizationStatus?.enabled
                                     ? 'rgba(52, 199, 89, 0.1)'
                                     : 'var(--glass-bg)',
-                                borderRadius: 'var(--radius-sm)',
+                                borderRadius: 'var(--radius-md)',
                                 border: `1px solid ${diarizationStatus?.enabled ? 'rgba(52, 199, 89, 0.3)' : 'var(--glass-border)'}`,
                             }}
                         >
@@ -589,125 +582,71 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     height: '8px',
                                     borderRadius: '50%',
                                     background: diarizationStatus?.enabled ? '#34c759' : 'var(--text-muted)',
+                                    boxShadow: diarizationStatus?.enabled ? '0 0 8px rgba(52, 199, 89, 0.5)' : 'none',
                                 }}
                             />
-                            <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>
-                                {diarizationStatus?.enabled ? 'Включена' : 'Выключена'}
+                            <span style={{ fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-primary)' }}>
+                                {diarizationStatus?.enabled ? 'FluidAudio активен' : 'Выключена'}
                             </span>
-                            {diarizationStatus?.enabled && diarizationStatus.provider && (
+                            {diarizationStatus?.enabled && (
                                 <span
                                     style={{
                                         fontSize: '0.75rem',
-                                        color: 'var(--text-muted)',
+                                        color: 'var(--success)',
                                         marginLeft: 'auto',
-                                        textTransform: 'uppercase',
+                                        padding: '0.15rem 0.5rem',
+                                        background: 'rgba(52, 199, 89, 0.15)',
+                                        borderRadius: 'var(--radius-sm)',
                                     }}
                                 >
-                                    {diarizationStatus.provider === 'coreml' ? 'GPU (CoreML)' : diarizationStatus.provider.toUpperCase()}
+                                    CoreML
                                 </span>
                             )}
                         </div>
 
-                        {/* FluidAudio info - показывается когда включен FluidAudio backend */}
-                        {diarizationStatus?.enabled && diarizationStatus.provider === 'fluid' && (
-                            <div
-                                style={{
-                                    fontSize: '0.8rem',
-                                    color: 'var(--text-secondary)',
-                                    marginBottom: '1rem',
-                                    padding: '0.75rem',
-                                    background: 'var(--glass-bg)',
-                                    borderRadius: 'var(--radius-sm)',
-                                    border: '1px solid var(--glass-border)',
-                                }}
-                            >
-                                <div style={{ marginBottom: '0.5rem', fontWeight: 500, color: 'var(--text-primary)' }}>
-                                    FluidAudio (CoreML)
-                                </div>
-                                Использует встроенные модели Apple Neural Engine.
-                                Модели скачиваются автоматически при первом запуске.
+                        {/* FluidAudio info - всегда показываем информацию о движке */}
+                        <div
+                            style={{
+                                fontSize: '0.85rem',
+                                color: 'var(--text-secondary)',
+                                marginBottom: '1rem',
+                                padding: '1rem',
+                                background: 'var(--glass-bg)',
+                                borderRadius: 'var(--radius-md)',
+                                border: '1px solid var(--glass-border)',
+                            }}
+                        >
+                            <div style={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                gap: '0.5rem',
+                                marginBottom: '0.75rem', 
+                                fontWeight: 600, 
+                                color: 'var(--text-primary)',
+                                fontSize: '0.95rem',
+                            }}>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                                    <line x1="12" y1="19" x2="12" y2="22"/>
+                                </svg>
+                                FluidAudio
                             </div>
-                        )}
-
-                        {/* Model selectors - только для Sherpa backend (НЕ FluidAudio) */}
-                        {(!diarizationStatus?.enabled || diarizationStatus.provider !== 'fluid') && (
-                            <>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
-                                    <div>
-                                        <label
-                                            style={{
-                                                fontSize: '0.8rem',
-                                                color: 'var(--text-secondary)',
-                                                marginBottom: '0.35rem',
-                                                display: 'block',
-                                            }}
-                                        >
-                                            Сегментация
-                                        </label>
-                                        <select
-                                            value={selectedSegModel}
-                                            onChange={(e) => setSelectedSegModel(e.target.value)}
-                                            style={selectStyle}
-                                            disabled={diarizationStatus?.enabled || diarizationLoading}
-                                        >
-                                            {segmentationModels.map((m) => (
-                                                <option key={m.id} value={m.id}>
-                                                    {m.name} {m.status !== 'downloaded' && m.status !== 'active' ? '(не скачана)' : ''}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label
-                                            style={{
-                                                fontSize: '0.8rem',
-                                                color: 'var(--text-secondary)',
-                                                marginBottom: '0.35rem',
-                                                display: 'block',
-                                            }}
-                                        >
-                                            Эмбеддинги
-                                        </label>
-                                        <select
-                                            value={selectedEmbModel}
-                                            onChange={(e) => setSelectedEmbModel(e.target.value)}
-                                            style={selectStyle}
-                                            disabled={diarizationStatus?.enabled || diarizationLoading}
-                                        >
-                                            {embeddingModels.map((m) => (
-                                                <option key={m.id} value={m.id}>
-                                                    {m.name} {m.recommended ? '★' : ''} {m.status !== 'downloaded' && m.status !== 'active' ? '(не скачана)' : ''}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                </div>
-
-                                {/* Provider selector */}
-                                <div style={{ marginBottom: '1rem' }}>
-                                    <label
-                                        style={{
-                                            fontSize: '0.8rem',
-                                            color: 'var(--text-secondary)',
-                                            marginBottom: '0.35rem',
-                                            display: 'block',
-                                        }}
-                                    >
-                                        Устройство
-                                    </label>
-                                    <select
-                                        value={selectedProvider}
-                                        onChange={(e) => setSelectedProvider(e.target.value)}
-                                        style={{ ...selectStyle, width: 'auto', minWidth: '150px' }}
-                                        disabled={diarizationStatus?.enabled || diarizationLoading}
-                                    >
-                                        <option value="auto">Авто (рекомендуется)</option>
-                                        <option value="coreml">GPU (CoreML)</option>
-                                        <option value="cpu">CPU</option>
-                                    </select>
-                                </div>
-                            </>
-                        )}
+                            <div style={{ lineHeight: 1.5 }}>
+                                Нативный движок диаризации на Apple Neural Engine (CoreML).
+                                Быстрое распознавание говорящих без внешних зависимостей.
+                            </div>
+                            <div style={{ 
+                                marginTop: '0.75rem',
+                                padding: '0.5rem 0.75rem',
+                                background: 'rgba(52, 199, 89, 0.1)',
+                                borderRadius: 'var(--radius-sm)',
+                                fontSize: '0.8rem',
+                                color: 'var(--success)',
+                            }}>
+                                Модели скачиваются автоматически при первом включении
+                            </div>
+                        </div>
 
                         {/* Error message */}
                         {diarizationError && (
@@ -728,17 +667,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                 <button
                                     className="btn-capsule btn-capsule-primary"
                                     onClick={() => {
-                                        if (onEnableDiarization && selectedSegModel && selectedEmbModel) {
-                                            onEnableDiarization(selectedSegModel, selectedEmbModel, selectedProvider);
+                                        // FluidAudio использует coreml провайдер, модели скачиваются автоматически
+                                        if (onEnableDiarization) {
+                                            onEnableDiarization(selectedSegModel || '', selectedEmbModel || '', 'coreml');
                                         }
                                     }}
-                                    disabled={!canEnableDiarization || diarizationLoading}
+                                    disabled={diarizationLoading}
                                     style={{
-                                        padding: '0.5rem 1rem',
-                                        opacity: canEnableDiarization && !diarizationLoading ? 1 : 0.5,
+                                        padding: '0.5rem 1.25rem',
+                                        opacity: diarizationLoading ? 0.5 : 1,
                                     }}
                                 >
-                                    {diarizationLoading ? 'Включение...' : 'Включить'}
+                                    {diarizationLoading ? 'Включение...' : 'Включить FluidAudio'}
                                 </button>
                             ) : (
                                 <button
@@ -746,7 +686,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     onClick={onDisableDiarization}
                                     disabled={diarizationLoading}
                                     style={{
-                                        padding: '0.5rem 1rem',
+                                        padding: '0.5rem 1.25rem',
                                         background: 'var(--glass-bg)',
                                         border: '1px solid var(--glass-border)',
                                     }}

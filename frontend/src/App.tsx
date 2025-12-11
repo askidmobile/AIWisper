@@ -1213,6 +1213,45 @@ function App() {
         addLog(`Renaming speaker ${localId} to "${name}"${saveAsVoiceprint ? ' (saving voiceprint)' : ''}`);
     }, [selectedSession, addLog]);
 
+    // Функция для получения отображаемого имени спикера с учётом кастомных имён
+    // Приоритет: sessionSpeakers (кастомные имена) > дефолтные имена из getSpeakerInfo
+    const getSpeakerDisplayName = useCallback((speaker?: string): { name: string; color: string } => {
+        if (!speaker) return { name: 'Собеседник', color: '#2196f3' };
+
+        // Проверяем кастомные имена из sessionSpeakers
+        if (sessionSpeakers.length > 0) {
+            const found = sessionSpeakers.find(s => {
+                if (speaker === 'mic' || speaker === 'Вы') {
+                    return s.isMic;
+                }
+                if (speaker === 'sys' || speaker === 'Собеседник') {
+                    return !s.isMic && s.localId === 0;
+                }
+                if (speaker.startsWith('Speaker ')) {
+                    const num = parseInt(speaker.replace('Speaker ', ''), 10);
+                    return !s.isMic && s.localId === num;
+                }
+                if (speaker.startsWith('Собеседник ')) {
+                    const num = parseInt(speaker.replace('Собеседник ', ''), 10);
+                    return !s.isMic && s.localId === (num - 1);
+                }
+                // Прямое совпадение по displayName (для уже переименованных)
+                return s.displayName === speaker;
+            });
+
+            if (found) {
+                const colorIdx = found.isMic ? -1 : found.localId;
+                const color = found.isMic 
+                    ? '#4caf50' 
+                    : SPEAKER_COLORS[Math.abs(colorIdx) % SPEAKER_COLORS.length];
+                return { name: found.displayName, color };
+            }
+        }
+
+        // Дефолтная логика (fallback к getSpeakerInfo)
+        return getSpeakerInfo(speaker);
+    }, [sessionSpeakers]);
+
     // Генерация summary
     const handleGenerateSummary = useCallback(() => {
         if (!selectedSession) return;
@@ -1510,19 +1549,17 @@ function App() {
         const sessionChunks = session.chunks || [];
 
         // Собираем диалог
+        // ВАЖНО: Backend уже применяет chunk.StartMs к timestamps сегментов
+        // Поэтому НЕ добавляем chunkOffset здесь - timestamps уже глобальные
         const dialogue: TranscriptSegment[] = sessionChunks
             .filter(c => c.status === 'completed')
             .sort((a, b) => a.index - b.index)
             .flatMap((c) => {
                 if (c.dialogue && c.dialogue.length > 0) {
-                    const chunkOffset = sessionChunks
-                        .filter(prev => prev.index < c.index)
-                        .reduce((sum, prev) => sum + (prev.duration / 1000000), 0);
-
                     return c.dialogue.map(seg => ({
                         ...seg,
-                        start: seg.start + chunkOffset,
-                        end: seg.end + chunkOffset
+                        start: seg.start,
+                        end: seg.end
                     }));
                 }
                 return [];
@@ -1537,7 +1574,7 @@ function App() {
                 const mins = Math.floor(startSec / 60);
                 const secs = startSec % 60;
                 const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-                const { name: speaker } = getSpeakerInfo(seg.speaker);
+                const { name: speaker } = getSpeakerDisplayName(seg.speaker);
                 return `[${timeStr}] ${speaker}: ${seg.text}`;
             }).join('\n\n');
 
@@ -1564,7 +1601,7 @@ function App() {
         }
 
         return 'Нет транскрипции';
-    }, []);
+    }, [getSpeakerDisplayName]);
 
     // Копирование в буфер обмена
     const handleCopyToClipboard = useCallback(async () => {
@@ -1684,21 +1721,18 @@ function App() {
     }, [playingAudio]);
 
     // Собираем полный диалог из всех чанков
+    // ВАЖНО: Backend уже применяет chunk.StartMs к timestamps сегментов (transcription.go:390-397)
+    // Поэтому НЕ добавляем chunkOffset здесь - timestamps уже глобальные
     const allDialogue: TranscriptSegment[] = chunks
         .filter(c => c.status === 'completed')
         .sort((a, b) => a.index - b.index)
         .flatMap((c) => {
-            // Если есть диалог с сегментами
+            // Если есть диалог с сегментами - timestamps уже глобальные
             if (c.dialogue && c.dialogue.length > 0) {
-                // Добавляем offset на основе предыдущих чанков
-                const chunkOffset = chunks
-                    .filter(prev => prev.index < c.index)
-                    .reduce((sum, prev) => sum + (prev.duration / 1000000), 0); // duration в наносекундах -> мс
-
                 return c.dialogue.map(seg => ({
                     ...seg,
-                    start: seg.start + chunkOffset,
-                    end: seg.end + chunkOffset
+                    start: seg.start,
+                    end: seg.end
                 }));
             }
             return [];
@@ -2333,16 +2367,16 @@ function App() {
                                                     width: '36px',
                                                     height: '36px',
                                                     padding: 0,
-                                                    backgroundColor: isFullTranscribing ? 'rgba(255, 152, 0, 0.2)' : 'var(--surface-strong)',
-                                                    color: isFullTranscribing ? '#ff9800' : 'var(--text-muted)',
+                                                    backgroundColor: isFullTranscribing ? 'rgba(156, 39, 176, 0.2)' : 'var(--surface-strong)',
+                                                    color: isFullTranscribing ? '#9c27b0' : 'var(--text-muted)',
                                                     border: '1px solid var(--border)',
                                                     borderRadius: '8px',
-                                                    cursor: isFullTranscribing ? 'wait' : 'pointer',
+                                                    cursor: isFullTranscribing ? 'not-allowed' : 'pointer',
                                                     display: 'flex',
                                                     alignItems: 'center',
                                                     justifyContent: 'center',
                                                     transition: 'all 0.2s ease',
-                                                    animation: isFullTranscribing ? 'spin 1s linear infinite' : 'none'
+                                                    animation: isFullTranscribing ? 'pulse 1.5s ease-in-out infinite' : 'none'
                                                 }}
                                             >
                                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -2566,13 +2600,13 @@ function App() {
                                 <div style={{
                                     marginBottom: '1rem',
                                     padding: '0.75rem',
-                                    backgroundColor: '#1a2a3e',
+                                    backgroundColor: 'rgba(156, 39, 176, 0.1)',
                                     borderRadius: '6px',
-                                    border: '1px solid #2196f3'
+                                    border: '1px solid #9c27b0'
                                 }}>
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
                                         <span style={{ animation: 'pulse 1s infinite' }}>🔄</span>
-                                        <span style={{ color: '#2196f3', fontWeight: 'bold' }}>Полная ретранскрипция</span>
+                                        <span style={{ color: '#9c27b0', fontWeight: 'bold' }}>Полная ретранскрипция</span>
                                         <span style={{ color: '#888', fontSize: '0.85rem' }}>
                                             {Math.round(fullTranscriptionProgress * 100)}%
                                         </span>
@@ -2624,7 +2658,7 @@ function App() {
                                         <div style={{
                                             width: `${fullTranscriptionProgress * 100}%`,
                                             height: '100%',
-                                            backgroundColor: '#2196f3',
+                                            backgroundColor: '#9c27b0',
                                             transition: 'width 0.3s ease'
                                         }}></div>
                                     </div>
@@ -2948,7 +2982,7 @@ function App() {
                                             }}>
                                                 <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
                                                 {allDialogue.map((seg, idx) => {
-                                                    const { name: speakerName, color: speakerColor } = getSpeakerInfo(seg.speaker);
+                                                    const { name: speakerName, color: speakerColor } = getSpeakerDisplayName(seg.speaker);
                                                     const totalMs = seg.start;
                                                     const mins = Math.floor(totalMs / 60000);
                                                     const secs = Math.floor((totalMs % 60000) / 1000);
@@ -3120,7 +3154,7 @@ function App() {
                                                     {chunk.dialogue && chunk.dialogue.length > 0 ? (
                                                         <div style={{ marginTop: '0.4rem', lineHeight: '1.7' }}>
                                                             {chunk.dialogue.map((seg, idx) => {
-                                                                const { name: speakerName, color: speakerColor } = getSpeakerInfo(seg.speaker);
+                                                                const { name: speakerName, color: speakerColor } = getSpeakerDisplayName(seg.speaker);
                                                                 const totalMs = seg.start;
                                                                 const mins = Math.floor(totalMs / 60000);
                                                                 const secs = Math.floor((totalMs % 60000) / 1000);
@@ -3208,6 +3242,7 @@ function App() {
                                         onGenerate={handleGenerateSummary}
                                         hasTranscription={chunks.some(c => c.status === 'completed' && (c.transcription || c.micText || c.sysText || c.dialogue?.length))}
                                         sessionDate={displaySession.startTime}
+                                        ollamaModel={ollamaModel}
                                     />
                                 )}
                             </>

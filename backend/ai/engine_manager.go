@@ -82,6 +82,16 @@ func (em *EngineManager) SetActiveModel(modelID string) error {
 			return fmt.Errorf("failed to create GigaAM engine: %w", err)
 		}
 
+	case models.EngineTypeFluidASR:
+		// FluidAudio использует кастомный кэш моделей
+		modelCacheDir := em.modelsManager.GetModelsDir()
+		newEngine, err = NewFluidASREngine(FluidASRConfig{
+			ModelCacheDir: modelCacheDir,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create FluidASR engine: %w", err)
+		}
+
 	default:
 		return fmt.Errorf("unsupported engine type: %s", modelInfo.Engine)
 	}

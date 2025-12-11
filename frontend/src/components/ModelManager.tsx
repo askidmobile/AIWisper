@@ -154,17 +154,52 @@ const ModelCard = ({
                 marginBottom: '0.5rem',
                 display: 'flex',
                 gap: '0.75rem',
-                flexWrap: 'wrap'
+                flexWrap: 'wrap',
+                alignItems: 'center'
             }}>
                 <span>{model.size}</span>
                 <span>•</span>
                 <span>Скорость: {model.speed}</span>
                 {model.wer && <><span>•</span><span>WER: {model.wer}</span></>}
+                {model.type === 'coreml' && (
+                    <>
+                        <span>•</span>
+                        <span style={{ 
+                            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                            color: 'white',
+                            padding: '0.1rem 0.4rem',
+                            borderRadius: 'var(--radius-capsule)',
+                            fontSize: '0.7rem',
+                            fontWeight: 'var(--font-weight-semibold)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '0.2rem'
+                        }}>
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M12 2L2 7v10c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-10-5z"/>
+                            </svg>
+                            ANE
+                        </span>
+                    </>
+                )}
             </div>
 
             {/* Description */}
             <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.75rem', lineHeight: 1.4 }}>
                 {model.description}
+                {model.type === 'coreml' && (
+                    <div style={{ 
+                        marginTop: '0.5rem',
+                        padding: '0.5rem 0.75rem',
+                        background: 'rgba(102, 126, 234, 0.1)',
+                        borderRadius: 'var(--radius-sm)',
+                        border: '1px solid rgba(102, 126, 234, 0.2)',
+                        fontSize: '0.8rem',
+                        color: 'var(--text-secondary)'
+                    }}>
+                        💡 Модель скачивается автоматически при первом использовании (~640 MB)
+                    </div>
+                )}
             </div>
 
             {/* Progress bar */}
@@ -204,13 +239,24 @@ const ModelCard = ({
 
             {/* Actions */}
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                {!isDownloaded && !isDownloading && (
+                {!isDownloaded && !isDownloading && model.type !== 'coreml' && (
                     <button
                         className="btn-capsule btn-capsule-primary"
                         onClick={onDownload}
                         style={{ padding: '0.4rem 0.9rem', fontSize: '0.85rem' }}
                     >
                         Скачать
+                    </button>
+                )}
+                
+                {/* CoreML модели не требуют ручного скачивания */}
+                {!isDownloaded && !isDownloading && model.type === 'coreml' && (
+                    <button
+                        className="btn-capsule btn-capsule-primary"
+                        onClick={onSetActive}
+                        style={{ padding: '0.4rem 0.9rem', fontSize: '0.85rem' }}
+                    >
+                        Использовать
                     </button>
                 )}
 
@@ -286,7 +332,7 @@ export default function ModelManager({
     onSetActive,
     onClose
 }: ModelManagerProps) {
-    const [filter, setFilter] = useState<'all' | 'downloaded' | 'ggml' | 'onnx'>('all');
+    const [filter, setFilter] = useState<'all' | 'downloaded' | 'ggml' | 'onnx' | 'coreml'>('all');
 
     // Фильтрация моделей - только модели транскрипции (не диаризации)
     const filteredModels = models.filter(m => {
@@ -296,6 +342,7 @@ export default function ModelManager({
         if (filter === 'downloaded') return m.status === 'downloaded' || m.status === 'active';
         if (filter === 'ggml') return m.type === 'ggml';
         if (filter === 'onnx') return m.type === 'onnx';
+        if (filter === 'coreml') return m.type === 'coreml';
         return true;
     });
 
@@ -310,7 +357,8 @@ export default function ModelManager({
         { key: 'all', label: 'Все' },
         { key: 'downloaded', label: 'Скачанные' },
         { key: 'ggml', label: 'Whisper' },
-        { key: 'onnx', label: 'GigaAM' }
+        { key: 'onnx', label: 'GigaAM' },
+        { key: 'coreml', label: 'Parakeet' }
     ];
 
     return (
@@ -361,7 +409,7 @@ export default function ModelManager({
                         fontWeight: 'var(--font-weight-bold)',
                         color: 'var(--text-primary)'
                     }}>
-                        Модели Whisper
+                        Модели транскрипции
                     </h2>
                     <button
                         className="btn-icon"
@@ -432,7 +480,7 @@ export default function ModelManager({
                     color: 'var(--text-muted)',
                     flexShrink: 0
                 }}>
-                    Модели хранятся локально. GGML работают с whisper.cpp, Faster-Whisper — с CTranslate2.
+                    Модели хранятся локально. GGML — whisper.cpp, GigaAM — ONNX, Parakeet — CoreML (Apple Neural Engine).
                 </div>
             </div>
         </div>

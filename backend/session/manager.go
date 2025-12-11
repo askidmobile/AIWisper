@@ -1245,6 +1245,7 @@ func (m *Manager) UpdateSpeakerName(sessionID string, oldName, newName string) e
 }
 
 // UpdateImprovedDialogue обновляет диалог сессии улучшенной версией от LLM
+// Распределяет улучшенный диалог по всем чанкам на основе timestamps
 func (m *Manager) UpdateImprovedDialogue(sessionID string, improvedDialogue []TranscriptSegment) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1257,19 +1258,73 @@ func (m *Manager) UpdateImprovedDialogue(sessionID string, improvedDialogue []Tr
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
-	// Обновляем диалог в первом чанке (для полной транскрипции)
-	if len(session.Chunks) > 0 {
+	if len(session.Chunks) == 0 {
+		return fmt.Errorf("session has no chunks")
+	}
+
+	// Если только один чанк - просто обновляем его
+	if len(session.Chunks) == 1 {
 		chunk := session.Chunks[0]
 		chunk.Dialogue = improvedDialogue
 		chunk.Transcription = formatDialogue(improvedDialogue)
 
+		chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
+		data, _ := json.MarshalIndent(chunk, "", "  ")
+		os.WriteFile(chunkMetaPath, data, 0644)
+
+		log.Printf("UpdateImprovedDialogue: session %s (single chunk) updated with %d improved segments", sessionID, len(improvedDialogue))
+		return nil
+	}
+
+	// Для нескольких чанков - распределяем сегменты по чанкам на основе timestamps
+	// Сначала собираем информацию о временных диапазонах чанков
+	type chunkRange struct {
+		chunk   *Chunk
+		startMs int64
+		endMs   int64
+	}
+
+	var chunkRanges []chunkRange
+	var currentOffset int64 = 0
+
+	for _, chunk := range session.Chunks {
+		durationMs := int64(chunk.Duration / time.Millisecond) // time.Duration -> миллисекунды
+		chunkRanges = append(chunkRanges, chunkRange{
+			chunk:   chunk,
+			startMs: currentOffset,
+			endMs:   currentOffset + durationMs,
+		})
+		currentOffset += durationMs
+	}
+
+	// Распределяем сегменты по чанкам
+	chunkDialogues := make(map[int][]TranscriptSegment)
+
+	for _, seg := range improvedDialogue {
+		// Находим чанк, в который попадает этот сегмент
+		for i, cr := range chunkRanges {
+			// Сегмент попадает в чанк если его начало в диапазоне чанка
+			if seg.Start >= cr.startMs && seg.Start < cr.endMs {
+				chunkDialogues[i] = append(chunkDialogues[i], seg)
+				break
+			}
+		}
+	}
+
+	// Обновляем каждый чанк
+	for i, chunk := range session.Chunks {
+		if dialogue, ok := chunkDialogues[i]; ok && len(dialogue) > 0 {
+			chunk.Dialogue = dialogue
+			chunk.Transcription = formatDialogue(dialogue)
+		}
 		// Сохраняем метаданные чанка
 		chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
 		data, _ := json.MarshalIndent(chunk, "", "  ")
 		os.WriteFile(chunkMetaPath, data, 0644)
 	}
 
-	log.Printf("UpdateImprovedDialogue: session %s updated with %d improved segments", sessionID, len(improvedDialogue))
+	log.Printf("UpdateImprovedDialogue: session %s updated %d chunks with %d total improved segments",
+		sessionID, len(session.Chunks), len(improvedDialogue))
 
 	return nil
 }
