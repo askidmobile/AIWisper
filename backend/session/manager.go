@@ -487,21 +487,230 @@ func groupSegmentsToPhrases(segments []TranscriptSegment, maxPauseMs int64, defa
 }
 
 // mergeWordsToDialogue создаёт диалог на основе word-level timestamps
-// Группирует слова в фразы с учётом максимальной длины и интерливинга спикеров
+// Использует event-based interleaving: объединяет ВСЕ слова в единый поток
+// и группирует с учётом смены спикера как главного критерия
 func mergeWordsToDialogue(micSegments, sysSegments []TranscriptSegment) []TranscriptSegment {
-	// 1. Группируем слова микрофона в фразы (с ограничением длины)
-	micPhrases := groupWordsToPhrases(collectWords(micSegments, "mic"), defaultMaxPauseMs)
+	// 1. Собираем ВСЕ слова из обоих каналов в единый поток
+	allWords := collectAllWords(micSegments, sysSegments)
 
-	// 2. Группируем слова системы в фразы
-	// В sysSegments могут быть разные спикеры (после диаризации)
-	sysPhrases := groupWordsToPhrases(collectWords(sysSegments, "sys"), defaultMaxPauseMs)
+	if len(allWords) == 0 {
+		// Fallback на старый алгоритм если нет слов
+		micPhrases := groupWordsToPhrases(collectWords(micSegments, "mic"), defaultMaxPauseMs)
+		sysPhrases := groupWordsToPhrases(collectWords(sysSegments, "sys"), defaultMaxPauseMs)
+		return interleaveDialogue(micPhrases, sysPhrases)
+	}
 
-	// 3. Интерливинг: объединяем фразы с учётом перекрытий по времени
-	allPhrases := interleaveDialogue(micPhrases, sysPhrases)
+	// 2. Сортируем по времени начала
+	sort.Slice(allWords, func(i, j int) bool {
+		if allWords[i].Start == allWords[j].Start {
+			// При равном времени - mic первым (инициатор диалога)
+			return isMicSpeaker(allWords[i].Speaker)
+		}
+		return allWords[i].Start < allWords[j].Start
+	})
 
-	log.Printf("mergeWordsToDialogue: mic=%d, sys=%d, result=%d phrases",
-		len(micPhrases), len(sysPhrases), len(allPhrases))
-	return allPhrases
+	// 3. Группируем в фразы с учётом смены спикера
+	phrases := groupWordsToDialogueV2(allWords)
+
+	// 4. Постобработка: объединение соседних коротких фраз одного спикера
+	phrases = postProcessDialogue(phrases)
+
+	log.Printf("mergeWordsToDialogue (v2): %d words -> %d phrases", len(allWords), len(phrases))
+	return phrases
+}
+
+// isMicSpeaker проверяет является ли спикер микрофоном пользователя
+func isMicSpeaker(speaker string) bool {
+	return speaker == "mic" || speaker == "Вы"
+}
+
+// collectAllWords собирает все слова из обоих каналов в единый поток
+func collectAllWords(micSegments, sysSegments []TranscriptSegment) []TranscriptWord {
+	var words []TranscriptWord
+
+	// Собираем слова из mic
+	for _, seg := range micSegments {
+		speaker := seg.Speaker
+		if speaker == "" {
+			speaker = "mic"
+		}
+		for _, w := range seg.Words {
+			word := w
+			if word.Speaker == "" {
+				word.Speaker = speaker
+			}
+			words = append(words, word)
+		}
+	}
+
+	// Собираем слова из sys
+	for _, seg := range sysSegments {
+		speaker := seg.Speaker
+		if speaker == "" {
+			speaker = "sys"
+		}
+		for _, w := range seg.Words {
+			word := w
+			if word.Speaker == "" {
+				word.Speaker = speaker
+			}
+			words = append(words, word)
+		}
+	}
+
+	return words
+}
+
+// groupWordsToDialogueV2 группирует слова в фразы с учётом смены спикера
+// Главный критерий разбиения - смена спикера, а не пауза
+func groupWordsToDialogueV2(words []TranscriptWord) []TranscriptSegment {
+	if len(words) == 0 {
+		return nil
+	}
+
+	var phrases []TranscriptSegment
+	var currentPhrase TranscriptSegment
+	var currentWords []TranscriptWord
+	var phraseTexts []string
+
+	finishPhrase := func() {
+		if len(phraseTexts) > 0 {
+			currentPhrase.Text = strings.Join(phraseTexts, " ")
+			currentPhrase.Words = currentWords
+			phrases = append(phrases, currentPhrase)
+		}
+	}
+
+	startNewPhrase := func(word TranscriptWord) {
+		currentPhrase = TranscriptSegment{
+			Start:   word.Start,
+			End:     word.End,
+			Speaker: word.Speaker,
+		}
+		phraseTexts = []string{word.Text}
+		currentWords = []TranscriptWord{word}
+	}
+
+	for i, word := range words {
+		if i == 0 {
+			startNewPhrase(word)
+			continue
+		}
+
+		prevWord := words[i-1]
+
+		// Нормализуем спикеров для сравнения
+		currentSpeakerIsMic := isMicSpeaker(currentPhrase.Speaker)
+		wordSpeakerIsMic := isMicSpeaker(word.Speaker)
+
+		// Условие 1: Смена спикера (mic <-> sys) = новая фраза
+		if currentSpeakerIsMic != wordSpeakerIsMic {
+			// Проверяем перекрытие
+			overlap := prevWord.End - word.Start
+
+			if overlap > maxOverlapMs {
+				// Сильное перекрытие - возможно ошибка timestamps
+				// Но всё равно создаём новую фразу при смене спикера
+				log.Printf("groupWordsToDialogueV2: speaker change with overlap %dms: %s -> %s",
+					overlap, currentPhrase.Speaker, word.Speaker)
+			}
+
+			// Реальная смена спикера
+			finishPhrase()
+			startNewPhrase(word)
+			continue
+		}
+
+		// Условие 2: Большая пауза между словами одного спикера
+		pause := word.Start - prevWord.End
+		phraseDuration := word.End - currentPhrase.Start
+
+		// Проверяем: был ли между ними другой спикер?
+		// Ищем слова другого спикера в промежутке [prevWord.End - tolerance, word.Start + tolerance]
+		hasOtherSpeakerBetween := false
+		if pause > minPauseBetweenPhrasesMs {
+			for j := i - 1; j >= 0; j-- {
+				otherWord := words[j]
+				if otherWord.End < prevWord.End-speakerSwitchToleranceMs {
+					break // Слишком далеко назад
+				}
+				otherIsMic := isMicSpeaker(otherWord.Speaker)
+				if otherIsMic != currentSpeakerIsMic {
+					// Нашли слово другого спикера
+					if otherWord.Start >= prevWord.End-speakerSwitchToleranceMs &&
+						otherWord.End <= word.Start+speakerSwitchToleranceMs {
+						hasOtherSpeakerBetween = true
+						break
+					}
+				}
+			}
+		}
+
+		// Разбиваем фразу если:
+		// - была реплика другого спикера между словами
+		// - ИЛИ очень большая пауза (> 2.5 сек)
+		// - ИЛИ фраза слишком длинная (> 15 сек)
+		shouldSplit := hasOtherSpeakerBetween ||
+			pause > longPauseMs ||
+			phraseDuration > maxPhraseDurationMs*3/2
+
+		if shouldSplit {
+			finishPhrase()
+			startNewPhrase(word)
+		} else {
+			// Продолжаем текущую фразу
+			currentPhrase.End = word.End
+			phraseTexts = append(phraseTexts, word.Text)
+			currentWords = append(currentWords, word)
+		}
+	}
+
+	// Завершаем последнюю фразу
+	finishPhrase()
+
+	return phrases
+}
+
+// postProcessDialogue объединяет соседние короткие фразы одного спикера
+func postProcessDialogue(phrases []TranscriptSegment) []TranscriptSegment {
+	if len(phrases) <= 1 {
+		return phrases
+	}
+
+	var result []TranscriptSegment
+
+	for i, phrase := range phrases {
+		if i == 0 {
+			result = append(result, phrase)
+			continue
+		}
+
+		prev := &result[len(result)-1]
+
+		// Проверяем одинаковый ли спикер (с учётом нормализации)
+		prevIsMic := isMicSpeaker(prev.Speaker)
+		phraseIsMic := isMicSpeaker(phrase.Speaker)
+
+		// Объединяем соседние короткие фразы одного спикера
+		if prevIsMic == phraseIsMic {
+			gap := phrase.Start - prev.End
+			prevWordCount := len(strings.Fields(prev.Text))
+
+			// Объединяем если:
+			// - пауза < 500мс И предыдущая фраза короткая (< 3 слов)
+			// - ИЛИ пауза < 200мс (очень короткая пауза)
+			if (gap < shortMergeGapMs && prevWordCount < 3) || gap < veryShortGapMs {
+				prev.End = phrase.End
+				prev.Text = prev.Text + " " + phrase.Text
+				prev.Words = append(prev.Words, phrase.Words...)
+				continue
+			}
+		}
+
+		result = append(result, phrase)
+	}
+
+	return result
 }
 
 // interleaveDialogue создаёт естественный диалог с правильным чередованием спикеров
@@ -595,6 +804,14 @@ const (
 	maxPhraseDurationMs = 10000 // Максимальная длина фразы (10 сек)
 	minPhraseDurationMs = 1000  // Минимальная длина фразы (1 сек)
 	shortPauseMs        = 300   // Короткая пауза для поиска точки разбиения
+
+	// Новые константы для event-based interleaving (v2)
+	speakerSwitchToleranceMs = 500  // Толерантность к неточности timestamps при смене спикера
+	minPauseBetweenPhrasesMs = 800  // Минимальная пауза для проверки вставки другого спикера
+	maxOverlapMs             = 1500 // Максимальное перекрытие для "одновременной речи"
+	longPauseMs              = 2500 // Очень большая пауза - точно новая фраза
+	shortMergeGapMs          = 500  // Короткий промежуток для объединения фраз
+	veryShortGapMs           = 200  // Очень короткий промежуток - всегда объединяем
 )
 
 // groupWordsToPhrases группирует поток слов в фразы с учетом пауз, смены спикера
