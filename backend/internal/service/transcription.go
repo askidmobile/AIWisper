@@ -265,6 +265,12 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk, useDia
 		len(micSamples), float64(len(micSamples))/16000,
 		len(sysSamples), float64(len(sysSamples))/16000)
 
+	// 0. Audio preprocessing: фильтрация для улучшения качества каналов
+	// Применяем noise gate, high-pass filter, de-click и нормализацию
+	log.Printf("Applying audio filters to channels...")
+	micSamples = session.FilterChannelForTranscription(micSamples, 16000)
+	sysSamples = session.FilterChannelForTranscription(sysSamples, 16000)
+
 	var micText, sysText string
 	var micSegments, sysSegments []ai.TranscriptSegment
 	var micErr, sysErr error

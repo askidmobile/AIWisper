@@ -241,7 +241,7 @@ func (e *StreamingFluidASREngine) Finish() (string, error) {
 				finalChan <- *resp.Text
 				return
 			} else if resp.Type == "error" && resp.Message != nil {
-				errorChan <- fmt.Errorf(*resp.Message)
+				errorChan <- fmt.Errorf("%s", *resp.Message)
 				return
 			}
 		}

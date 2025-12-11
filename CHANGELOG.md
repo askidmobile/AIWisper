@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] - 2025-12-11
+
+### Added
+- **Audio Filters for Channel Quality**: New preprocessing pipeline for improved transcription accuracy
+  - **High-Pass Filter** (80 Hz): Removes low-frequency hum and DC offset
+  - **De-Click**: Detects and removes audio clicks/pops via interpolation
+  - **Noise Gate**: Attenuates quiet segments below threshold (adaptive RMS-based)
+  - **Normalization**: Normalizes audio to 0.9 peak level with gain limiting
+  - **Auto-analysis**: `AnalyzeAudioQuality()` automatically detects channel characteristics and applies optimal filters
+  - Filters are applied after stereo channel extraction, before VAD and transcription
+
+### Fixed
+- **Dialogue Ordering in UI**: Fixed incorrect phrase order when mic and sys segments had overlapping timestamps
+  - **Problem**: Segments were sorted by chunk index, then concatenated without re-sorting by time
+  - **Solution**: Added final `.sort((a, b) => a.start - b.start)` to ensure chronological order
+  - Fixed in both `App.tsx` and `TranscriptionView.tsx`
+
+### Technical
+- New file: `backend/session/audio_filters.go` (320 lines)
+  - `ApplyAudioFilters()` - main filter chain
+  - `FilterChannelForTranscription()` - auto-configuring filter based on channel analysis
+  - `AudioQualityMetrics` struct for detailed channel diagnostics
+- `backend/internal/service/transcription.go`: Integrated filters after `ExtractSegmentStereoGo()`
+- `frontend/src/App.tsx`: Added timestamp sorting for `allDialogue`
+- `frontend/src/components/modules/TranscriptionView.tsx`: Added timestamp sorting
+
 ## [1.24.0] - 2025-12-11
 
 ### Added

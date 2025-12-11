@@ -31,7 +31,7 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
     const [confirmedText, setConfirmedText] = useState('');
     const [volatileText, setVolatileText] = useState('');
     const [confidence, setConfidence] = useState(0);
-    const [lastUpdate, setLastUpdate] = useState<number>(0);
+    const [, setLastUpdate] = useState<number>(0);
     const containerRef = useRef<HTMLDivElement>(null);
     const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
 

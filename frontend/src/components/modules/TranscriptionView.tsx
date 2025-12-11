@@ -81,7 +81,6 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     // Поэтому НЕ добавляем chunkOffset здесь - timestamps уже глобальные
     const allDialogue: TranscriptSegment[] = useMemo(() => (chunks || [])
         .filter(c => c && c.status === 'completed')
-        .sort((a, b) => (a.index || 0) - (b.index || 0))
         .flatMap((c) => {
             if (c.dialogue && Array.isArray(c.dialogue) && c.dialogue.length > 0) {
                 return c.dialogue
@@ -95,7 +94,10 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                     }));
             }
             return [];
-        }), [chunks]);
+        })
+        // ВАЖНО: Сортируем по времени начала для правильного порядка диалога
+        // Mic и Sys сегменты могут идти вперемешку по времени, нужно упорядочить
+        .sort((a, b) => a.start - b.start), [chunks]);
 
     // Находим текущий сегмент по времени воспроизведения
     const currentTimeMs = currentTime * 1000; // секунды -> миллисекунды

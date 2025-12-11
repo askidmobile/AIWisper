@@ -482,8 +482,9 @@ func (e *WhisperEngine) TranscribeHighQuality(samples []float32) ([]TranscriptSe
 	// Включаем таймстемпы токенов для точных временных меток
 	ctx.SetTokenTimestamps(true)
 
-	// Пустой промпт для чистого старта
-	ctx.SetInitialPrompt("")
+	// Промпт с русским контекстом для улучшения распознавания
+	// Содержит типичные слова и помогает модели понять контекст
+	ctx.SetInitialPrompt("Привет. Разговор о работе, техкомитет, архитектура, разработка.")
 
 	log.Printf("TranscribeHighQuality: samples=%d duration=%.1fs lang=%s beam=5 temp=0.0",
 		len(samples), float64(len(samples))/16000, e.language)

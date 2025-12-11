@@ -1725,7 +1725,6 @@ function App() {
     // Поэтому НЕ добавляем chunkOffset здесь - timestamps уже глобальные
     const allDialogue: TranscriptSegment[] = chunks
         .filter(c => c.status === 'completed')
-        .sort((a, b) => a.index - b.index)
         .flatMap((c) => {
             // Если есть диалог с сегментами - timestamps уже глобальные
             if (c.dialogue && c.dialogue.length > 0) {
@@ -1736,7 +1735,10 @@ function App() {
                 }));
             }
             return [];
-        });
+        })
+        // ВАЖНО: Сортируем по времени начала для правильного порядка диалога
+        // Mic и Sys сегменты могут идти вперемешку по времени, нужно упорядочить
+        .sort((a, b) => a.start - b.start);
 
     return (
         <div className="app-frame" style={{ display: 'flex', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)' }}>
