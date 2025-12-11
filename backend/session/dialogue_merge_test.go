@@ -148,36 +148,71 @@ func TestMergeSegmentsToDialogue_NoWords(t *testing.T) {
 	}
 }
 
-// TestCollectAllWords проверяет сбор слов из обоих каналов
-func TestCollectAllWords(t *testing.T) {
-	micSegments := []TranscriptSegment{
+// TestFixAnomalousTimestamps проверяет коррекцию аномально длинных слов
+func TestFixAnomalousTimestamps(t *testing.T) {
+	segments := []TranscriptSegment{
 		{
-			Speaker: "Вы",
+			Start:   0,
+			End:     10000,
+			Speaker: "Собеседник",
+			Text:    "Это будешь показывать?",
 			Words: []TranscriptWord{
-				{Start: 100, End: 200, Text: "Привет"},
-				{Start: 200, End: 300, Text: "мир"},
+				// "Это" длится 6 секунд - аномалия
+				{Start: 0, End: 6000, Text: "Это", Speaker: "Собеседник"},
+				{Start: 6500, End: 7000, Text: "будешь", Speaker: "Собеседник"},
+				{Start: 7000, End: 8000, Text: "показывать?", Speaker: "Собеседник"},
 			},
 		},
+	}
+
+	result := fixAnomalousTimestamps(segments)
+
+	// Проверяем что "Это" было скорректировано до 500ms
+	if len(result) != 1 || len(result[0].Words) != 3 {
+		t.Fatalf("Expected 1 segment with 3 words, got %d segments", len(result))
+	}
+
+	firstWord := result[0].Words[0]
+	duration := firstWord.End - firstWord.Start
+	if duration > 2000 {
+		t.Errorf("Expected word 'Это' duration <= 2000ms, got %dms", duration)
+	}
+
+	t.Logf("Word 'Это' corrected: %d-%d (duration %dms)", firstWord.Start, firstWord.End, duration)
+}
+
+// TestMergeSegmentsWithOverlapHandling проверяет segment-level слияние
+func TestMergeSegmentsWithOverlapHandling(t *testing.T) {
+	micSegments := []TranscriptSegment{
+		{Start: 1800, End: 4000, Speaker: "Вы", Text: "Так, давай-ка проверим"},
+		{Start: 5600, End: 5900, Speaker: "Вы", Text: "угу"},
 	}
 	sysSegments := []TranscriptSegment{
-		{
-			Speaker: "Собеседник",
-			Words: []TranscriptWord{
-				{Start: 50, End: 150, Text: "Здравствуй"},
-			},
-		},
+		{Start: 0, End: 2000, Speaker: "Собеседник 1", Text: "Может быть вот это"},
+		{Start: 4200, End: 5500, Speaker: "Собеседник 1", Text: "Будешь показывать?"},
+		{Start: 6000, End: 7000, Speaker: "Собеседник 1", Text: "По-моему, да"},
 	}
 
-	words := collectAllWords(micSegments, sysSegments)
+	result := mergeSegmentsWithOverlapHandling(micSegments, sysSegments)
 
-	if len(words) != 3 {
-		t.Errorf("Expected 3 words, got %d", len(words))
+	t.Log("Result from mergeSegmentsWithOverlapHandling:")
+	for i, r := range result {
+		t.Logf("  [%d] %s: %s (%d-%d)", i, r.Speaker, r.Text, r.Start, r.End)
 	}
 
-	// Проверяем что спикеры проставлены
-	for _, w := range words {
-		if w.Speaker == "" {
-			t.Errorf("Word '%s' has empty speaker", w.Text)
+	// Ожидаем 5 фраз в правильном порядке
+	if len(result) != 5 {
+		t.Errorf("Expected 5 phrases, got %d", len(result))
+		return
+	}
+
+	// Проверяем порядок: sys, mic, sys, mic, sys
+	expectedOrder := []bool{false, true, false, true, false} // false = sys, true = mic
+	for i, expected := range expectedOrder {
+		actual := isMicSpeaker(result[i].Speaker)
+		if actual != expected {
+			t.Errorf("Phrase %d: expected isMic=%v, got %v (speaker: %s)",
+				i, expected, actual, result[i].Speaker)
 		}
 	}
 }
@@ -202,6 +237,126 @@ func TestIsMicSpeaker(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("isMicSpeaker(%q) = %v, expected %v", tt.speaker, result, tt.expected)
 		}
+	}
+}
+
+// TestMergeWordsToDialogue_RealDataChunk001 тестирует на реальных данных из проблемного чанка
+// Проблема: timestamps в Whisper могут быть очень неточными (слово "Это" длится 6 секунд)
+func TestMergeWordsToDialogue_RealDataChunk001(t *testing.T) {
+	// Реальные данные из chunks/001.json сессии 114bbb18-747b-4f9b-841f-6f6cd075bd39
+	// Проблема: timestamps очень неточные
+	// - "Это" длится с 34680 до 40690 (6 секунд для одного слова!)
+	// - "По-моему," длится с 42500 до 51620 (9 секунд!)
+
+	micSegments := []TranscriptSegment{
+		{
+			Start:   31460,
+			End:     41140,
+			Speaker: "Вы",
+			Text:    "Так, давай-ка мы проверим два момента.",
+			Words: []TranscriptWord{
+				{Start: 31840, End: 32080, Text: "Так,", Speaker: "Вы"},
+				{Start: 32120, End: 36430, Text: "давай-ка", Speaker: "Вы"},
+				{Start: 36440, End: 36800, Text: "мы", Speaker: "Вы"},
+				{Start: 36800, End: 37960, Text: "проверим", Speaker: "Вы"},
+				{Start: 37960, End: 38390, Text: "два", Speaker: "Вы"},
+				{Start: 38390, End: 41140, Text: "момента.", Speaker: "Вы"},
+			},
+		},
+		{
+			Start:   41140,
+			End:     50480,
+			Speaker: "Вы",
+			Text:    "Во-первых, посмотрим, появился ли ты у нас тут.",
+			Words: []TranscriptWord{
+				{Start: 41140, End: 41840, Text: "Во-первых,", Speaker: "Вы"},
+				{Start: 41840, End: 47900, Text: "посмотрим,", Speaker: "Вы"},
+				{Start: 47900, End: 49240, Text: "появился", Speaker: "Вы"},
+				{Start: 49270, End: 49390, Text: "ли", Speaker: "Вы"},
+				{Start: 49490, End: 49620, Text: "ты", Speaker: "Вы"},
+				{Start: 49620, End: 49730, Text: "у", Speaker: "Вы"},
+				{Start: 49730, End: 49920, Text: "нас", Speaker: "Вы"},
+				{Start: 49920, End: 50480, Text: "тут.", Speaker: "Вы"},
+			},
+		},
+	}
+
+	sysSegments := []TranscriptSegment{
+		{
+			Start:   31280,
+			End:     34680,
+			Speaker: "Собеседник 1",
+			Text:    "Может быть, имеет смысл тогда с ним встречаться, абсурдать, я не знаю.",
+			Words: []TranscriptWord{
+				{Start: 31280, End: 31410, Text: "Может", Speaker: "Собеседник 1"},
+				{Start: 31780, End: 31980, Text: "быть,", Speaker: "Собеседник 1"},
+				{Start: 31980, End: 32330, Text: "имеет", Speaker: "Собеседник 1"},
+				{Start: 32330, End: 32700, Text: "смысл", Speaker: "Собеседник 1"},
+				{Start: 32700, End: 32960, Text: "тогда", Speaker: "Собеседник 1"},
+				{Start: 32960, End: 33000, Text: "с", Speaker: "Собеседник 1"},
+				{Start: 33010, End: 33200, Text: "ним", Speaker: "Собеседник 1"},
+				{Start: 33200, End: 33700, Text: "встречаться,", Speaker: "Собеседник 1"},
+				{Start: 33700, End: 34200, Text: "абсурдать,", Speaker: "Собеседник 1"},
+				{Start: 34200, End: 34220, Text: "я", Speaker: "Собеседник 1"},
+				{Start: 34260, End: 34390, Text: "не", Speaker: "Собеседник 1"},
+				{Start: 34390, End: 34680, Text: "знаю.", Speaker: "Собеседник 1"},
+			},
+		},
+		{
+			Start:   34680,
+			End:     42040,
+			Speaker: "Собеседник 1",
+			Text:    "Это будешь показывать?",
+			Words: []TranscriptWord{
+				// Проблема: "Это" длится 6 секунд - явная ошибка timestamps
+				{Start: 34680, End: 40690, Text: "Это", Speaker: "Собеседник 1"},
+				{Start: 41000, End: 41210, Text: "будешь", Speaker: "Собеседник 1"},
+				{Start: 41210, End: 42020, Text: "показывать?", Speaker: "Собеседник 1"},
+			},
+		},
+		{
+			Start:   42040,
+			End:     52500,
+			Speaker: "Собеседник 1",
+			Text:    "По-моему, да.",
+			Words: []TranscriptWord{
+				// Проблема: "По-моему," длится 9 секунд - явная ошибка timestamps
+				{Start: 42500, End: 51620, Text: "По-моему,", Speaker: "Собеседник 1"},
+				{Start: 51650, End: 52500, Text: "да.", Speaker: "Собеседник 1"},
+			},
+		},
+	}
+
+	result := mergeWordsToDialogue(micSegments, sysSegments)
+
+	// Логируем результат
+	t.Log("Result from real data:")
+	for i, r := range result {
+		t.Logf("  [%d] %s: %s (%d-%d)", i, r.Speaker, r.Text, r.Start, r.End)
+	}
+
+	// Проверяем базовые требования:
+	// 1. Должно быть чередование спикеров
+	// 2. Реплики собеседника не должны быть склеены в одну огромную фразу
+
+	if len(result) < 3 {
+		t.Errorf("Expected at least 3 phrases, got %d", len(result))
+		return
+	}
+
+	// Проверяем что есть чередование спикеров (не все фразы от одного спикера подряд)
+	lastSpeakerIsMic := isMicSpeaker(result[0].Speaker)
+	speakerChanges := 0
+	for i := 1; i < len(result); i++ {
+		currentIsMic := isMicSpeaker(result[i].Speaker)
+		if currentIsMic != lastSpeakerIsMic {
+			speakerChanges++
+			lastSpeakerIsMic = currentIsMic
+		}
+	}
+
+	if speakerChanges < 2 {
+		t.Errorf("Expected at least 2 speaker changes (interleaving), got %d", speakerChanges)
 	}
 }
 
