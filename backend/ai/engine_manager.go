@@ -124,6 +124,20 @@ func (em *EngineManager) SetLanguage(lang string) {
 	}
 }
 
+// SetPauseThreshold устанавливает порог паузы для сегментации (только для FluidASR)
+func (em *EngineManager) SetPauseThreshold(threshold float64) {
+	em.mu.RLock()
+	engine := em.activeEngine
+	em.mu.RUnlock()
+
+	if engine != nil {
+		// Проверяем, поддерживает ли движок SetPauseThreshold
+		if fluidEngine, ok := engine.(*FluidASREngine); ok {
+			fluidEngine.SetPauseThreshold(threshold)
+		}
+	}
+}
+
 // Transcribe транскрибирует аудио через активный движок
 func (em *EngineManager) Transcribe(samples []float32, useContext bool) (string, error) {
 	em.mu.RLock()

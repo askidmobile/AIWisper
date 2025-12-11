@@ -413,6 +413,11 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 				s.EngineMgr.SetLanguage(msg.Language)
 				log.Printf("start_session: language set to %s", msg.Language)
 			}
+			// Set pause threshold if specified (for FluidASR segmentation)
+			if msg.PauseThreshold > 0 {
+				s.EngineMgr.SetPauseThreshold(msg.PauseThreshold)
+				log.Printf("start_session: pause threshold set to %.2fs", msg.PauseThreshold)
+			}
 		}
 
 		config := session.SessionConfig{

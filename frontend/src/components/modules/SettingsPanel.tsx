@@ -26,6 +26,8 @@ interface SettingsPanelProps {
     onShowModelManager: () => void;
     enableStreaming?: boolean;
     setEnableStreaming?: (v: boolean) => void;
+    pauseThreshold?: number;
+    setPauseThreshold?: (v: number) => void;
 }
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
@@ -37,7 +39,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     ollamaModel, setOllamaModel, loadOllamaModels,
     onShowModelManager,
     enableStreaming = false,
-    setEnableStreaming
+    setEnableStreaming,
+    pauseThreshold = 0.5,
+    setPauseThreshold
 }) => {
     const { models, activeModelId, ollamaModels, ollamaError, ollamaModelsLoading } = useModelContext() as any;
     // Note: setShowModelManager is not in context yet. I need to add it or manage modal in parent.
@@ -128,6 +132,26 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                         />
                         <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', minWidth: '32px' }}>
                             {Math.round(echoCancel * 100)}%
+                        </span>
+                    </div>
+                )}
+
+                {/* Pause Threshold - для сегментации транскрипции */}
+                {setPauseThreshold && (
+                    <div data-chip style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', padding: '0.35rem 0.75rem', borderRadius: '12px', border: '1px solid var(--border)', background: 'var(--surface-strong)' }} title="Порог паузы для разделения сегментов. Меньше = больше сегментов, больше = меньше сегментов.">
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>⏱️ Пауза:</span>
+                        <input
+                            type="range"
+                            min="30"
+                            max="200"
+                            step="10"
+                            value={pauseThreshold * 100}
+                            disabled={settingsLocked}
+                            onChange={e => setPauseThreshold(Number(e.target.value) / 100)}
+                            style={{ width: '80px', accentColor: 'var(--primary)' }}
+                        />
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', minWidth: '40px' }}>
+                            {pauseThreshold.toFixed(1)}s
                         </span>
                     </div>
                 )}

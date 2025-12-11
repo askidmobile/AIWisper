@@ -149,6 +149,20 @@ func (e *FluidASREngine) SupportedLanguages() []string {
 	return e.supportedLangs
 }
 
+// SetPauseThreshold устанавливает порог паузы для сегментации (в секундах)
+// Меньшие значения (0.3) создают больше сегментов, большие (1.0+) - меньше
+func (e *FluidASREngine) SetPauseThreshold(threshold float64) {
+	if threshold > 0 {
+		e.pauseThreshold = threshold
+		log.Printf("FluidASREngine: pause threshold set to %.2fs", threshold)
+	}
+}
+
+// GetPauseThreshold возвращает текущий порог паузы
+func (e *FluidASREngine) GetPauseThreshold() float64 {
+	return e.pauseThreshold
+}
+
 // Transcribe транскрибирует аудио и возвращает текст
 func (e *FluidASREngine) Transcribe(samples []float32, useContext bool) (string, error) {
 	segments, err := e.TranscribeWithSegments(samples)

@@ -46,6 +46,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     const [echoCancel, setEchoCancel] = useState(0.5);
     const [ollamaModel, setOllamaModel] = useState('');
     const [enableStreaming, setEnableStreaming] = useState(false); // Streaming transcription
+    const [pauseThreshold, setPauseThreshold] = useState(0.5); // Pause threshold for segmentation (seconds)
 
     // Devices (fetched via navigator.mediaDevices usually, or Electron IPC)
     const [inputDevices, setInputDevices] = useState<any[]>([]);
@@ -79,6 +80,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                 if (p.echoCancel !== undefined) setEchoCancel(p.echoCancel);
                 if (p.ollamaModel) setOllamaModel(p.ollamaModel);
                 if (p.enableStreaming !== undefined) setEnableStreaming(p.enableStreaming);
+                if (p.pauseThreshold !== undefined) setPauseThreshold(p.pauseThreshold);
             }
         } catch (e) {
             console.error("Failed to load settings", e);
@@ -88,10 +90,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     // Save settings on change
     useEffect(() => {
         const settings = {
-            micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming
+            micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold
         };
         localStorage.setItem('aiwisper_settings', JSON.stringify(settings));
-    }, [micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming]);
+    }, [micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold]);
 
     // Start/Stop Handler
     const handleStartStop = async () => {
@@ -111,6 +113,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                     captureSystem: captureSystem,
                     useVoiceIsolation: useVoiceIsolation,
                     echoCancel: echoCancel,
+                    pauseThreshold: pauseThreshold,
                     useNativeCapture: true // Use SCK by default on macOS 12+
                 });
                 addLog('Recording started');
@@ -217,6 +220,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                         onShowModelManager={() => setShowModelManager(true)}
                         enableStreaming={enableStreaming}
                         setEnableStreaming={setEnableStreaming}
+                        pauseThreshold={pauseThreshold}
+                        setPauseThreshold={setPauseThreshold}
                     />
                 )}
 

@@ -23,6 +23,7 @@ type Message struct {
 	UseVoiceIsolation bool    `json:"useVoiceIsolation,omitempty"`
 	VADMode           string  `json:"vadMode,omitempty"` // auto, compression, per-region, off
 	EchoCancel        float64 `json:"echoCancel,omitempty"`
+	PauseThreshold    float64 `json:"pauseThreshold,omitempty"` // Порог паузы для сегментации (0.3-2.0 сек)
 
 	// Responses
 	Session   *session.Session `json:"session,omitempty"`
