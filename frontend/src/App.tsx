@@ -1795,6 +1795,157 @@ function App() {
         addLog(`Файл ${filename} скачан`);
     }, [selectedSession, generateVTT, addLog]);
 
+    // Генерация JSON для программной обработки
+    const generateJSON = useCallback((session: Session): string => {
+        const sessionChunks = session.chunks || [];
+
+        // Собираем диалог с timestamps
+        const dialogue: TranscriptSegment[] = sessionChunks
+            .filter(c => c.status === 'completed')
+            .sort((a, b) => a.index - b.index)
+            .flatMap((c) => {
+                if (c.dialogue && c.dialogue.length > 0) {
+                    return c.dialogue.map(seg => ({
+                        ...seg,
+                        start: seg.start,
+                        end: seg.end
+                    }));
+                }
+                return [];
+            });
+
+        const exportData = {
+            metadata: {
+                sessionId: session.id,
+                startTime: session.startTime,
+                totalDuration: session.totalDuration,
+                chunksCount: sessionChunks.length,
+                exportedAt: new Date().toISOString(),
+                version: '1.0'
+            },
+            segments: dialogue.map((seg, index) => {
+                const { name: speaker } = getSpeakerDisplayName(seg.speaker);
+                return {
+                    index,
+                    start: seg.start,
+                    end: seg.end,
+                    duration: seg.end - seg.start,
+                    speaker: speaker,
+                    speakerId: seg.speaker,
+                    text: seg.text
+                };
+            }),
+            summary: session.summary || null
+        };
+
+        return JSON.stringify(exportData, null, 2);
+    }, [getSpeakerDisplayName]);
+
+    // Скачивание как JSON файл
+    const handleDownloadJSON = useCallback(() => {
+        if (!selectedSession) return;
+
+        const json = generateJSON(selectedSession);
+        if (!json || json === '{"metadata":{},"segments":[],"summary":null}') {
+            addLog('Нет данных для экспорта в JSON');
+            return;
+        }
+
+        const date = new Date(selectedSession.startTime);
+        const dateStr = date.toISOString().slice(0, 10);
+        const timeStr = date.toTimeString().slice(0, 5).replace(':', '-');
+        const filename = `transcription_${dateStr}_${timeStr}.json`;
+
+        const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        setShowShareMenu(false);
+        addLog(`Файл ${filename} скачан`);
+    }, [selectedSession, generateJSON, addLog]);
+
+    // Генерация Markdown
+    const generateMarkdown = useCallback((session: Session): string => {
+        const sessionChunks = session.chunks || [];
+
+        // Собираем диалог с timestamps
+        const dialogue: TranscriptSegment[] = sessionChunks
+            .filter(c => c.status === 'completed')
+            .sort((a, b) => a.index - b.index)
+            .flatMap((c) => {
+                if (c.dialogue && c.dialogue.length > 0) {
+                    return c.dialogue.map(seg => ({
+                        ...seg,
+                        start: seg.start,
+                        end: seg.end
+                    }));
+                }
+                return [];
+            });
+
+        if (dialogue.length === 0) {
+            return '';
+        }
+
+        const formatTime = (ms: number): string => {
+            const totalSeconds = Math.floor(ms / 1000);
+            const mins = Math.floor(totalSeconds / 60);
+            const secs = totalSeconds % 60;
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        };
+
+        const header = `# Транскрипция\n\n**Дата:** ${formatDate(session.startTime)}  \n**Длительность:** ${formatDuration(session.totalDuration / 1000)}\n\n---\n\n`;
+
+        const dialogueText = dialogue.map(seg => {
+            const { name: speaker } = getSpeakerDisplayName(seg.speaker);
+            const timeStr = formatTime(seg.start);
+            return `**[${timeStr}] ${speaker}:**  \n${seg.text}\n`;
+        }).join('\n');
+
+        const summarySection = session.summary 
+            ? `\n---\n\n## Краткое содержание\n\n${session.summary}\n`
+            : '';
+
+        return header + dialogueText + summarySection;
+    }, [getSpeakerDisplayName]);
+
+    // Скачивание как Markdown файл
+    const handleDownloadMarkdown = useCallback(() => {
+        if (!selectedSession) return;
+
+        const md = generateMarkdown(selectedSession);
+        if (!md) {
+            addLog('Нет данных для экспорта в Markdown');
+            return;
+        }
+
+        const date = new Date(selectedSession.startTime);
+        const dateStr = date.toISOString().slice(0, 10);
+        const timeStr = date.toTimeString().slice(0, 5).replace(':', '-');
+        const filename = `transcription_${dateStr}_${timeStr}.md`;
+
+        const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        setShowShareMenu(false);
+        addLog(`Файл ${filename} скачан`);
+    }, [selectedSession, generateMarkdown, addLog]);
+
     // Автоскролл только при создании новых чанков во время записи
     useEffect(() => {
         if (shouldAutoScroll && transcriptionRef.current) {
@@ -2509,6 +2660,13 @@ function App() {
                                                         </button>
                                                         <button onClick={handleDownloadVTT} style={{ width: '100%', padding: '0.6rem 1rem', background: 'none', border: 'none', color: 'var(--text-primary)', textAlign: 'left', cursor: 'pointer', fontSize: '0.85rem' }}>
                                                             🌐 Скачать .vtt (WebVTT)
+                                                        </button>
+                                                        <div style={{ borderTop: '1px solid var(--border)', margin: '0.3rem 0' }} />
+                                                        <button onClick={handleDownloadJSON} style={{ width: '100%', padding: '0.6rem 1rem', background: 'none', border: 'none', color: 'var(--text-primary)', textAlign: 'left', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                                            📊 Скачать .json (данные)
+                                                        </button>
+                                                        <button onClick={handleDownloadMarkdown} style={{ width: '100%', padding: '0.6rem 1rem', background: 'none', border: 'none', color: 'var(--text-primary)', textAlign: 'left', cursor: 'pointer', fontSize: '0.85rem' }}>
+                                                            📝 Скачать .md (Markdown)
                                                         </button>
                                                     </div>
                                                 )}
