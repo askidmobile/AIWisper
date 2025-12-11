@@ -23,17 +23,29 @@ type FluidASREngine struct {
 	binaryPath     string
 	modelCacheDir  string
 	pauseThreshold float64
+	modelVersion   FluidModelVersion
 	language       string
 	mu             sync.Mutex
 	initialized    bool
 	supportedLangs []string
 }
 
+// FluidModelVersion версия модели Parakeet TDT
+type FluidModelVersion string
+
+const (
+	// FluidModelV2 - Parakeet TDT v2 (English-only, higher recall for English)
+	FluidModelV2 FluidModelVersion = "v2"
+	// FluidModelV3 - Parakeet TDT v3 (Multilingual: 25 European languages)
+	FluidModelV3 FluidModelVersion = "v3"
+)
+
 // FluidASRConfig конфигурация для FluidASREngine
 type FluidASRConfig struct {
-	BinaryPath     string  // Путь к transcription-fluid binary (опционально)
-	ModelCacheDir  string  // Директория для кэша моделей FluidAudio
-	PauseThreshold float64 // Порог паузы для сегментации (секунды), по умолчанию 0.5
+	BinaryPath     string            // Путь к transcription-fluid binary (опционально)
+	ModelCacheDir  string            // Директория для кэша моделей FluidAudio
+	PauseThreshold float64           // Порог паузы для сегментации (секунды), по умолчанию 0.5
+	ModelVersion   FluidModelVersion // Версия модели: v2 (English) или v3 (Multilingual), по умолчанию v3
 }
 
 // fluidTranscriptionResult структура JSON ответа от transcription-fluid
@@ -88,13 +100,26 @@ func NewFluidASREngine(config FluidASRConfig) (*FluidASREngine, error) {
 		return nil, fmt.Errorf("transcription-fluid binary not found at %s", binaryPath)
 	}
 
-	log.Printf("FluidASREngine: using binary at %s", binaryPath)
+	// Устанавливаем версию модели по умолчанию
+	modelVersion := config.ModelVersion
+	if modelVersion == "" {
+		modelVersion = FluidModelV3 // По умолчанию multilingual
+	}
 
-	// Parakeet TDT v3 поддерживает 25 европейских языков
-	supportedLangs := []string{
-		"multi", "en", "de", "es", "fr", "it", "pt", "pl", "nl", "ru",
-		"uk", "cs", "sk", "hr", "sl", "bg", "ro", "hu", "el", "lt",
-		"lv", "et", "fi", "sv", "da", "no", "is",
+	log.Printf("FluidASREngine: using binary at %s, model version %s", binaryPath, modelVersion)
+
+	// Определяем поддерживаемые языки в зависимости от версии модели
+	var supportedLangs []string
+	if modelVersion == FluidModelV2 {
+		// v2 - только английский
+		supportedLangs = []string{"en"}
+	} else {
+		// v3 - 25 европейских языков
+		supportedLangs = []string{
+			"multi", "en", "de", "es", "fr", "it", "pt", "pl", "nl", "ru",
+			"uk", "cs", "sk", "hr", "sl", "bg", "ro", "hu", "el", "lt",
+			"lv", "et", "fi", "sv", "da", "no", "is",
+		}
 	}
 
 	// Устанавливаем pause threshold по умолчанию
@@ -107,6 +132,7 @@ func NewFluidASREngine(config FluidASRConfig) (*FluidASREngine, error) {
 		binaryPath:     binaryPath,
 		modelCacheDir:  config.ModelCacheDir,
 		pauseThreshold: pauseThreshold,
+		modelVersion:   modelVersion,
 		language:       "multi", // По умолчанию автоопределение
 		initialized:    true,
 		supportedLangs: supportedLangs,
@@ -162,6 +188,9 @@ func (e *FluidASREngine) TranscribeWithSegments(samples []float32) ([]Transcript
 	}
 	if e.pauseThreshold > 0 {
 		args = append(args, "--pause-threshold", fmt.Sprintf("%.3f", e.pauseThreshold))
+	}
+	if e.modelVersion != "" {
+		args = append(args, "--model", string(e.modelVersion))
 	}
 
 	cmd := exec.Command(e.binaryPath, args...)
@@ -246,10 +275,46 @@ func (e *FluidASREngine) SetLanguage(lang string) {
 }
 
 // SetModel переключает модель
-// Для FluidAudio модель фиксирована (Parakeet TDT v3), метод для совместимости
+// Для FluidAudio поддерживаются версии v2 (English) и v3 (Multilingual)
 func (e *FluidASREngine) SetModel(path string) error {
-	log.Printf("FluidASREngine: SetModel called with %s (ignored - using Parakeet TDT v3)", path)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Проверяем, является ли path версией модели
+	switch path {
+	case "v2", "parakeet-v2":
+		e.modelVersion = FluidModelV2
+		e.supportedLangs = []string{"en"}
+		log.Printf("FluidASREngine: switched to Parakeet TDT v2 (English-only)")
+	case "v3", "parakeet-v3", "":
+		e.modelVersion = FluidModelV3
+		e.supportedLangs = []string{
+			"multi", "en", "de", "es", "fr", "it", "pt", "pl", "nl", "ru",
+			"uk", "cs", "sk", "hr", "sl", "bg", "ro", "hu", "el", "lt",
+			"lv", "et", "fi", "sv", "da", "no", "is",
+		}
+		log.Printf("FluidASREngine: switched to Parakeet TDT v3 (Multilingual)")
+	default:
+		log.Printf("FluidASREngine: unknown model %s, keeping current version %s", path, e.modelVersion)
+	}
 	return nil
+}
+
+// SetModelVersion устанавливает версию модели напрямую
+func (e *FluidASREngine) SetModelVersion(version FluidModelVersion) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.modelVersion = version
+	if version == FluidModelV2 {
+		e.supportedLangs = []string{"en"}
+	} else {
+		e.supportedLangs = []string{
+			"multi", "en", "de", "es", "fr", "it", "pt", "pl", "nl", "ru",
+			"uk", "cs", "sk", "hr", "sl", "bg", "ro", "hu", "el", "lt",
+			"lv", "et", "fi", "sv", "da", "no", "is",
+		}
+	}
+	log.Printf("FluidASREngine: model version set to %s", version)
 }
 
 // Close освобождает ресурсы (для FluidASREngine это no-op)

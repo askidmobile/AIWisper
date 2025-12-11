@@ -8,6 +8,12 @@ import FluidAudio
 //   transcription-fluid <audio.wav>
 //   transcription-fluid --samples  # читает float32 samples из stdin
 //   transcription-fluid --samples --model-cache-dir /path/to/cache
+//   transcription-fluid --samples --model v2  # English-only (higher recall)
+//   transcription-fluid --samples --model v3  # Multilingual (25 EU languages, default)
+//
+// Модели:
+//   v2 - Parakeet TDT 0.6B v2 (English-only, higher recall for English)
+//   v3 - Parakeet TDT 0.6B v3 (Multilingual: bg, hr, cs, da, nl, en, et, fi, fr, de, el, hu, it, lv, lt, mt, pl, pt, ro, sk, sl, es, sv, ru, uk)
 //
 // Вывод (JSON):
 // {
@@ -32,18 +38,18 @@ struct TranscriptionResult: Codable {
     let error: String?
 }
 
-func printError(_ message: String) {
+func printError(_ message: String, modelVersion: String = "v3") {
     let result = TranscriptionResult(
         segments: [],
         language: nil,
-        model_version: "v3",
+        model_version: modelVersion,
         error: message
     )
     if let data = try? JSONEncoder().encode(result),
        let json = String(data: data, encoding: .utf8) {
         print(json)
     } else {
-        print("{\"segments\":[], \"language\":null, \"model_version\":\"v3\", \"error\":\"\(message)\"}")
+        print("{\"segments\":[], \"language\":null, \"model_version\":\"\(modelVersion)\", \"error\":\"\(message)\"}")
     }
 }
 
@@ -100,6 +106,26 @@ func configureModelCache(customPath: String?) {
     }
 }
 
+// Enum для версии модели
+enum ModelVersion: String {
+    case v2 = "v2"  // English-only, higher recall
+    case v3 = "v3"  // Multilingual (25 EU languages)
+    
+    var asrVersion: AsrModelVersion {
+        switch self {
+        case .v2: return .v2
+        case .v3: return .v3
+        }
+    }
+    
+    var description: String {
+        switch self {
+        case .v2: return "Parakeet TDT v2 (English-only)"
+        case .v3: return "Parakeet TDT v3 (Multilingual)"
+        }
+    }
+}
+
 @main
 struct TranscriptionCLI {
     static func main() async {
@@ -110,6 +136,7 @@ struct TranscriptionCLI {
         var isStdinMode = false
         var audioPath: String?
         var pauseThreshold: TimeInterval = 0.5 // По умолчанию 500ms
+        var modelVersion: ModelVersion = .v3  // По умолчанию v3 (multilingual)
         
         // Парсим аргументы
         var i = 1
@@ -124,6 +151,20 @@ struct TranscriptionCLI {
                     i += 1
                 } else {
                     printError("--model-cache-dir requires a path argument")
+                    return
+                }
+            } else if arg == "--model" {
+                if i + 1 < args.count {
+                    let versionStr = args[i + 1].lowercased()
+                    if let version = ModelVersion(rawValue: versionStr) {
+                        modelVersion = version
+                        i += 1
+                    } else {
+                        printError("--model requires 'v2' (English-only) or 'v3' (Multilingual)")
+                        return
+                    }
+                } else {
+                    printError("--model requires a version argument (v2 or v3)")
                     return
                 }
             } else if arg == "--pause-threshold" {
@@ -170,7 +211,7 @@ struct TranscriptionCLI {
                 return
             }
         } else {
-            printError("Usage: transcription-fluid <audio.wav> or transcription-fluid --samples [--model-cache-dir /path]")
+            printError("Usage: transcription-fluid <audio.wav> or transcription-fluid --samples [--model v2|v3] [--model-cache-dir /path]")
             return
         }
         
@@ -181,9 +222,9 @@ struct TranscriptionCLI {
         
         // Выполняем транскрипцию с FluidAudio
         do {
-            // Используем Parakeet TDT v3 (multilingual, 25 European languages)
-            fputs("[transcription-fluid] Loading Parakeet TDT v3 models...\n", stderr)
-            let models = try await AsrModels.downloadAndLoad(version: .v3)
+            // Загружаем выбранную модель Parakeet TDT
+            fputs("[transcription-fluid] Loading \(modelVersion.description) models...\n", stderr)
+            let models = try await AsrModels.downloadAndLoad(version: modelVersion.asrVersion)
             
             fputs("[transcription-fluid] Initializing ASR manager...\n", stderr)
             let asrManager = AsrManager(config: .default)
@@ -248,8 +289,8 @@ struct TranscriptionCLI {
             
             let output = TranscriptionResult(
                 segments: segments,
-                language: nil, // Parakeet v3 автоопределяет язык, но не возвращает его в API
-                model_version: "v3",
+                language: nil, // Parakeet автоопределяет язык, но не возвращает его в API
+                model_version: modelVersion.rawValue,
                 error: nil
             )
             
