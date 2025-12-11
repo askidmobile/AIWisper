@@ -97,3 +97,4 @@ RELEASE_INSTRUCTIONS.md
 
 # Spike/experimental code
 backend/cmd/spike_gigaam/
+backend/aiwisper-backend
