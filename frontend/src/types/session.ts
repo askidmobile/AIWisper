@@ -10,7 +10,7 @@ export interface TranscriptSegment {
     start: number;
     end: number;
     text: string;
-    words: TranscriptWord[];
+    words?: TranscriptWord[];
     speaker?: string;
 }
 
@@ -34,16 +34,30 @@ export interface Chunk {
     filePath?: string;
 }
 
+export interface WaveformData {
+    peaks: number[][];
+    rms: number[][];
+    rmsAbsolute: number[][];
+    sampleDuration: number;
+    duration: number;
+    sampleCount: number;
+    channelCount: number;
+}
+
 export interface Session {
     id: string;
     startTime: string; // ISO string
-    status: 'active' | 'completed';
+    endTime?: string;  // ISO string
+    status: 'active' | 'completed' | 'recording' | 'failed';
     chunks: Chunk[];
     dataDir: string;
     totalDuration: number;
     title?: string;
     summary?: string;
+    language?: string;
+    model?: string;
     sampleCount?: number;
+    waveform?: WaveformData; // Cached waveform data
 }
 
 export interface SessionInfo {

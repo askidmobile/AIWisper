@@ -315,21 +315,36 @@ func (h *HybridTranscriber) mergeByConfidence(primary, secondary []TranscriptSeg
 		return primary, nil
 	}
 
-	// Вычисляем средний confidence для каждой модели
+	// Вычисляем средний confidence для каждой модели (raw)
 	primaryAvgConf := calcAverageConfidence(primaryWords)
 	secondaryAvgConf := calcAverageConfidence(secondaryWords)
 
 	log.Printf("[HybridTranscriber] MergeByConfidence: primaryAvgConf=%.4f, secondaryAvgConf=%.4f",
 		primaryAvgConf, secondaryAvgConf)
 
-	// Стратегия выбора:
+	// ВАЖНО: Применяем калибровку confidence для честного сравнения
+	// GigaAM систематически завышает confidence на ~25% из-за CTC loss
+	calibrations := h.config.Voting.Calibrations
+	if len(calibrations) == 0 {
+		calibrations = DefaultCalibrations
+	}
+	primaryCalFactor := getCalibrationFactor(h.primaryEngine.Name(), calibrations)
+	secondaryCalFactor := getCalibrationFactor(h.secondaryEngine.Name(), calibrations)
+
+	primaryCalibratedConf := primaryAvgConf * primaryCalFactor
+	secondaryCalibratedConf := secondaryAvgConf * secondaryCalFactor
+
+	log.Printf("[HybridTranscriber] MergeByConfidence: calibrated primaryConf=%.4f (factor=%.2f), secondaryConf=%.4f (factor=%.2f)",
+		primaryCalibratedConf, primaryCalFactor, secondaryCalibratedConf, secondaryCalFactor)
+
+	// Стратегия выбора (на основе КАЛИБРОВАННЫХ confidence):
 	// 1. Если разница в confidence > 10% - берём модель с большим confidence
 	// 2. Иначе - пытаемся объединить по словам
 
-	confDiff := primaryAvgConf - secondaryAvgConf
+	confDiff := primaryCalibratedConf - secondaryCalibratedConf
 	if confDiff < -0.1 {
 		// Вторичная модель значительно лучше
-		log.Printf("[HybridTranscriber] MergeByConfidence: Secondary model significantly better (diff=%.2f)", confDiff)
+		log.Printf("[HybridTranscriber] MergeByConfidence: Secondary model significantly better (calibrated diff=%.2f)", confDiff)
 		improvements = append(improvements, TranscriptionImprovement{
 			OriginalText: segmentsToFullText(primary),
 			ImprovedText: segmentsToFullText(secondary),
@@ -340,7 +355,7 @@ func (h *HybridTranscriber) mergeByConfidence(primary, secondary []TranscriptSeg
 		return secondary, improvements
 	} else if confDiff > 0.1 {
 		// Первичная модель значительно лучше
-		log.Printf("[HybridTranscriber] MergeByConfidence: Primary model significantly better (diff=%.2f)", confDiff)
+		log.Printf("[HybridTranscriber] MergeByConfidence: Primary model significantly better (calibrated diff=%.2f)", confDiff)
 		return primary, nil
 	}
 
@@ -392,43 +407,183 @@ func calcAverageConfidence(words []TranscriptWord) float32 {
 	return sum / float32(count)
 }
 
-// mergeWordsByTime объединяет слова из двух моделей по времени
-// Для каждого слова первичной модели ищет соответствующее во вторичной
-// и выбирает лучшее по confidence. Использованные слова вторичной модели помечаются.
+// WordAlignment представляет выравнивание между словами двух моделей
+type WordAlignment struct {
+	PrimaryIdx   int  // Индекс слова в primary (-1 если gap)
+	SecondaryIdx int  // Индекс слова в secondary (-1 если gap)
+	Score        int  // Оценка выравнивания
+	IsSimilar    bool // Слова семантически похожи
+}
+
+// alignWordsNeedlemanWunsch выравнивает две последовательности слов
+// используя алгоритм Needleman-Wunsch (глобальное выравнивание)
+// Возвращает список пар (primaryIdx, secondaryIdx), где -1 означает gap
+func alignWordsNeedlemanWunsch(primary, secondary []TranscriptWord) []WordAlignment {
+	n := len(primary)
+	m := len(secondary)
+
+	if n == 0 || m == 0 {
+		return nil
+	}
+
+	// Параметры scoring
+	const (
+		matchScore    = 2  // Совпадение слов
+		similarScore  = 1  // Похожие слова
+		mismatchScore = -1 // Разные слова
+		gapPenalty    = -1 // Штраф за пропуск
+	)
+
+	// Функция сравнения слов
+	compareWords := func(w1, w2 TranscriptWord) (int, bool) {
+		norm1 := normalizeWordForComparison(w1.Text)
+		norm2 := normalizeWordForComparison(w2.Text)
+
+		if norm1 == norm2 {
+			return matchScore, true
+		}
+		if areWordsSimilar(w1.Text, w2.Text) {
+			return similarScore, true
+		}
+		return mismatchScore, false
+	}
+
+	// Создаём матрицу scoring
+	score := make([][]int, n+1)
+	for i := range score {
+		score[i] = make([]int, m+1)
+	}
+
+	// Инициализация первой строки и столбца
+	for i := 0; i <= n; i++ {
+		score[i][0] = i * gapPenalty
+	}
+	for j := 0; j <= m; j++ {
+		score[0][j] = j * gapPenalty
+	}
+
+	// Заполняем матрицу
+	for i := 1; i <= n; i++ {
+		for j := 1; j <= m; j++ {
+			matchVal, _ := compareWords(primary[i-1], secondary[j-1])
+
+			diag := score[i-1][j-1] + matchVal
+			up := score[i-1][j] + gapPenalty
+			left := score[i][j-1] + gapPenalty
+
+			score[i][j] = maxInt(maxInt(diag, up), left)
+		}
+	}
+
+	// Traceback для получения выравнивания
+	var alignment []WordAlignment
+	i, j := n, m
+
+	for i > 0 || j > 0 {
+		if i > 0 && j > 0 {
+			matchVal, isSimilar := compareWords(primary[i-1], secondary[j-1])
+			if score[i][j] == score[i-1][j-1]+matchVal {
+				alignment = append(alignment, WordAlignment{
+					PrimaryIdx:   i - 1,
+					SecondaryIdx: j - 1,
+					Score:        matchVal,
+					IsSimilar:    isSimilar,
+				})
+				i--
+				j--
+				continue
+			}
+		}
+
+		if i > 0 && score[i][j] == score[i-1][j]+gapPenalty {
+			alignment = append(alignment, WordAlignment{
+				PrimaryIdx:   i - 1,
+				SecondaryIdx: -1,
+				Score:        gapPenalty,
+				IsSimilar:    false,
+			})
+			i--
+		} else if j > 0 {
+			alignment = append(alignment, WordAlignment{
+				PrimaryIdx:   -1,
+				SecondaryIdx: j - 1,
+				Score:        gapPenalty,
+				IsSimilar:    false,
+			})
+			j--
+		}
+	}
+
+	// Разворачиваем (traceback идёт с конца)
+	for left, right := 0, len(alignment)-1; left < right; left, right = left+1, right-1 {
+		alignment[left], alignment[right] = alignment[right], alignment[left]
+	}
+
+	return alignment
+}
+
+// mergeWordsByTime объединяет слова из двух моделей используя sequence alignment
+// Вместо простого сопоставления по времени, использует алгоритм Needleman-Wunsch
+// для корректного выравнивания последовательностей слов с учётом пропусков
 func (h *HybridTranscriber) mergeWordsByTime(
 	primarySegs, secondarySegs []TranscriptSegment,
 	primaryWords, secondaryWords []TranscriptWord,
 ) []TranscriptSegment {
-	// Если у вторичной модели нет слов с таймингами - возвращаем первичную
-	hasSecondaryTimings := false
-	for _, w := range secondaryWords {
-		if w.Start > 0 || w.End > 0 {
-			hasSecondaryTimings = true
-			break
-		}
+	// Если нет слов - возвращаем первичную
+	if len(primaryWords) == 0 {
+		return primarySegs
 	}
-	if !hasSecondaryTimings {
-		log.Printf("[HybridTranscriber] MergeWordsByTime: Secondary has no word timings, using primary")
+	if len(secondaryWords) == 0 {
 		return primarySegs
 	}
 
-	// Создаём список слов вторичной модели с флагом использования
-	type wordEntry struct {
-		word TranscriptWord
-		mid  int64
-		used bool
-	}
-	secondaryByTime := make([]*wordEntry, 0, len(secondaryWords))
-	for _, w := range secondaryWords {
-		if w.Start > 0 || w.End > 0 {
-			mid := (w.Start + w.End) / 2
-			secondaryByTime = append(secondaryByTime, &wordEntry{word: w, mid: mid, used: false})
+	// Выравниваем слова с помощью Needleman-Wunsch
+	alignment := alignWordsNeedlemanWunsch(primaryWords, secondaryWords)
+
+	log.Printf("[HybridTranscriber] MergeWordsByAlignment: aligned %d primary words with %d secondary words, got %d alignments",
+		len(primaryWords), len(secondaryWords), len(alignment))
+
+	// Создаём карту замен: primaryIdx -> лучшее слово
+	replacements := make(map[int]TranscriptWord)
+
+	for _, align := range alignment {
+		// Пропускаем gaps и несовпадения
+		if align.PrimaryIdx < 0 || align.SecondaryIdx < 0 || !align.IsSimilar {
+			continue
+		}
+
+		pw := primaryWords[align.PrimaryIdx]
+		sw := secondaryWords[align.SecondaryIdx]
+
+		// Используем voting-систему если включена
+		if h.config.Voting.Enabled {
+			voteResult := h.selectBestWordByVoting(pw, sw)
+			if voteResult.Winner == "secondary" {
+				replacements[align.PrimaryIdx] = sw
+				log.Printf("[HybridTranscriber] MergeWordsByAlignment: Voting selected '%s' over '%s' - %s",
+					sw.Text, pw.Text, voteResult.Reason)
+			}
+		} else {
+			// Fallback на простое сравнение confidence
+			if sw.P > pw.P && sw.P > 0 {
+				replacements[align.PrimaryIdx] = sw
+				log.Printf("[HybridTranscriber] MergeWordsByAlignment: Replaced '%s' (%.2f) with '%s' (%.2f)",
+					pw.Text, pw.P, sw.Text, sw.P)
+			}
 		}
 	}
 
-	// Для каждого слова первичной модели ищем соответствующее во вторичной
-	// и выбираем лучшее по confidence
+	// Если нет замен - возвращаем оригинал
+	if len(replacements) == 0 {
+		log.Printf("[HybridTranscriber] MergeWordsByAlignment: No replacements needed")
+		return primarySegs
+	}
+
+	// Применяем замены к сегментам
+	// Нужно отслеживать глобальный индекс слова
 	result := make([]TranscriptSegment, len(primarySegs))
+	globalWordIdx := 0
+
 	for i, seg := range primarySegs {
 		result[i] = TranscriptSegment{
 			Start:   seg.Start,
@@ -440,54 +595,16 @@ func (h *HybridTranscriber) mergeWordsByTime(
 		var newTextParts []string
 
 		for _, pw := range seg.Words {
-			bestWord := pw // По умолчанию - слово из первичной модели
+			bestWord := pw
 
-			// Ищем соответствующее слово во вторичной модели
-			if pw.Start > 0 || pw.End > 0 {
-				pwMid := (pw.Start + pw.End) / 2
-				tolerance := int64(300) // 300ms tolerance
-
-				var bestMatch *wordEntry
-				var bestDist int64 = tolerance + 1
-
-				for _, sw := range secondaryByTime {
-					if sw.used {
-						continue // Пропускаем уже использованные слова
-					}
-
-					dist := abs64(sw.mid - pwMid)
-					if dist <= tolerance && dist < bestDist {
-						bestDist = dist
-						bestMatch = sw
-					}
-				}
-
-				// Если нашли кандидата - используем voting-систему для выбора
-				if bestMatch != nil {
-					// Помечаем слово как использованное
-					bestMatch.used = true
-
-					// Используем voting-систему если включена
-					if h.config.Voting.Enabled {
-						voteResult := h.selectBestWordByVoting(pw, bestMatch.word)
-						if voteResult.Winner == "secondary" {
-							bestWord = bestMatch.word
-							log.Printf("[HybridTranscriber] MergeWordsByTime: Voting selected '%s' over '%s' - %s",
-								bestMatch.word.Text, pw.Text, voteResult.Reason)
-						}
-					} else {
-						// Fallback на старую логику (простое сравнение confidence)
-						if bestMatch.word.P > pw.P && bestMatch.word.P > 0 {
-							bestWord = bestMatch.word
-							log.Printf("[HybridTranscriber] MergeWordsByTime: Replaced '%s' (%.2f) with '%s' (%.2f)",
-								pw.Text, pw.P, bestMatch.word.Text, bestMatch.word.P)
-						}
-					}
-				}
+			// Проверяем есть ли замена для этого слова
+			if replacement, ok := replacements[globalWordIdx]; ok {
+				bestWord = replacement
 			}
 
 			newWords = append(newWords, bestWord)
 			newTextParts = append(newTextParts, bestWord.Text)
+			globalWordIdx++
 		}
 
 		result[i].Words = newWords
@@ -532,10 +649,33 @@ func minInt64(a, b int64) int64 {
 }
 
 // applyHotwords применяет словарь подсказок для исправления слов
-// Ищет в результатах обеих моделей слова похожие на hotwords и заменяет
+// ВАЖНО: Это post-processing подход, который работает ТОЛЬКО для явных опечаток
+// Для настоящего contextual biasing нужна интеграция на уровне декодирования (как в sherpa-onnx)
+//
+// Два режима работы:
+//  1. Короткие hotwords (< 4 символов): ТОЛЬКО точное совпадение (без учёта регистра)
+//     Это безопасно для аббревиатур типа "МТС", "API", "ВТБ"
+//  2. Длинные hotwords (>= 4 символов): fuzzy matching со строгими критериями
+//     - Длины слов должны отличаться не более чем на 30%
+//     - Первые 2 символа должны совпадать (для слов < 8 символов)
+//     - Расстояние Левенштейна должно быть <= 15% от длины hotword
+//     - Нормализованное сходство >= 0.7
 func (h *HybridTranscriber) applyHotwords(merged, primary, secondary []TranscriptSegment) []TranscriptSegment {
 	if len(h.config.Hotwords) == 0 {
 		return merged
+	}
+
+	// Разделяем hotwords на короткие (точное совпадение) и длинные (fuzzy matching)
+	var shortHotwords []string // < 4 символов - только точное совпадение
+	var longHotwords []string  // >= 4 символов - fuzzy matching
+	for _, hw := range h.config.Hotwords {
+		hwLen := len([]rune(hw))
+		if hwLen < 4 {
+			shortHotwords = append(shortHotwords, hw)
+			log.Printf("[HybridTranscriber] Hotword '%s' (len=%d): exact match only", hw, hwLen)
+		} else {
+			longHotwords = append(longHotwords, hw)
+		}
 	}
 
 	// Собираем все слова из обеих моделей для поиска лучших вариантов
@@ -561,24 +701,40 @@ func (h *HybridTranscriber) applyHotwords(merged, primary, secondary []Transcrip
 	// Для каждого hotword ищем похожие слова в результатах
 	replacements := make(map[string]string) // lowercase -> правильное написание
 
-	for _, hotword := range h.config.Hotwords {
+	// 1. Обрабатываем короткие hotwords - ТОЛЬКО точное совпадение
+	for _, hotword := range shortHotwords {
 		hotwordLower := strings.ToLower(hotword)
-		hotwordLen := len([]rune(hotwordLower)) // Длина в символах (для Unicode)
+		// Проверяем есть ли точное совпадение в словах
+		if allWords[hotwordLower] {
+			// Слово уже есть в правильном написании - ничего не делаем
+			continue
+		}
+		// Для коротких hotwords НЕ делаем fuzzy matching - слишком опасно
+		// Они будут работать только через initial_prompt в Whisper
+	}
+
+	// 2. Обрабатываем длинные hotwords - fuzzy matching со строгими критериями
+	for _, hotword := range longHotwords {
+		hotwordLower := strings.ToLower(hotword)
+		hotwordRunes := []rune(hotwordLower)
+		hotwordLen := len(hotwordRunes)
 
 		for word := range allWords {
-			wordLen := len([]rune(word))
+			wordRunes := []rune(word)
+			wordLen := len(wordRunes)
 
-			// Пропускаем слишком короткие слова (< 3 символов) - они слишком часто ложно срабатывают
-			if wordLen < 3 {
+			// Критерий 1: Минимальная длина слова >= 4 символа
+			// Короткие слова ("с", "то", "что", "мы") слишком часто ложно срабатывают
+			if wordLen < 4 {
 				continue
 			}
 
-			// Пропускаем если длины слишком разные (> 50% разницы)
+			// Критерий 2: Длины должны быть похожи (разница <= 30%)
 			lenDiff := hotwordLen - wordLen
 			if lenDiff < 0 {
 				lenDiff = -lenDiff
 			}
-			maxLenDiff := hotwordLen / 2
+			maxLenDiff := hotwordLen * 30 / 100
 			if maxLenDiff < 1 {
 				maxLenDiff = 1
 			}
@@ -586,38 +742,41 @@ func (h *HybridTranscriber) applyHotwords(merged, primary, secondary []Transcrip
 				continue
 			}
 
-			// Проверяем похожесть (расстояние Левенштейна)
-			dist := levenshteinDistance(word, hotwordLower)
-
-			// Вычисляем максимально допустимое расстояние:
-			// - Для коротких слов (<=4 символов): только dist=1 (опечатка в 1 символ)
-			// - Для средних слов (5-8 символов): до 20% длины, минимум 1
-			// - Для длинных слов (>8 символов): до 25% длины
-			var maxDist int
-			if hotwordLen <= 4 {
-				maxDist = 1 // Для коротких hotwords очень строго
-			} else if hotwordLen <= 8 {
-				maxDist = hotwordLen * 2 / 10 // 20%
-				if maxDist < 1 {
-					maxDist = 1
+			// Критерий 3: Первые 2 символа должны совпадать (для слов < 8 символов)
+			// Это отсекает большинство случайных совпадений
+			if hotwordLen < 8 && wordLen >= 2 && len(hotwordRunes) >= 2 {
+				if wordRunes[0] != hotwordRunes[0] || wordRunes[1] != hotwordRunes[1] {
+					continue
 				}
-			} else {
-				maxDist = hotwordLen * 25 / 100 // 25%
 			}
 
-			// Дополнительная проверка: первый символ должен совпадать для коротких слов
-			if hotwordLen <= 5 && len(word) > 0 && len(hotwordLower) > 0 {
-				wordRunes := []rune(word)
-				hotwordRunes := []rune(hotwordLower)
-				if wordRunes[0] != hotwordRunes[0] {
-					continue // Первые буквы разные - скорее всего не то слово
-				}
+			// Критерий 4: Расстояние Левенштейна
+			dist := levenshteinDistance(word, hotwordLower)
+
+			// Максимальное расстояние: 15% от длины hotword, минимум 1, максимум 2
+			maxDist := hotwordLen * 15 / 100
+			if maxDist < 1 {
+				maxDist = 1
+			}
+			if maxDist > 2 {
+				maxDist = 2 // Никогда не допускаем больше 2 ошибок
+			}
+
+			// Критерий 5: Нормализованное сходство >= 0.7
+			maxLen := hotwordLen
+			if wordLen > maxLen {
+				maxLen = wordLen
+			}
+			similarity := 1.0 - float64(dist)/float64(maxLen)
+			if similarity < 0.7 {
+				continue
 			}
 
 			if dist <= maxDist && dist > 0 {
 				// Слово похоже на hotword - запоминаем замену
 				replacements[word] = hotword
-				log.Printf("[HybridTranscriber] Hotword match: '%s' -> '%s' (dist=%d, maxDist=%d)", word, hotword, dist, maxDist)
+				log.Printf("[HybridTranscriber] Hotword fuzzy match: '%s' -> '%s' (dist=%d, maxDist=%d, similarity=%.2f)",
+					word, hotword, dist, maxDist, similarity)
 			}
 		}
 	}
@@ -702,6 +861,72 @@ func abs64(x int64) int64 {
 		return -x
 	}
 	return x
+}
+
+// areWordsSimilar проверяет семантическое сходство двух слов
+// Используется для предотвращения замены несвязанных слов при merge по времени
+// Возвращает true если:
+// - Слова идентичны (без учёта регистра)
+// - Слова отличаются только пунктуацией (нам vs нам.)
+// - Расстояние Левенштейна <= 30% от длины более длинного слова
+// - Одно слово является частью другого (для составных слов, минимум 4 символа)
+func areWordsSimilar(word1, word2 string) bool {
+	// Нормализуем слова: lowercase, убираем пунктуацию
+	norm1 := normalizeWordForComparison(word1)
+	norm2 := normalizeWordForComparison(word2)
+
+	// Точное совпадение после нормализации
+	if norm1 == norm2 {
+		return true
+	}
+
+	// Пустые слова не похожи
+	if norm1 == "" || norm2 == "" {
+		return false
+	}
+
+	// Определяем длины
+	len1 := len([]rune(norm1))
+	len2 := len([]rune(norm2))
+	maxLen := len1
+	if len2 > maxLen {
+		maxLen = len2
+	}
+	minLen := len1
+	if len2 < minLen {
+		minLen = len2
+	}
+
+	// Если длины сильно отличаются (более чем в 2 раза) - не похожи
+	// Это отсекает случаи типа "а" vs "абракадабра"
+	if maxLen > minLen*2 {
+		return false
+	}
+
+	// Проверяем, является ли одно слово частью другого
+	// Например: "EPI-адаптера" содержит "адаптера"
+	// НО: только если короткое слово >= 4 символов (чтобы избежать "а" в "абракадабра")
+	if minLen >= 4 {
+		if strings.Contains(norm1, norm2) || strings.Contains(norm2, norm1) {
+			return true
+		}
+	}
+
+	// Вычисляем расстояние Левенштейна
+	dist := levenshteinDistance(norm1, norm2)
+
+	// Допустимое расстояние: 30% от длины более длинного слова, минимум 1
+	maxDist := maxLen * 30 / 100
+	if maxDist < 1 {
+		maxDist = 1
+	}
+
+	// Для коротких слов (< 4 символов) требуем более строгое совпадение
+	if maxLen < 4 {
+		maxDist = 1
+	}
+
+	return dist <= maxDist
 }
 
 // transcribeFullCompare транскрибирует обеими моделями и сравнивает результаты через LLM
@@ -1373,9 +1598,22 @@ func normalizeWordForComparison(word string) string {
 }
 
 // matchesHotword проверяет совпадение слова с hotword (fuzzy matching)
+// Использует строгие критерии для избежания ложных срабатываний:
+// - Минимальная длина слова и hotword >= 4 символа
+// - Первые 2 символа должны совпадать
+// - Расстояние Левенштейна <= 15% длины, максимум 2
+// - Нормализованное сходство >= 0.75
 func matchesHotword(word string, hotwords []string) (bool, string) {
 	wordNorm := normalizeWordForComparison(word)
 	if wordNorm == "" {
+		return false, ""
+	}
+
+	wordRunes := []rune(wordNorm)
+	wordLen := len(wordRunes)
+
+	// Слишком короткие слова не проверяем - высокий риск ложных срабатываний
+	if wordLen < 4 {
 		return false, ""
 	}
 
@@ -1385,18 +1623,55 @@ func matchesHotword(word string, hotwords []string) (bool, string) {
 			continue
 		}
 
+		hwRunes := []rune(hwNorm)
+		hwLen := len(hwRunes)
+
+		// Слишком короткие hotwords пропускаем
+		if hwLen < 4 {
+			continue
+		}
+
 		// Точное совпадение
 		if wordNorm == hwNorm {
 			return true, hw
 		}
 
-		// Fuzzy matching (расстояние Левенштейна ≤ 20% длины hotword)
+		// Проверка длин: разница не более 30%
+		lenDiff := hwLen - wordLen
+		if lenDiff < 0 {
+			lenDiff = -lenDiff
+		}
+		if lenDiff > hwLen*30/100 {
+			continue
+		}
+
+		// Первые 2 символа должны совпадать (для слов < 8 символов)
+		if hwLen < 8 && wordLen >= 2 && hwLen >= 2 {
+			if wordRunes[0] != hwRunes[0] || wordRunes[1] != hwRunes[1] {
+				continue
+			}
+		}
+
+		// Fuzzy matching с строгими критериями
 		dist := levenshteinDistance(wordNorm, hwNorm)
-		maxDist := len(hwNorm) / 5
+
+		// Максимальное расстояние: 15% от длины hotword, минимум 1, максимум 2
+		maxDist := hwLen * 15 / 100
 		if maxDist < 1 {
 			maxDist = 1
 		}
-		if dist <= maxDist && dist > 0 {
+		if maxDist > 2 {
+			maxDist = 2
+		}
+
+		// Нормализованное сходство должно быть >= 0.75
+		maxLen := hwLen
+		if wordLen > maxLen {
+			maxLen = wordLen
+		}
+		similarity := 1.0 - float64(dist)/float64(maxLen)
+
+		if dist <= maxDist && dist > 0 && similarity >= 0.75 {
 			return true, hw
 		}
 	}

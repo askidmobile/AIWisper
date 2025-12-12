@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.39.2] - 2025-12-13
+
+### Fixed
+- **Diarization Auto-Enable Race Condition**: Fixed error "Не выбрана модель транскрипции" on app startup
+  - **Problem**: Diarization tried to auto-enable before transcription model was loaded
+  - **Root Cause**: `useEffect` for auto-enabling diarization only waited for WebSocket connection, not for `activeModelId` to be set
+  - **Solution**: Added `activeModelId` check to diarization auto-enable conditions
+  - Now diarization waits for both connection AND active model before enabling
+
+### Technical
+- `frontend/src/App.tsx`:
+  - Added `if (!activeModelId) return;` check in diarization auto-enable useEffect
+  - Added `activeModelId` to useEffect dependencies
+
+## [1.38.0] - 2025-12-12
+
+### Fixed
+- **Hybrid Transcription Word Merge Bug**: Fixed critical bug where unrelated words were incorrectly replaced during parallel model merge
+  - **Problem**: `mergeWordsByTime()` matched words only by timestamp proximity (300ms tolerance), ignoring semantic similarity
+  - **Example**: "MNP-реализации" was replaced with "без", "мы" with "не", producing garbage text: "для без не без неё не сделаем"
+  - **Root Cause**: Temporal alignment alone is insufficient - different models segment audio differently
+  - **Solution**: Added `areWordsSimilar()` function that validates semantic similarity before replacement:
+    - Exact match after normalization (case-insensitive, punctuation-stripped)
+    - One word contains the other (for compound words)
+    - Levenshtein distance ≤30% of longer word length
+    - Length ratio check (words must not differ by more than 2x)
+  - Reduced tolerance from 300ms to 200ms for tighter temporal matching
+
+- **Confidence Calibration in Model Selection**: Applied calibration factors when comparing average confidence between models
+  - **Problem**: GigaAM (CTC) systematically inflates confidence by ~25%, causing unfair comparison with Whisper
+  - **Example**: GigaAM 0.97 vs Whisper 0.95 → GigaAM selected, but calibrated: 0.73 vs 0.95 → Whisper should win
+  - **Solution**: Now applies `getCalibrationFactor()` before comparing average confidence in `mergeByConfidence()`
+  - GigaAM: ×0.75, Whisper/Parakeet: ×1.0 (based on NVIDIA research on CTC confidence calibration)
+
+### Technical
+- `backend/ai/hybrid_transcription.go`:
+  - Added `areWordsSimilar()` function with multi-criteria similarity check
+  - Modified `mergeWordsByTime()` to skip non-similar word pairs
+  - Modified `mergeByConfidence()` to use calibrated confidence for model selection
+  - Reduced word alignment tolerance from 300ms to 200ms
+
+## [1.37.0] - 2025-12-12
+
+### Fixed
+- **Hotword Matching False Positives**: Fixed critical bug where short Russian words were incorrectly replaced with hotwords
+  - **Problem**: Words like "с", "то", "что", "мы", "это" were being replaced with "МТС" due to permissive Levenshtein distance threshold
+  - **Example**: "Я это знаю" → "Я эМТС знаю" (catastrophic false positive)
+  - **Solution**: Implemented two-tier hotword system:
+    - **Short hotwords (< 4 chars)**: Only exact match, no fuzzy matching (safe for "МТС", "API", "ВТБ")
+    - **Long hotwords (≥ 4 chars)**: Fuzzy matching with strict criteria:
+      - Minimum word length 4 characters
+      - Length difference ≤30%
+      - First 2 characters must match
+      - Levenshtein distance ≤15% of length (max 2)
+      - Similarity score ≥0.7
+  - Short hotwords still work via Whisper's `initial_prompt` contextual biasing
+
+### Technical
+- `backend/ai/hybrid_transcription.go`:
+  - Refactored `applyHotwords()` with two-tier matching logic
+  - Refactored `matchesHotword()` with strict validation criteria
+- `backend/ai/whisper.go`:
+  - Added hotwords support via `initial_prompt` parameter
+  - Format: `"Термины: МТС, API, Kubernetes."`
+- `backend/ai/voting_test.go`:
+  - Updated `TestVoteByHotwords` to use only long hotwords
+  - Added `TestMatchesHotwordNoFalsePositives` - validates 34 short Russian words don't match hotwords
+  - Added `TestMatchesHotwordValidMatches` - validates fuzzy matching works for long terms
+
 ## [1.36.0] - 2025-12-12
 
 ### Added

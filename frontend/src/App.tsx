@@ -8,6 +8,7 @@ import HelpModal from './components/HelpModal';
 import AudioMeterSidebar from './components/AudioMeterSidebar';
 import WaveformDisplay from './components/WaveformDisplay';
 import SpeakersTab from './components/modules/SpeakersTab';
+import SessionStats from './components/modules/SessionStats';
 import { ModelState, AppSettings, OllamaModel, HybridTranscriptionSettings } from './types/models';
 import { SessionSpeaker } from './types/voiceprint';
 import { WaveformData, computeWaveform } from './utils/waveform';
@@ -103,7 +104,7 @@ const SPEAKER_COLORS = ['#2196f3', '#e91e63', '#ff9800', '#9c27b0', '#00bcd4', '
 
 // Определение имени и цвета спикера
 const getSpeakerInfo = (speaker?: string): { name: string; color: string } => {
-    if (speaker === 'mic') {
+    if (speaker === 'mic' || speaker === 'Вы') {
         return { name: 'Вы', color: '#4caf50' };
     } else if (speaker?.startsWith('Speaker ')) {
         // Speaker 0 -> Собеседник 1
@@ -259,7 +260,8 @@ function App() {
 
     // Audio player
     const audioRef = useRef<HTMLAudioElement | null>(null);
-    const [playingAudio, setPlayingAudio] = useState<string | null>(null);
+    const [playingAudio, setPlayingAudio] = useState<string | null>(null); // URL текущего аудио
+    const [isAudioPlaying, setIsAudioPlaying] = useState(false); // Реальное состояние воспроизведения (play/pause)
     const [playbackTime, setPlaybackTime] = useState(0);
     const [playbackDuration, setPlaybackDuration] = useState(0);
     const [playbackOffset, setPlaybackOffset] = useState(0);
@@ -360,7 +362,25 @@ function App() {
     const [isImporting, setIsImporting] = useState(false);
     const [importProgress, setImportProgress] = useState<string | null>(null);
 
+    // Search state
+    const [searchQuery, setSearchQuery] = useState('');
+    const [searchResults, setSearchResults] = useState<Array<{
+        id: string;
+        startTime: string;
+        status: string;
+        totalDuration: number;
+        chunksCount: number;
+        title?: string;
+        matchedText?: string;
+        matchContext?: string;
+    }> | null>(null);
+    const [isSearching, setIsSearching] = useState(false);
+    const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
     const transcriptionRef = useRef<HTMLDivElement | null>(null);
+    const dialogueContainerRef = useRef<HTMLDivElement | null>(null);
+    const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+    const [autoScrollToPlayback, setAutoScrollToPlayback] = useState(true);
 
     // Refs для доступа к актуальным значениям в callbacks
     const modelsRef = useRef(models);
@@ -489,8 +509,23 @@ function App() {
         setSpectrogramStatus('loading');
         setSpectrogramError(null);
 
-        const loadSpectrogram = async () => {
+        const loadWaveform = async () => {
             try {
+                // 1. Сначала пробуем загрузить из кеша
+                const cacheResp = await fetch(`${API_BASE}/api/waveform/${targetId}`);
+                if (cacheResp.ok && cacheResp.status !== 204) {
+                    const cachedWaveform = await cacheResp.json();
+                    if (!cancelled && cachedWaveform) {
+                        console.log('[Waveform] Loaded from cache');
+                        setWaveformData(cachedWaveform);
+                        spectrogramSessionIdRef.current = targetId;
+                        setSpectrogramStatus('ready');
+                        return;
+                    }
+                }
+
+                // 2. Кеша нет - вычисляем из аудио
+                console.log('[Waveform] Computing from audio...');
                 const url = `${API_BASE}/api/sessions/${targetId}/full.mp3`;
                 const resp = await fetch(url);
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -510,6 +545,17 @@ function App() {
                     setWaveformData(waveform);
                     spectrogramSessionIdRef.current = targetId;
                     setSpectrogramStatus('ready');
+
+                    // 3. Сохраняем в кеш (асинхронно, не блокируем UI)
+                    fetch(`${API_BASE}/api/waveform/${targetId}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(waveform),
+                    }).then(() => {
+                        console.log('[Waveform] Saved to cache');
+                    }).catch(err => {
+                        console.warn('[Waveform] Failed to save cache:', err);
+                    });
                 }
             } catch (err) {
                 if (cancelled) return;
@@ -521,7 +567,7 @@ function App() {
             }
         };
 
-        loadSpectrogram();
+        loadWaveform();
 
         return () => { cancelled = true; };
     }, [spectrogramTargetSessionId]);
@@ -1010,6 +1056,26 @@ function App() {
                             addLog(`Speaker renamed: ${msg.newName}`);
                             break;
 
+                        case 'session_renamed':
+                            // Обновляем название сессии в selectedSession
+                            setSelectedSession(prev => {
+                                if (!prev || prev.id !== msg.sessionId) return prev;
+                                return { ...prev, title: msg.data };
+                            });
+                            // Также обновляем в списке сессий
+                            setSessions(prev => prev.map(s =>
+                                s.id === msg.sessionId
+                                    ? { ...s, title: msg.data }
+                                    : s
+                            ));
+                            addLog(`Session renamed: ${msg.data}`);
+                            break;
+
+                        case 'search_results':
+                            setIsSearching(false);
+                            setSearchResults(msg.searchResults || []);
+                            break;
+
                         case 'voiceprint_saved':
                             addLog(`Voiceprint saved: ${msg.name} (${msg.voiceprintId?.substring(0, 8)}...)`);
                             break;
@@ -1051,6 +1117,8 @@ function App() {
         if (!savedDiarizationEnabled) return;
         if (diarizationAutoEnableAttempted.current) return;
         if (status !== 'Connected') return;
+        // Ждём загрузки модели транскрипции - диаризация требует активную модель
+        if (!activeModelId) return;
 
         // FluidAudio (coreml) не требует моделей - модели скачиваются автоматически
         if (savedDiarizationProvider === 'coreml') {
@@ -1116,7 +1184,7 @@ function App() {
             embeddingModelPath: embModel.path,
             diarizationProvider: savedDiarizationProvider
         }));
-    }, [settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider, models, status, addLog]);
+    }, [settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider, models, status, activeModelId, addLog]);
 
     const handleStartStop = () => {
         const ws = wsRef.current;
@@ -1499,6 +1567,42 @@ function App() {
         addLog('Обновление списка сессий...');
     }, [addLog]);
 
+    // Поиск сессий с debounce
+    const handleSearch = useCallback((query: string) => {
+        setSearchQuery(query);
+        
+        // Очищаем предыдущий таймаут
+        if (searchTimeoutRef.current) {
+            clearTimeout(searchTimeoutRef.current);
+        }
+
+        // Если запрос пустой, сбрасываем результаты
+        if (!query.trim()) {
+            setSearchResults(null);
+            setIsSearching(false);
+            return;
+        }
+
+        // Debounce: отправляем запрос через 300ms после последнего ввода
+        setIsSearching(true);
+        searchTimeoutRef.current = setTimeout(() => {
+            wsRef.current?.send(JSON.stringify({
+                type: 'search_sessions',
+                searchQuery: query.trim()
+            }));
+        }, 300);
+    }, []);
+
+    // Очистка поиска
+    const clearSearch = useCallback(() => {
+        setSearchQuery('');
+        setSearchResults(null);
+        setIsSearching(false);
+        if (searchTimeoutRef.current) {
+            clearTimeout(searchTimeoutRef.current);
+        }
+    }, []);
+
     // Воспроизведение аудио
     const playAudio = (url: string) => {
         const audioEl = audioRef.current;
@@ -1700,6 +1804,7 @@ function App() {
 
     const handleAudioEnded = () => {
         setPlayingAudio(null);
+        setIsAudioPlaying(false);
         setPlaybackMicLevel(0);
         setPlaybackSysLevel(0);
         lastPlaybackTimeRef.current = 0;
@@ -2283,10 +2388,14 @@ function App() {
             },
             'toggle-playback': () => {
                 if (!isRecording && selectedSession) {
-                    if (playingAudio) {
+                    if (playingAudio && isAudioPlaying) {
+                        // Пауза
                         audioRef.current?.pause();
-                        setPlayingAudio(null);
+                    } else if (playingAudio && !isAudioPlaying) {
+                        // Продолжить воспроизведение
+                        audioRef.current?.play();
                     } else {
+                        // Начать воспроизведение
                         playFullRecording(selectedSession.id);
                     }
                 }
@@ -2305,7 +2414,7 @@ function App() {
             });
         };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isRecording, status, selectedSession, playingAudio, handleStartStop, handleCopyToClipboard, handleFullRetranscribe, handleGenerateSummary, playFullRecording]);
+    }, [isRecording, status, selectedSession, playingAudio, isAudioPlaying, handleStartStop, handleCopyToClipboard, handleFullRetranscribe, handleGenerateSummary, playFullRecording]);
 
     // Горячие клавиши
     useEffect(() => {
@@ -2332,10 +2441,14 @@ function App() {
             // Space - Play/Pause (только если не записываем)
             if (e.code === 'Space' && !isRecording && selectedSession) {
                 e.preventDefault();
-                if (playingAudio) {
+                if (playingAudio && isAudioPlaying) {
+                    // Пауза - не сбрасываем playingAudio, только ставим на паузу
                     audioRef.current?.pause();
-                    setPlayingAudio(null);
+                } else if (playingAudio && !isAudioPlaying) {
+                    // Продолжить воспроизведение с текущей позиции
+                    audioRef.current?.play();
                 } else {
+                    // Начать воспроизведение
                     playFullRecording(selectedSession.id);
                 }
                 return;
@@ -2510,10 +2623,69 @@ function App() {
         // Mic и Sys сегменты могут идти вперемешку по времени, нужно упорядочить
         .sort((a, b) => a.start - b.start);
 
+    // Вычисляем текущий сегмент по времени воспроизведения
+    const currentTimeMs = playbackTime * 1000; // секунды -> миллисекунды
+    const currentSegmentIndex = useMemo(() => {
+        if (!isAudioPlaying || allDialogue.length === 0) return -1;
+        
+        // Ищем сегмент, в который попадает текущее время
+        for (let i = 0; i < allDialogue.length; i++) {
+            const seg = allDialogue[i];
+            if (currentTimeMs >= seg.start && currentTimeMs < seg.end) {
+                return i;
+            }
+            // Если между сегментами - показываем предыдущий
+            if (i < allDialogue.length - 1 && currentTimeMs >= seg.end && currentTimeMs < allDialogue[i + 1].start) {
+                return i;
+            }
+        }
+        // Если после последнего сегмента
+        if (allDialogue.length > 0 && currentTimeMs >= allDialogue[allDialogue.length - 1].start) {
+            return allDialogue.length - 1;
+        }
+        return -1;
+    }, [currentTimeMs, isAudioPlaying, allDialogue]);
+
+    // Автоскролл к текущему сегменту при воспроизведении
+    useEffect(() => {
+        if (!isAudioPlaying || !autoScrollToPlayback || currentSegmentIndex < 0) return;
+        
+        const segmentEl = segmentRefs.current.get(currentSegmentIndex);
+        if (segmentEl && transcriptionRef.current) {
+            const container = transcriptionRef.current;
+            const segmentRect = segmentEl.getBoundingClientRect();
+            const containerRect = container.getBoundingClientRect();
+            
+            // Скроллим только если сегмент вне видимой области
+            const isVisible = segmentRect.top >= containerRect.top && segmentRect.bottom <= containerRect.bottom;
+            if (!isVisible) {
+                segmentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    }, [currentSegmentIndex, isAudioPlaying, autoScrollToPlayback]);
+
+    // Сохраняем ref для сегмента
+    const setSegmentRef = useCallback((idx: number, el: HTMLDivElement | null) => {
+        if (el) {
+            segmentRefs.current.set(idx, el);
+        } else {
+            segmentRefs.current.delete(idx);
+        }
+    }, []);
+
+    // Обработчик клика по сегменту для перемотки
+    const handleSegmentClick = useCallback((segmentStart: number) => {
+        const el = audioRef.current;
+        if (!el) return;
+        const timeInSeconds = segmentStart / 1000;
+        el.currentTime = timeInSeconds;
+        setPlaybackTime(timeInSeconds);
+    }, []);
+
     return (
         <div 
             className="app-frame" 
-            style={{ display: 'flex', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)', position: 'relative' }}
+            style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)', position: 'relative' }}
             onDragOver={handleDragOver}
             onDragEnter={handleDragEnter}
             onDragLeave={handleDragLeave}
@@ -2556,6 +2728,8 @@ function App() {
                 ref={audioRef}
                 crossOrigin="anonymous"
                 onEnded={handleAudioEnded}
+                onPlay={() => setIsAudioPlaying(true)}
+                onPause={() => setIsAudioPlaying(false)}
                 onTimeUpdate={(e) => {
                     const t = (e.target as HTMLAudioElement).currentTime;
                     lastPlaybackTimeRef.current = t;
@@ -2565,12 +2739,17 @@ function App() {
                 style={{ display: 'none' }}
             />
 
+            {/* Main content wrapper - contains sidebars and content */}
+            <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+
             {/* Left Sidebar - Sessions List - Liquid Glass Style */}
             <aside
                 className="glass-surface-elevated"
                 style={{
                     position: 'relative', // For recording overlay positioning
-                    width: '300px',
+                    width: '260px',
+                    minWidth: '260px',
+                    flexShrink: 0,
                     margin: 'var(--spacing-inset)',
                     marginRight: 0,
                     borderRadius: 'var(--radius-xl)',
@@ -2644,8 +2823,87 @@ function App() {
                     </div>
                 </div>
 
+                {/* Search Field */}
+                <div style={{ padding: '0 1rem 0.75rem' }}>
+                    <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="var(--text-muted)"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            style={{
+                                position: 'absolute',
+                                left: '0.75rem',
+                                pointerEvents: 'none',
+                                opacity: 0.6,
+                            }}
+                        >
+                            <circle cx="11" cy="11" r="8"/>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        <input
+                            type="text"
+                            placeholder="Поиск записей..."
+                            value={searchQuery}
+                            onChange={(e) => handleSearch(e.target.value)}
+                            style={{
+                                width: '100%',
+                                padding: '0.5rem 2rem 0.5rem 2.25rem',
+                                borderRadius: 'var(--radius-md)',
+                                border: '1px solid var(--glass-border-subtle)',
+                                background: 'var(--surface-alpha)',
+                                color: 'var(--text-primary)',
+                                fontSize: '0.85rem',
+                                outline: 'none',
+                                transition: 'border-color 0.2s, box-shadow 0.2s',
+                            }}
+                            onFocus={(e) => {
+                                e.target.style.borderColor = 'var(--primary)';
+                                e.target.style.boxShadow = '0 0 0 2px var(--primary-alpha)';
+                            }}
+                            onBlur={(e) => {
+                                e.target.style.borderColor = 'var(--glass-border-subtle)';
+                                e.target.style.boxShadow = 'none';
+                            }}
+                        />
+                        {searchQuery && (
+                            <button
+                                onClick={clearSearch}
+                                style={{
+                                    position: 'absolute',
+                                    right: '0.5rem',
+                                    padding: '0.25rem',
+                                    background: 'transparent',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    color: 'var(--text-muted)',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    borderRadius: '50%',
+                                }}
+                                title="Очистить поиск"
+                            >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18"/>
+                                    <line x1="6" y1="6" x2="18" y2="18"/>
+                                </svg>
+                            </button>
+                        )}
+                    </div>
+                    {searchQuery && (
+                        <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                            {isSearching ? 'Поиск...' : searchResults ? `Найдено: ${searchResults.length}` : ''}
+                        </div>
+                    )}
+                </div>
+
                 {/* Stats Panel */}
-                {showSessionStats && sessions.length > 0 && (
+                {showSessionStats && sessions.length > 0 && !searchQuery && (
                     <div
                         style={{
                             padding: '0.75rem 1rem',
@@ -2748,7 +3006,90 @@ function App() {
                     className="scroll-soft-edges"
                     style={{ flex: 1, overflowY: 'auto', paddingBottom: '1rem' }}
                 >
-                    {sessions.length === 0 ? (
+                    {/* Показываем результаты поиска если есть запрос */}
+                    {searchQuery && searchResults !== null ? (
+                        searchResults.length === 0 ? (
+                            <div style={{
+                                padding: '2rem 1rem',
+                                color: 'var(--text-muted)',
+                                textAlign: 'center',
+                                fontSize: '0.9rem',
+                            }}>
+                                Ничего не найдено
+                            </div>
+                        ) : (
+                            <div>
+                                {searchResults.map((s) => {
+                                    const isSelected = selectedSession?.id === s.id;
+                                    const durationSec = s.totalDuration / 1000;
+
+                                    return (
+                                        <div
+                                            key={s.id}
+                                            className={`session-item ${isSelected ? 'selected' : ''}`}
+                                            onClick={() => {
+                                                handleViewSession(s.id);
+                                                clearSearch();
+                                            }}
+                                        >
+                                            {/* Title */}
+                                            <div style={{
+                                                fontSize: '0.95rem',
+                                                fontWeight: 'var(--font-weight-semibold)',
+                                                color: 'var(--text-primary)',
+                                                marginBottom: '0.35rem',
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap',
+                                            }}>
+                                                {s.title || `Запись ${formatDateUtil(s.startTime)}`}
+                                            </div>
+
+                                            {/* Match Context - показываем где найдено */}
+                                            {s.matchContext && (
+                                                <div style={{
+                                                    fontSize: '0.8rem',
+                                                    color: 'var(--text-secondary)',
+                                                    marginBottom: '0.35rem',
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                    fontStyle: 'italic',
+                                                    background: 'rgba(139, 92, 246, 0.1)',
+                                                    padding: '0.25rem 0.5rem',
+                                                    borderRadius: '4px',
+                                                }}>
+                                                    "{s.matchContext}"
+                                                </div>
+                                            )}
+
+                                            {/* Meta Info */}
+                                            <div style={{
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '0.5rem',
+                                                fontSize: '0.8rem',
+                                                color: 'var(--text-muted)',
+                                            }}>
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ opacity: 0.6 }}>
+                                                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                                                    <line x1="16" y1="2" x2="16" y2="6"/>
+                                                    <line x1="8" y1="2" x2="8" y2="6"/>
+                                                    <line x1="3" y1="10" x2="21" y2="10"/>
+                                                </svg>
+                                                <span>{formatDateUtil(s.startTime)}, {formatTimeUtil(s.startTime)}</span>
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ opacity: 0.6 }}>
+                                                    <circle cx="12" cy="12" r="10"/>
+                                                    <polyline points="12 6 12 12 16 14"/>
+                                                </svg>
+                                                <span>{formatDurationUtil(durationSec)}</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )
+                    ) : sessions.length === 0 ? (
                         <div style={{
                             padding: '2rem 1rem',
                             color: 'var(--text-muted)',
@@ -2930,7 +3271,7 @@ function App() {
             </aside>
 
             {/* Main Content */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
                 {/* Header - Minimal Liquid Glass Style */}
                 <header
                     style={{
@@ -3197,13 +3538,24 @@ function App() {
                                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '0.75rem' }}>
                                         {/* Big Play Button */}
                                         <button
-                                            onClick={() => playFullRecording(selectedSession.id)}
-                                            title={playingAudio?.includes(selectedSession.id) ? 'Остановить (Space)' : 'Слушать запись (Space)'}
+                                            onClick={() => {
+                                                if (playingAudio?.includes(selectedSession.id) && isAudioPlaying) {
+                                                    // Пауза
+                                                    audioRef.current?.pause();
+                                                } else if (playingAudio?.includes(selectedSession.id) && !isAudioPlaying) {
+                                                    // Продолжить воспроизведение
+                                                    audioRef.current?.play();
+                                                } else {
+                                                    // Начать воспроизведение
+                                                    playFullRecording(selectedSession.id);
+                                                }
+                                            }}
+                                            title={playingAudio?.includes(selectedSession.id) && isAudioPlaying ? 'Пауза (Space)' : 'Слушать запись (Space)'}
                                             style={{
                                                 width: '56px',
                                                 height: '56px',
                                                 padding: 0,
-                                                background: playingAudio?.includes(selectedSession.id)
+                                                background: playingAudio?.includes(selectedSession.id) && isAudioPlaying
                                                     ? 'linear-gradient(135deg, #f44336, #e91e63)'
                                                     : 'linear-gradient(135deg, #6c5ce7, #a29bfe)',
                                                 color: '#fff',
@@ -3213,7 +3565,7 @@ function App() {
                                                 display: 'flex',
                                                 alignItems: 'center',
                                                 justifyContent: 'center',
-                                                boxShadow: playingAudio?.includes(selectedSession.id)
+                                                boxShadow: playingAudio?.includes(selectedSession.id) && isAudioPlaying
                                                     ? '0 4px 20px rgba(244, 67, 54, 0.4)'
                                                     : '0 4px 20px rgba(108, 92, 231, 0.4)',
                                                 transition: 'all 0.3s ease',
@@ -3223,7 +3575,7 @@ function App() {
                                             onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.08)'; }}
                                             onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)'; }}
                                         >
-                                            {playingAudio?.includes(selectedSession.id) ? (
+                                            {playingAudio?.includes(selectedSession.id) && isAudioPlaying ? (
                                                 <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
                                                     <rect x="6" y="5" width="4" height="14" rx="1" />
                                                     <rect x="14" y="5" width="4" height="14" rx="1" />
@@ -3748,7 +4100,14 @@ function App() {
                     )}
 
                     {/* Scrollable Content Area */}
-                    <div ref={transcriptionRef} style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto', overflowX: 'hidden', minWidth: 0 }}>
+                    <div 
+                        ref={transcriptionRef} 
+                        style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto', overflowX: 'hidden', minWidth: 0 }}
+                        onScroll={() => {
+                            // Отключаем автоскролл при ручной прокрутке во время воспроизведения
+                            if (isAudioPlaying) setAutoScrollToPlayback(false);
+                        }}
+                    >
                         {chunks.length === 0 && !isRecording && !selectedSession ? (
                             /* Welcome Screen - Modern Onboarding */
                             <div style={{ 
@@ -3995,15 +4354,41 @@ function App() {
                                     <>
                                         {/* Full dialogue with timestamps */}
                                         {allDialogue.length > 0 ? (
-                                            <div style={{
-                                                marginBottom: '1.5rem',
-                                                padding: '1rem',
-                                                backgroundColor: 'var(--surface)',
-                                                borderRadius: '8px',
-                                                lineHeight: '1.9',
-                                                fontSize: '0.95rem'
-                                            }}>
-                                                <h4 style={{ margin: '0 0 1rem 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
+                                            <div 
+                                                ref={dialogueContainerRef}
+                                                style={{
+                                                    marginBottom: '1.5rem',
+                                                    padding: '1rem',
+                                                    backgroundColor: 'var(--surface)',
+                                                    borderRadius: '8px',
+                                                    lineHeight: '1.9',
+                                                    fontSize: '0.95rem',
+                                                    position: 'relative',
+                                                    wordWrap: 'break-word',
+                                                    overflowWrap: 'break-word'
+                                                }}
+                                            >
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                                                    <h4 style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
+                                                    {isAudioPlaying && (
+                                                        <button
+                                                            onClick={() => setAutoScrollToPlayback(!autoScrollToPlayback)}
+                                                            style={{
+                                                                padding: '4px 8px',
+                                                                fontSize: '0.75rem',
+                                                                backgroundColor: autoScrollToPlayback ? 'var(--primary)' : 'transparent',
+                                                                color: autoScrollToPlayback ? 'white' : 'var(--text-muted)',
+                                                                border: '1px solid var(--border)',
+                                                                borderRadius: '4px',
+                                                                cursor: 'pointer',
+                                                                transition: 'all 0.2s'
+                                                            }}
+                                                            title={autoScrollToPlayback ? 'Автоскролл включён' : 'Автоскролл выключен'}
+                                                        >
+                                                            {autoScrollToPlayback ? '📍 Следить' : '📍 Не следить'}
+                                                        </button>
+                                                    )}
+                                                </div>
                                                 {allDialogue.map((seg, idx) => {
                                                     const { name: speakerName, color: speakerColor } = getSpeakerDisplayName(seg.speaker);
                                                     const totalMs = seg.start;
@@ -4011,18 +4396,46 @@ function App() {
                                                     const secs = Math.floor((totalMs % 60000) / 1000);
                                                     const ms = Math.floor((totalMs % 1000) / 100); // десятые доли секунды
                                                     const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
+                                                    const isCurrentSegment = idx === currentSegmentIndex;
 
                                                     // Книжный формат: [00:05.4] Вы: Текст реплики
                                                     return (
-                                                        <div key={idx} style={{
-                                                            marginBottom: '0.5rem',
-                                                            paddingLeft: '0.5rem',
-                                                            borderLeft: `3px solid ${speakerColor}`
-                                                        }}>
+                                                        <div 
+                                                            key={idx} 
+                                                            ref={(el) => setSegmentRef(idx, el)}
+                                                            onClick={() => handleSegmentClick(seg.start)}
+                                                            style={{
+                                                                marginBottom: '0.5rem',
+                                                                paddingLeft: '0.5rem',
+                                                                paddingRight: '0.5rem',
+                                                                paddingTop: '0.25rem',
+                                                                paddingBottom: '0.25rem',
+                                                                borderLeft: `3px solid ${isCurrentSegment ? 'var(--primary)' : speakerColor}`,
+                                                                backgroundColor: isCurrentSegment ? 'rgba(138, 43, 226, 0.15)' : 'transparent',
+                                                                borderRadius: isCurrentSegment ? '0 4px 4px 0' : '0',
+                                                                transition: 'all 0.2s ease',
+                                                                cursor: 'pointer',
+                                                                position: 'relative'
+                                                            }}
+                                                        >
+                                                            {/* Индикатор текущего сегмента */}
+                                                            {isCurrentSegment && (
+                                                                <div style={{
+                                                                    position: 'absolute',
+                                                                    left: '-3px',
+                                                                    top: 0,
+                                                                    bottom: 0,
+                                                                    width: '3px',
+                                                                    backgroundColor: 'var(--primary)',
+                                                                    boxShadow: '0 0 8px var(--primary)',
+                                                                    animation: 'pulse 1.5s ease-in-out infinite'
+                                                                }} />
+                                                            )}
                                                             <span style={{
-                                                                color: 'var(--text-muted)',
+                                                                color: isCurrentSegment ? 'var(--primary)' : 'var(--text-muted)',
                                                                 fontSize: '0.8rem',
-                                                                fontFamily: 'monospace'
+                                                                fontFamily: 'monospace',
+                                                                fontWeight: isCurrentSegment ? 'bold' : 'normal'
                                                             }}>
                                                                 [{timeStr}]
                                                             </span>
@@ -4034,7 +4447,7 @@ function App() {
                                                                 {speakerName}:
                                                             </span>
                                                             {' '}
-                                                            <span style={{ color: 'var(--text-primary)' }}>
+                                                            <span style={{ color: 'var(--text-primary)', wordBreak: 'break-word' }}>
                                                                 {seg.text}
                                                             </span>
                                                         </div>
@@ -4273,78 +4686,90 @@ function App() {
                                         ollamaModel={ollamaModel}
                                     />
                                 )}
+
+                                {/* Tab: Stats */}
+                                {activeTab === 'stats' && displaySession && (
+                                    <SessionStats
+                                        dialogue={allDialogue}
+                                        totalDuration={displaySession.totalDuration / 1000000}
+                                    />
+                                )}
                             </>
                         )}
                     </div>
                 </main>
-
-                {/* Console - сворачиваемая */}
-                <footer style={{
-                    height: consoleExpanded ? '150px' : '32px',
-                    borderTop: '1px solid #333',
-                    backgroundColor: '#0a0a14',
-                    transition: 'height 0.2s ease-out',
-                    overflow: 'hidden'
-                }}>
-                    <div
-                        onClick={() => setConsoleExpanded(!consoleExpanded)}
-                        style={{
-                            padding: '0.3rem 1rem',
-                            backgroundColor: '#12121f',
-                            fontSize: '0.75rem',
-                            color: '#666',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'space-between',
-                            userSelect: 'none'
-                        }}
-                    >
-                        <span>
-                            {consoleExpanded ? '▼' : '▶'} Console
-                            {!consoleExpanded && logs.length > 0 && (
-                                <span style={{ marginLeft: '0.5rem', color: '#444' }}>
-                                    — {logs[0]?.substring(0, 50)}{logs[0]?.length > 50 ? '...' : ''}
-                                </span>
-                            )}
-                        </span>
-                        <span style={{ fontSize: '0.65rem', color: '#444' }}>{logs.length} записей</span>
-                    </div>
-                    {consoleExpanded && (
-                        <div style={{ padding: '0.5rem 1rem', overflowY: 'auto', height: 'calc(100% - 28px)', fontSize: '0.7rem', fontFamily: 'monospace' }}>
-                            {logs.map((log, i) => <div key={i} style={{ color: '#555' }}>{log}</div>)}
-                        </div>
-                    )}
-                </footer>
             </div>
+            {/* End of Main Content div */}
 
-            {/* CSS for pulse animation */}
-            <style>{`
-                @keyframes pulse {
-                    0%, 100% { opacity: 1; }
-                    50% { opacity: 0.5; }
-                }
-                @keyframes highlight-pulse {
-                    0% { background-color: #12121f; }
-                    50% { background-color: #2a4a3a; }
-                    100% { background-color: #1a3a2a; }
-                }
-                @keyframes transcribing-pulse {
-                    0%, 100% { background-color: #2a2a1a; }
-                    50% { background-color: #3a3a2a; }
-                }
-                @keyframes spin {
-                    from { transform: rotate(0deg); }
-                    to { transform: rotate(360deg); }
-                }
-            `}</style>
+                {/* CSS for pulse animation */}
+                <style>{`
+                    @keyframes pulse {
+                        0%, 100% { opacity: 1; }
+                        50% { opacity: 0.5; }
+                    }
+                    @keyframes highlight-pulse {
+                        0% { background-color: #12121f; }
+                        50% { background-color: #2a4a3a; }
+                        100% { background-color: #1a3a2a; }
+                    }
+                    @keyframes transcribing-pulse {
+                        0%, 100% { background-color: #2a2a1a; }
+                        50% { background-color: #3a3a2a; }
+                    }
+                    @keyframes spin {
+                        from { transform: rotate(0deg); }
+                        to { transform: rotate(360deg); }
+                    }
+                `}</style>
 
-            {/* Right Sidebar - Audio Meters */}
-            <AudioMeterSidebar
-                micLevel={playingAudio ? playbackMicLevel : micLevel}
-                sysLevel={playingAudio ? playbackSysLevel : systemLevel}
-                isActive={isRecording || !!playingAudio}
-            />
+                {/* Right Sidebar - Audio Meters */}
+                <AudioMeterSidebar
+                    micLevel={playingAudio ? playbackMicLevel : micLevel}
+                    sysLevel={playingAudio ? playbackSysLevel : systemLevel}
+                    isActive={isRecording || !!playingAudio}
+                />
+            </div>
+            {/* End of main content wrapper */}
+
+            {/* Console - на всю ширину внизу */}
+            <footer style={{
+                height: consoleExpanded ? '150px' : '32px',
+                borderTop: '1px solid #333',
+                backgroundColor: '#0a0a14',
+                transition: 'height 0.2s ease-out',
+                overflow: 'hidden',
+                flexShrink: 0
+            }}>
+                <div
+                    onClick={() => setConsoleExpanded(!consoleExpanded)}
+                    style={{
+                        padding: '0.3rem 1rem',
+                        backgroundColor: '#12121f',
+                        fontSize: '0.75rem',
+                        color: '#666',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        userSelect: 'none'
+                    }}
+                >
+                    <span>
+                        {consoleExpanded ? '▼' : '▶'} Console
+                        {!consoleExpanded && logs.length > 0 && (
+                            <span style={{ marginLeft: '0.5rem', color: '#444' }}>
+                                — {logs[0]?.substring(0, 50)}{logs[0]?.length > 50 ? '...' : ''}
+                            </span>
+                        )}
+                    </span>
+                    <span style={{ fontSize: '0.65rem', color: '#444' }}>{logs.length} записей</span>
+                </div>
+                {consoleExpanded && (
+                    <div style={{ padding: '0.5rem 1rem', overflowY: 'auto', height: 'calc(100% - 28px)', fontSize: '0.7rem', fontFamily: 'monospace' }}>
+                        {logs.map((log, i) => <div key={i} style={{ color: '#555' }}>{log}</div>)}
+                    </div>
+                )}
+            </footer>
 
             {/* Model Manager Modal */}
             {showModelManager && (

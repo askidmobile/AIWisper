@@ -130,8 +130,16 @@ func (e *WhisperEngine) TranscribeWithSegments(samples []float32) ([]TranscriptS
 	// Включаем таймстемпы токенов для точных временных меток
 	ctx.SetTokenTimestamps(true)
 
-	// Пустой начальный промпт для предотвращения зацикливания
-	ctx.SetInitialPrompt("")
+	// Используем hotwords в initial prompt если они заданы
+	// Это помогает Whisper лучше распознавать специфические термины
+	if len(e.hotwords) > 0 {
+		prompt := "Термины: " + strings.Join(e.hotwords, ", ") + "."
+		ctx.SetInitialPrompt(prompt)
+		log.Printf("TranscribeWithSegments: using hotwords prompt: %s", prompt)
+	} else {
+		// Пустой начальный промпт для предотвращения зацикливания
+		ctx.SetInitialPrompt("")
+	}
 
 	log.Printf("TranscribeWithSegments: samples=%d duration=%.1fs lang=%s", len(samples), float64(len(samples))/16000, e.language)
 

@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { Session } from '../../types/session';
+import { useExport } from '../../hooks/useExport';
 
 interface SessionControlsProps {
     session: Session;
@@ -25,6 +26,10 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
     const timelineRef = useRef<HTMLDivElement>(null);
     const [hoverTime, setHoverTime] = useState<number | null>(null);
     const [playbackSpeed, setPlaybackSpeed] = useState(1);
+    const [showExportMenu, setShowExportMenu] = useState(false);
+    const [copySuccess, setCopySuccess] = useState(false);
+    
+    const { copyToClipboard, exportTXT, exportSRT, exportVTT, exportJSON, exportMarkdown } = useExport();
 
     const handleTimelineClick = (e: React.MouseEvent) => {
         if (!timelineRef.current || duration === 0) return;
@@ -414,6 +419,203 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                     </svg>
                     Улучшить
                 </button>
+                
+                {/* Export Menu */}
+                <div style={{ position: 'relative' }}>
+                    <button
+                        className="btn-capsule"
+                        onClick={() => setShowExportMenu(!showExportMenu)}
+                        title="Экспорт"
+                        style={{
+                            gap: '0.4rem',
+                        }}
+                    >
+                        <svg
+                            width="14"
+                            height="14"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                        >
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                            <polyline points="7 10 12 15 17 10" />
+                            <line x1="12" y1="15" x2="12" y2="3" />
+                        </svg>
+                        Экспорт
+                    </button>
+                    
+                    {showExportMenu && (
+                        <>
+                            {/* Backdrop */}
+                            <div
+                                style={{
+                                    position: 'fixed',
+                                    inset: 0,
+                                    zIndex: 99,
+                                }}
+                                onClick={() => setShowExportMenu(false)}
+                            />
+                            
+                            {/* Menu */}
+                            <div
+                                style={{
+                                    position: 'absolute',
+                                    bottom: 'calc(100% + 8px)',
+                                    right: 0,
+                                    background: 'var(--surface-elevated)',
+                                    borderRadius: 'var(--radius-lg)',
+                                    border: '1px solid var(--glass-border)',
+                                    boxShadow: 'var(--shadow-lg)',
+                                    padding: '0.5rem',
+                                    minWidth: '180px',
+                                    zIndex: 100,
+                                }}
+                            >
+                                <button
+                                    onClick={async () => {
+                                        const success = await copyToClipboard(session);
+                                        if (success) {
+                                            setCopySuccess(true);
+                                            setTimeout(() => setCopySuccess(false), 2000);
+                                        }
+                                        setShowExportMenu(false);
+                                    }}
+                                    style={{
+                                        width: '100%',
+                                        padding: '0.5rem 0.75rem',
+                                        background: 'transparent',
+                                        border: 'none',
+                                        borderRadius: 'var(--radius-md)',
+                                        color: 'var(--text-primary)',
+                                        fontSize: '0.85rem',
+                                        textAlign: 'left',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.5rem',
+                                    }}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                >
+                                    📋 {copySuccess ? 'Скопировано!' : 'Копировать текст'}
+                                </button>
+                                
+                                <div style={{ height: '1px', background: 'var(--glass-border-subtle)', margin: '0.25rem 0' }} />
+                                
+                                <button
+                                    onClick={() => { exportTXT(session); setShowExportMenu(false); }}
+                                    style={{
+                                        width: '100%',
+                                        padding: '0.5rem 0.75rem',
+                                        background: 'transparent',
+                                        border: 'none',
+                                        borderRadius: 'var(--radius-md)',
+                                        color: 'var(--text-primary)',
+                                        fontSize: '0.85rem',
+                                        textAlign: 'left',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.5rem',
+                                    }}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                >
+                                    📄 Текст (.txt)
+                                </button>
+                                
+                                <button
+                                    onClick={() => { exportSRT(session); setShowExportMenu(false); }}
+                                    style={{
+                                        width: '100%',
+                                        padding: '0.5rem 0.75rem',
+                                        background: 'transparent',
+                                        border: 'none',
+                                        borderRadius: 'var(--radius-md)',
+                                        color: 'var(--text-primary)',
+                                        fontSize: '0.85rem',
+                                        textAlign: 'left',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.5rem',
+                                    }}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                >
+                                    🎬 Субтитры (.srt)
+                                </button>
+                                
+                                <button
+                                    onClick={() => { exportVTT(session); setShowExportMenu(false); }}
+                                    style={{
+                                        width: '100%',
+                                        padding: '0.5rem 0.75rem',
+                                        background: 'transparent',
+                                        border: 'none',
+                                        borderRadius: 'var(--radius-md)',
+                                        color: 'var(--text-primary)',
+                                        fontSize: '0.85rem',
+                                        textAlign: 'left',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.5rem',
+                                    }}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                >
+                                    🌐 WebVTT (.vtt)
+                                </button>
+                                
+                                <button
+                                    onClick={() => { exportJSON(session); setShowExportMenu(false); }}
+                                    style={{
+                                        width: '100%',
+                                        padding: '0.5rem 0.75rem',
+                                        background: 'transparent',
+                                        border: 'none',
+                                        borderRadius: 'var(--radius-md)',
+                                        color: 'var(--text-primary)',
+                                        fontSize: '0.85rem',
+                                        textAlign: 'left',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.5rem',
+                                    }}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                >
+                                    📊 JSON (.json)
+                                </button>
+                                
+                                <button
+                                    onClick={() => { exportMarkdown(session); setShowExportMenu(false); }}
+                                    style={{
+                                        width: '100%',
+                                        padding: '0.5rem 0.75rem',
+                                        background: 'transparent',
+                                        border: 'none',
+                                        borderRadius: 'var(--radius-md)',
+                                        color: 'var(--text-primary)',
+                                        fontSize: '0.85rem',
+                                        textAlign: 'left',
+                                        cursor: 'pointer',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        gap: '0.5rem',
+                                    }}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                                >
+                                    📝 Markdown (.md)
+                                </button>
+                            </div>
+                        </>
+                    )}
+                </div>
             </div>
         </div>
     );

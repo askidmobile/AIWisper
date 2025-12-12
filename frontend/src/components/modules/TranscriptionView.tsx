@@ -8,6 +8,225 @@ import { SessionStats } from './SessionStats';
 import { TranscriptSegment, TranscriptWord } from '../../types/session';
 import { SessionSpeaker } from '../../types/voiceprint';
 
+// Компонент горизонтальной линии индикатора воспроизведения
+// Линия плавно движется по тексту диалога, показывая текущую позицию воспроизведения
+const PlaybackProgressLine: React.FC<{
+    currentTimeMs: number;
+    segments: TranscriptSegment[];
+    dialogueContainerRef: React.RefObject<HTMLDivElement | null>;
+    segmentRefs: React.MutableRefObject<Map<number, HTMLDivElement>>;
+}> = ({ currentTimeMs, segments, dialogueContainerRef, segmentRefs }) => {
+    const [lineTop, setLineTop] = useState<number | null>(null);
+    
+    useEffect(() => {
+        if (!dialogueContainerRef.current || segments.length === 0) {
+            setLineTop(null);
+            return;
+        }
+        
+        const container = dialogueContainerRef.current;
+        
+        // Если время до первого сегмента
+        if (segments.length > 0 && currentTimeMs < segments[0].start) {
+            const firstEl = segmentRefs.current.get(0);
+            if (firstEl) {
+                const rect = firstEl.getBoundingClientRect();
+                const containerRect = container.getBoundingClientRect();
+                setLineTop(rect.top - containerRect.top - 4);
+            }
+            return;
+        }
+        
+        // Ищем позицию линии
+        for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            const segEl = segmentRefs.current.get(i);
+            
+            if (!segEl) continue;
+            
+            const rect = segEl.getBoundingClientRect();
+            const containerRect = container.getBoundingClientRect();
+            const segTop = rect.top - containerRect.top;
+            const segHeight = rect.height;
+            
+            // Время внутри сегмента - вычисляем позицию пропорционально
+            if (currentTimeMs >= seg.start && currentTimeMs <= seg.end) {
+                const duration = seg.end - seg.start;
+                const progress = duration > 0 ? (currentTimeMs - seg.start) / duration : 0;
+                setLineTop(segTop + (segHeight * progress));
+                return;
+            }
+            
+            // Время между сегментами
+            if (i < segments.length - 1) {
+                const nextSeg = segments[i + 1];
+                if (currentTimeMs > seg.end && currentTimeMs < nextSeg.start) {
+                    // Интерполируем между концом текущего и началом следующего
+                    const nextEl = segmentRefs.current.get(i + 1);
+                    if (nextEl) {
+                        const nextRect = nextEl.getBoundingClientRect();
+                        const nextTop = nextRect.top - containerRect.top;
+                        const gapStart = segTop + segHeight;
+                        const gapEnd = nextTop;
+                        const gapDuration = nextSeg.start - seg.end;
+                        const gapProgress = gapDuration > 0 ? (currentTimeMs - seg.end) / gapDuration : 0;
+                        setLineTop(gapStart + (gapEnd - gapStart) * gapProgress);
+                    } else {
+                        setLineTop(segTop + segHeight + 4);
+                    }
+                    return;
+                }
+            }
+        }
+        
+        // После последнего сегмента
+        const lastIdx = segments.length - 1;
+        const lastSeg = segments[lastIdx];
+        if (currentTimeMs >= lastSeg.end) {
+            const lastEl = segmentRefs.current.get(lastIdx);
+            if (lastEl) {
+                const rect = lastEl.getBoundingClientRect();
+                const containerRect = container.getBoundingClientRect();
+                setLineTop(rect.top - containerRect.top + rect.height + 2);
+            }
+        }
+    }, [currentTimeMs, segments, dialogueContainerRef, segmentRefs]);
+    
+    if (lineTop === null) return null;
+    
+    return (
+        <div
+            style={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                top: lineTop,
+                height: '2px',
+                background: 'linear-gradient(90deg, var(--primary) 0%, var(--primary) 80%, transparent 100%)',
+                boxShadow: '0 0 8px var(--primary), 0 0 4px var(--primary)',
+                zIndex: 50,
+                pointerEvents: 'none',
+                transition: 'top 0.15s linear',
+            }}
+        />
+    );
+};
+
+// Компонент индикатора позиции на скроллбаре (точка справа)
+// Показывает где находится текущая позиция воспроизведения относительно всего контента
+const ScrollbarPositionIndicator: React.FC<{
+    currentTimeMs: number;
+    segments: TranscriptSegment[];
+    scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+    dialogueContainerRef: React.RefObject<HTMLDivElement | null>;
+    segmentRefs: React.MutableRefObject<Map<number, HTMLDivElement>>;
+    onClickScrollToPlayback: () => void;
+}> = ({ currentTimeMs, segments, scrollContainerRef, dialogueContainerRef, segmentRefs, onClickScrollToPlayback }) => {
+    const [indicator, setIndicator] = useState<{ top: number; visible: boolean; isOutOfView: boolean }>({ 
+        top: 0, 
+        visible: false, 
+        isOutOfView: false 
+    });
+    
+    useEffect(() => {
+        const scrollContainer = scrollContainerRef.current;
+        const dialogueContainer = dialogueContainerRef.current;
+        
+        if (!scrollContainer || !dialogueContainer || segments.length === 0) {
+            setIndicator({ top: 0, visible: false, isOutOfView: false });
+            return;
+        }
+        
+        // Находим абсолютную позицию линии в контенте
+        let contentPosition: number | null = null;
+        const dialogueRect = dialogueContainer.getBoundingClientRect();
+        const scrollRect = scrollContainer.getBoundingClientRect();
+        const dialogueOffsetInScroll = dialogueRect.top - scrollRect.top + scrollContainer.scrollTop;
+        
+        for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            const segEl = segmentRefs.current.get(i);
+            
+            if (!segEl) continue;
+            
+            const rect = segEl.getBoundingClientRect();
+            const segTopInDialogue = rect.top - dialogueRect.top;
+            const segTopInScroll = dialogueOffsetInScroll + segTopInDialogue;
+            const segHeight = rect.height;
+            
+            if (currentTimeMs >= seg.start && currentTimeMs <= seg.end) {
+                const duration = seg.end - seg.start;
+                const progress = duration > 0 ? (currentTimeMs - seg.start) / duration : 0;
+                contentPosition = segTopInScroll + (segHeight * progress);
+                break;
+            }
+            
+            if (i < segments.length - 1) {
+                const nextSeg = segments[i + 1];
+                if (currentTimeMs > seg.end && currentTimeMs < nextSeg.start) {
+                    contentPosition = segTopInScroll + segHeight;
+                    break;
+                }
+            }
+            
+            if (i === segments.length - 1 && currentTimeMs >= seg.start) {
+                const duration = seg.end - seg.start;
+                const progress = duration > 0 ? Math.min(1, (currentTimeMs - seg.start) / duration) : 1;
+                contentPosition = segTopInScroll + (segHeight * progress);
+            }
+        }
+        
+        if (contentPosition === null) {
+            setIndicator({ top: 0, visible: false, isOutOfView: false });
+            return;
+        }
+        
+        // Вычисляем позицию точки на скроллбаре
+        const scrollHeight = scrollContainer.scrollHeight;
+        const clientHeight = scrollContainer.clientHeight;
+        const scrollTop = scrollContainer.scrollTop;
+        
+        // Позиция точки пропорционально высоте контейнера
+        const indicatorPercent = contentPosition / scrollHeight;
+        const indicatorTop = indicatorPercent * clientHeight;
+        
+        // Проверяем, видна ли линия на экране
+        const isOutOfView = contentPosition < scrollTop || contentPosition > scrollTop + clientHeight - 20;
+        
+        setIndicator({ 
+            top: Math.max(8, Math.min(clientHeight - 8, indicatorTop)), 
+            visible: true, 
+            isOutOfView 
+        });
+    }, [currentTimeMs, segments, scrollContainerRef, dialogueContainerRef, segmentRefs]);
+    
+    if (!indicator.visible) return null;
+    
+    return (
+        <div
+            onClick={onClickScrollToPlayback}
+            style={{
+                position: 'absolute',
+                right: '4px',
+                top: indicator.top,
+                width: indicator.isOutOfView ? '10px' : '6px',
+                height: indicator.isOutOfView ? '10px' : '6px',
+                borderRadius: '50%',
+                backgroundColor: 'var(--primary)',
+                boxShadow: indicator.isOutOfView 
+                    ? '0 0 10px var(--primary), 0 0 20px var(--primary)' 
+                    : '0 0 4px var(--primary)',
+                zIndex: 100,
+                cursor: 'pointer',
+                transform: 'translateY(-50%)',
+                transition: 'top 0.15s linear, width 0.2s ease, height 0.2s ease, box-shadow 0.2s ease',
+                animation: indicator.isOutOfView ? 'pulse 1.5s ease-in-out infinite' : 'none',
+            }}
+            title="Нажмите для перехода к текущей позиции воспроизведения"
+        />
+    );
+};
+
 // Компонент для отображения слова с визуализацией confidence
 const ConfidenceWord: React.FC<{ word: TranscriptWord; showConfidence: boolean }> = ({ word, showConfidence }) => {
     if (!showConfidence || !word.p || word.p >= 0.7) {
@@ -103,7 +322,8 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     const [showConfidence, setShowConfidence] = useState(false); // Показывать confidence слов
 
     // Refs
-    const transcriptionRef = useRef<HTMLDivElement>(null);
+    const transcriptionRef = useRef<HTMLDivElement>(null); // Scroll container
+    const dialogueContainerRef = useRef<HTMLDivElement>(null); // Dialogue content container
     const segmentRefs = useRef<Map<number, HTMLDivElement>>(new Map());
     const [highlightedChunkId, setHighlightedChunkId] = useState<string | null>(null);
     const [transcribingChunkId, setTranscribingChunkId] = useState<string | null>(null);
@@ -185,12 +405,6 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
         return -1;
     }, [currentTimeMs, isPlaying, allDialogue]);
 
-    // Вычисляем позицию индикатора на скроллбаре (0-100%)
-    const scrollbarIndicatorPosition = useMemo(() => {
-        if (allDialogue.length === 0 || duration <= 0) return 0;
-        return Math.min(100, Math.max(0, (currentTime / duration) * 100));
-    }, [currentTime, duration, allDialogue.length]);
-
     // Автоскролл к текущему сегменту при воспроизведении
     useEffect(() => {
         if (!isPlaying || !autoScrollToPlayback || currentSegmentIndex < 0) return;
@@ -265,7 +479,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
         }
 
         // Дефолтная логика если не нашли в sessionSpeakers
-        if (speaker === 'mic') {
+        if (speaker === 'mic' || speaker === 'Вы') {
             return { name: 'Вы', color: defaultColors.mic };
         }
         if (speaker === 'sys' || speaker === 'Собеседник') {
@@ -325,7 +539,13 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                         <SessionControls
                             session={displaySession}
                             isPlaying={isPlaying}
-                            onPlayPause={() => isPlaying ? onPauseSession() : onPlaySession(displaySession.id)}
+                            onPlayPause={() => {
+                                if (isPlaying) {
+                                    onPauseSession();
+                                } else {
+                                    onPlaySession(displaySession.id);
+                                }
+                            }}
                             onSeek={onSeek}
                             currentTime={currentTime}
                             duration={duration || displaySession.totalDuration / 1000} // Fallback to session duration
@@ -357,25 +577,15 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                     if (isPlaying) setAutoScrollToPlayback(false);
                 }}
             >
-                {/* Индикатор позиции воспроизведения на скроллбаре */}
-                {isPlaying && allDialogue.length > 0 && (
-                    <div 
-                        style={{
-                            position: 'fixed',
-                            right: '8px',
-                            top: `calc(${scrollbarIndicatorPosition}% + 100px)`, // +100px для header offset
-                            width: '6px',
-                            height: '20px',
-                            backgroundColor: 'var(--primary)',
-                            borderRadius: '3px',
-                            zIndex: 100,
-                            boxShadow: '0 0 8px var(--primary)',
-                            transition: 'top 0.1s linear',
-                            cursor: 'pointer',
-                            pointerEvents: 'auto'
-                        }}
-                        onClick={() => setAutoScrollToPlayback(true)}
-                        title="Нажмите для автоскролла к текущей позиции"
+                {/* Индикатор позиции воспроизведения на скроллбаре (точка справа) */}
+                {isPlaying && allDialogue.length > 0 && activeTab === 'dialogue' && (
+                    <ScrollbarPositionIndicator
+                        currentTimeMs={currentTimeMs}
+                        segments={allDialogue}
+                        scrollContainerRef={transcriptionRef}
+                        dialogueContainerRef={dialogueContainerRef}
+                        segmentRefs={segmentRefs}
+                        onClickScrollToPlayback={() => setAutoScrollToPlayback(true)}
                     />
                 )}
                 {/* Empty State - Welcome Screen */}
@@ -601,7 +811,27 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                         {activeTab === 'dialogue' && (
                             <>
                                 {allDialogue.length > 0 ? (
-                                    <div style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: 'var(--surface)', borderRadius: '8px', lineHeight: '1.9', fontSize: '0.95rem' }}>
+                                    <div 
+                                        ref={dialogueContainerRef}
+                                        style={{ 
+                                            marginBottom: '1.5rem', 
+                                            padding: '1rem', 
+                                            backgroundColor: 'var(--surface)', 
+                                            borderRadius: '8px', 
+                                            lineHeight: '1.9', 
+                                            fontSize: '0.95rem',
+                                            position: 'relative' // Для позиционирования линии воспроизведения
+                                        }}
+                                    >
+                                        {/* Горизонтальная линия индикатора воспроизведения */}
+                                        {isPlaying && (
+                                            <PlaybackProgressLine
+                                                currentTimeMs={currentTimeMs}
+                                                segments={allDialogue}
+                                                dialogueContainerRef={dialogueContainerRef}
+                                                segmentRefs={segmentRefs}
+                                            />
+                                        )}
                                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '8px' }}>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                                                 <h4 style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>

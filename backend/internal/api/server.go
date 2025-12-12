@@ -129,6 +129,7 @@ func (s *Server) Start() {
 
 	http.HandleFunc("/ws", s.handleWebSocket)
 	http.HandleFunc("/api/sessions/", s.handleSessionsAPI)
+	http.HandleFunc("/api/waveform/", s.handleWaveformAPI)
 	http.HandleFunc("/api/import", s.handleImportAudio)
 	http.HandleFunc("/api/export/batch", s.handleBatchExport)
 
@@ -414,6 +415,28 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			}
 		}
 		send(Message{Type: "sessions_list", Sessions: infos})
+
+	case "search_sessions":
+		params := session.SearchParams{
+			Query: msg.SearchQuery,
+		}
+		results, total := s.SessionMgr.SearchSessions(params)
+		searchResults := make([]SearchSessionInfo, len(results))
+		for i, r := range results {
+			searchResults[i] = SearchSessionInfo{
+				SessionInfo: SessionInfo{
+					ID:            r.Session.ID,
+					StartTime:     r.Session.StartTime,
+					Status:        string(r.Session.Status),
+					TotalDuration: int64(r.Session.TotalDuration / time.Millisecond),
+					ChunksCount:   len(r.Session.Chunks),
+					Title:         r.Session.Title,
+				},
+				MatchedText:  r.MatchedText,
+				MatchContext: r.MatchContext,
+			}
+		}
+		send(Message{Type: "search_results", SearchResults: searchResults, TotalCount: total})
 
 	case "start_session":
 		// Configure Engine Model first, then Language
@@ -1334,6 +1357,64 @@ func (s *Server) handleSessionsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.ServeFile(w, r, filePath)
+}
+
+// handleWaveformAPI обрабатывает GET/POST запросы для кешированных waveform данных
+// GET /api/waveform/{sessionId} - получить кешированный waveform
+// POST /api/waveform/{sessionId} - сохранить waveform в кеш
+func (s *Server) handleWaveformAPI(w http.ResponseWriter, r *http.Request) {
+	// CORS headers
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	path := r.URL.Path[len("/api/waveform/"):]
+	if len(path) < 36 {
+		http.NotFound(w, r)
+		return
+	}
+	sessionID := path[:36]
+
+	sess, err := s.SessionMgr.GetSession(sessionID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch r.Method {
+	case "GET":
+		// Возвращаем кешированный waveform если есть
+		if sess.Waveform == nil {
+			w.WriteHeader(http.StatusNoContent) // 204 - нет кеша
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(sess.Waveform)
+
+	case "POST":
+		// Сохраняем waveform в кеш
+		var waveform session.WaveformData
+		if err := json.NewDecoder(r.Body).Decode(&waveform); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		sess.Waveform = &waveform
+		// Сохраняем метаданные сессии на диск
+		if err := s.SessionMgr.SaveSessionMeta(sess); err != nil {
+			log.Printf("Failed to save waveform cache: %v", err)
+			http.Error(w, "Failed to save", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 // handleImportAudio обрабатывает загрузку аудио файла для транскрипции

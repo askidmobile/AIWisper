@@ -102,10 +102,24 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
             if (msg.session) setSelectedSession(msg.session);
         });
 
+        const unsubRenamed = subscribe('session_renamed', (msg) => {
+            // Обновляем название в selectedSession
+            setSelectedSession(prev => {
+                if (!prev || prev.id !== msg.sessionId) return prev;
+                return { ...prev, title: msg.data };
+            });
+            // Также обновляем в списке сессий
+            setSessions(prev => prev.map(s =>
+                s.id === msg.sessionId
+                    ? { ...s, title: msg.data }
+                    : s
+            ));
+        });
+
         return () => {
             unsubList(); unsubStarted(); unsubStopped(); unsubDetails();
             unsubChunkCreated(); unsubChunkTranscribed(); unsubAudioLevel();
-            unsubSummary(); unsubImprove();
+            unsubSummary(); unsubImprove(); unsubRenamed();
         };
     }, [subscribe, sendMessage]);
 

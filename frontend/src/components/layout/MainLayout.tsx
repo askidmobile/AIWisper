@@ -5,79 +5,71 @@ import { SettingsPanel } from '../modules/SettingsPanel';
 import { TranscriptionView } from '../modules/TranscriptionView';
 import { ConsoleFooter } from '../modules/ConsoleFooter';
 import { RecordingOverlay } from '../RecordingOverlay';
+import { HelpModal } from '../HelpModal';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
+import { useSettings } from '../../hooks/useSettings';
+import { useKeyboardShortcuts, createAppShortcuts } from '../../hooks/useKeyboardShortcuts';
+import { useDragDrop, dropOverlayStyles } from '../../hooks/useDragDrop';
+import { useExport } from '../../hooks/useExport';
 import { useSessionContext } from '../../context/SessionContext';
 import { useModelContext } from '../../context/ModelContext';
 import { useWebSocketContext } from '../../context/WebSocketContext';
 import ModelManager from '../ModelManager';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { AudioMeterBar } from '../common/AudioMeterBar';
-import { HybridTranscriptionSettings } from '../../types/models';
 
 interface MainLayoutProps {
-    theme: 'light' | 'dark';
-    toggleTheme: () => void;
-    language: string;
-    setLanguage: (lang: string) => void;
     logs: string[];
     addLog: (msg: string) => void;
 }
 
-export const MainLayout: React.FC<MainLayoutProps> = ({
-    theme, toggleTheme, language, logs, addLog
-}) => {
+export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
     const API_BASE = `http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}`;
-    const {
-        startSession, stopSession, isRecording, selectedSession
-    } = useSessionContext();
-    const {
-        activeModelId, models, fetchOllamaModels,
-        downloadModel, cancelDownload, deleteModel, setActiveModel
-    } = useModelContext();
+    
+    // Контексты
+    const { startSession, stopSession, isRecording, selectedSession } = useSessionContext();
+    const { activeModelId, models, fetchOllamaModels, downloadModel, cancelDownload, deleteModel, setActiveModel } = useModelContext();
     const { sendMessage, subscribe } = useWebSocketContext();
 
-    // Audio Player
-    const { play, playingUrl, seek, currentTime, duration } = useAudioPlayer();
+    // Хуки
+    const { play, pause, playingUrl, seek, currentTime, duration, isPlaying } = useAudioPlayer();
+    const {
+        settings,
+        isLoaded: settingsLoaded,
+        theme, toggleTheme,
+        language,
+        micDevice, setMicDevice,
+        captureSystem, setCaptureSystem,
+        useVoiceIsolation, setUseVoiceIsolation,
+        echoCancel, setEchoCancel,
+        ollamaModel, setOllamaModel,
+        enableStreaming, setEnableStreaming,
+        pauseThreshold, setPauseThreshold,
+        streamingChunkSeconds, setStreamingChunkSeconds,
+        streamingConfirmationThreshold, setStreamingConfirmationThreshold,
+        hybridTranscription, setHybridTranscription,
+    } = useSettings();
 
-    // Local Settings State
+    // UI State
     const [showSettings, setShowSettings] = useState(false);
-    const [micDevice, setMicDevice] = useState('default');
-    const [captureSystem, setCaptureSystem] = useState(true); // Enable system capture by default
-    const [useVoiceIsolation, setUseVoiceIsolation] = useState(false); // Default false for proper channel separation
-    const [echoCancel, setEchoCancel] = useState(0.5);
-    const [ollamaModel, setOllamaModel] = useState('');
-    const [enableStreaming, setEnableStreaming] = useState(false); // Streaming transcription
-    const [pauseThreshold, setPauseThreshold] = useState(0.5); // Pause threshold for segmentation (seconds)
-    const [streamingChunkSeconds, setStreamingChunkSeconds] = useState(15); // Streaming chunk size
-    const [streamingConfirmationThreshold, setStreamingConfirmationThreshold] = useState(0.85); // Streaming confirmation threshold
-    
-    // Гибридная транскрипция (двухпроходное распознавание)
-    const [hybridTranscription, setHybridTranscription] = useState<HybridTranscriptionSettings>({
-        enabled: false,
-        secondaryModelId: '',
-        confidenceThreshold: 0.7,
-        contextWords: 3,
-        useLLMForMerge: true,
-        mode: 'full_compare'
-    });
-
-    // Devices (fetched via navigator.mediaDevices usually, or Electron IPC)
-    const [inputDevices, setInputDevices] = useState<any[]>([]);
-
-    // Modal state
     const [showModelManager, setShowModelManager] = useState(false);
-
-    // Model loading state
+    const [showHelp, setShowHelp] = useState(false);
     const [modelLoading, setModelLoading] = useState(false);
     const [loadingModelName, setLoadingModelName] = useState('');
 
-    // Initial Device Fetch & Load Settings
+    // Devices
+    const [inputDevices, setInputDevices] = useState<Array<{ id: string; name: string; isInput: boolean; isOutput: boolean }>>([]);
+
+    // Fetch audio devices
     useEffect(() => {
         const getDevices = async () => {
             try {
                 const devs = await navigator.mediaDevices.enumerateDevices();
                 const inputs = devs.filter(d => d.kind === 'audioinput').map(d => ({
-                    id: d.deviceId, name: d.label || `Microphone ${d.deviceId}`, isInput: true
+                    id: d.deviceId,
+                    name: d.label || `Microphone ${d.deviceId}`,
+                    isInput: true,
+                    isOutput: false
                 }));
                 setInputDevices(inputs);
             } catch (e) {
@@ -85,36 +77,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
             }
         };
         getDevices();
-
-        // Load settings
-        try {
-            const saved = localStorage.getItem('aiwisper_settings');
-            if (saved) {
-                const p = JSON.parse(saved);
-                if (p.micDevice) setMicDevice(p.micDevice);
-                if (p.captureSystem !== undefined) setCaptureSystem(p.captureSystem);
-                if (p.useVoiceIsolation !== undefined) setUseVoiceIsolation(p.useVoiceIsolation);
-                if (p.echoCancel !== undefined) setEchoCancel(p.echoCancel);
-                if (p.ollamaModel) setOllamaModel(p.ollamaModel);
-                if (p.enableStreaming !== undefined) setEnableStreaming(p.enableStreaming);
-                if (p.pauseThreshold !== undefined) setPauseThreshold(p.pauseThreshold);
-                if (p.streamingChunkSeconds !== undefined) setStreamingChunkSeconds(p.streamingChunkSeconds);
-                if (p.streamingConfirmationThreshold !== undefined) setStreamingConfirmationThreshold(p.streamingConfirmationThreshold);
-                if (p.hybridTranscription) setHybridTranscription(p.hybridTranscription);
-            }
-        } catch (e) {
-            console.error("Failed to load settings", e);
-        }
     }, []);
-
-    // Save settings on change
-    useEffect(() => {
-        const settings = {
-            micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold,
-            streamingChunkSeconds, streamingConfirmationThreshold, hybridTranscription
-        };
-        localStorage.setItem('aiwisper_settings', JSON.stringify(settings));
-    }, [micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold, streamingChunkSeconds, streamingConfirmationThreshold, hybridTranscription]);
 
     // Subscribe to model loading events
     useEffect(() => {
@@ -143,8 +106,22 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
         };
     }, [subscribe, addLog]);
 
+    // Auto enable/disable streaming transcription
+    useEffect(() => {
+        if (isRecording && enableStreaming) {
+            sendMessage({ 
+                type: 'enable_streaming',
+                streamingChunkSeconds: streamingChunkSeconds,
+                streamingConfirmationThreshold: streamingConfirmationThreshold
+            });
+            addLog(`Streaming transcription enabled (chunk=${streamingChunkSeconds}s, threshold=${Math.round(streamingConfirmationThreshold * 100)}%)`);
+        } else if (!isRecording) {
+            sendMessage({ type: 'disable_streaming' });
+        }
+    }, [isRecording, enableStreaming, streamingChunkSeconds, streamingConfirmationThreshold, sendMessage, addLog]);
+
     // Start/Stop Handler
-    const handleStartStop = async () => {
+    const handleStartStop = useCallback(async () => {
         if (isRecording) {
             await stopSession();
             addLog('Recording stopped');
@@ -162,7 +139,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                     useVoiceIsolation: useVoiceIsolation,
                     echoCancel: echoCancel,
                     pauseThreshold: pauseThreshold,
-                    useNativeCapture: true, // Use SCK by default on macOS 12+
+                    useNativeCapture: true,
                     // Гибридная транскрипция
                     hybridEnabled: hybridTranscription.enabled,
                     hybridSecondaryModelId: hybridTranscription.secondaryModelId,
@@ -179,36 +156,28 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                 addLog(`Error starting session: ${e.message}`);
             }
         }
-    };
+    }, [isRecording, stopSession, startSession, activeModelId, language, micDevice, captureSystem, useVoiceIsolation, echoCancel, pauseThreshold, hybridTranscription, addLog]);
 
     // Playback Handlers
-    const handlePlayChunk = (url: string) => {
+    const handlePlayChunk = useCallback((url: string) => {
         play(url);
-    };
+    }, [play]);
 
-    const handlePlaySession = (sessionId: string) => {
-        // Assuming backend serves full recording at specific URL
-        // In App.tsx it was playFullRecording(id)
-        // Usually: /api/sessions/{id}/audio
-        const url = `${API_BASE}/api/sessions/${sessionId}/audio.mp3`;
-        // Note: Backend needs to support this. App.tsx logic was slightly custom.
-        // Let's assume standard URL or check App.tsx implementation.
-        // App.tsx uses `playFullRecording` which likely constructs the URL.
+    const handlePlaySession = useCallback((sessionId: string) => {
+        const url = `${API_BASE}/api/sessions/${sessionId}/full.mp3`;
         play(url);
-    };
+    }, [API_BASE, play]);
 
-    // Retranscribe all chunks in session
+    // Retranscribe all chunks
     const handleRetranscribeAll = useCallback(() => {
         if (!selectedSession) {
             addLog('No session selected for retranscription');
             return;
         }
 
-        // Get active model
         const activeModel = models.find(m => m.id === activeModelId);
         const modelId = activeModel?.id || activeModelId;
 
-        // Check model status
         const isModelReady = activeModel?.status === 'downloaded' || activeModel?.status === 'active';
         if (!isModelReady && activeModelId) {
             addLog(`Model not downloaded (status: ${activeModel?.status}). Open model manager to download.`);
@@ -227,33 +196,190 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
             sessionId: selectedSession.id,
             model: modelId,
             language: language,
-            diarizationEnabled: false // Can be made configurable later
+            diarizationEnabled: false
         });
         addLog(`Starting full retranscription with model: ${activeModel?.name || modelId}`);
     }, [selectedSession, models, activeModelId, language, sendMessage, addLog]);
 
-    // Derived
+    // Load Ollama models
+    const loadOllama = useCallback(() => {
+        fetchOllamaModels(settings.ollamaUrl);
+    }, [fetchOllamaModels, settings.ollamaUrl]);
+
     const settingsLocked = isRecording;
 
-    // Load Ollama models on focus
-    const loadOllama = () => fetchOllamaModels('http://localhost:11434');
+    // Export hook
+    const { copyToClipboard, exportTXT } = useExport();
 
-    // Auto enable/disable streaming transcription based on recording state and settings
-    useEffect(() => {
-        if (isRecording && enableStreaming) {
-            sendMessage({ 
-                type: 'enable_streaming',
-                streamingChunkSeconds: streamingChunkSeconds,
-                streamingConfirmationThreshold: streamingConfirmationThreshold
-            });
-            addLog(`Streaming transcription enabled (chunk=${streamingChunkSeconds}s, threshold=${Math.round(streamingConfirmationThreshold * 100)}%)`);
-        } else if (!isRecording) {
-            sendMessage({ type: 'disable_streaming' });
+    // Keyboard shortcuts
+    const handleTogglePlayPause = useCallback(() => {
+        if (selectedSession && !isRecording) {
+            if (isPlaying) {
+                pause();
+            } else {
+                handlePlaySession(selectedSession.id);
+            }
         }
-    }, [isRecording, enableStreaming, streamingChunkSeconds, streamingConfirmationThreshold, sendMessage, addLog]);
+    }, [selectedSession, isRecording, isPlaying, pause, handlePlaySession]);
+
+    const handleSeekForward = useCallback(() => {
+        if (!isRecording && duration > 0) {
+            seek(Math.min(currentTime + 10, duration));
+        }
+    }, [isRecording, duration, currentTime, seek]);
+
+    const handleSeekBackward = useCallback(() => {
+        if (!isRecording) {
+            seek(Math.max(currentTime - 10, 0));
+        }
+    }, [isRecording, currentTime, seek]);
+
+    const handleCopyTranscription = useCallback(async () => {
+        if (selectedSession) {
+            const success = await copyToClipboard(selectedSession);
+            if (success) {
+                addLog('Транскрипция скопирована в буфер обмена');
+            }
+        }
+    }, [selectedSession, copyToClipboard, addLog]);
+
+    const handleExportTXT = useCallback(() => {
+        if (selectedSession) {
+            exportTXT(selectedSession);
+            addLog('Экспорт в TXT завершён');
+        }
+    }, [selectedSession, exportTXT, addLog]);
+
+    useKeyboardShortcuts({
+        shortcuts: createAppShortcuts({
+            onStartStop: handleStartStop,
+            onPlayPause: handleTogglePlayPause,
+            onSeekForward: handleSeekForward,
+            onSeekBackward: handleSeekBackward,
+            onToggleSettings: () => setShowSettings(prev => !prev),
+            onCopyTranscription: handleCopyTranscription,
+            onExportTXT: handleExportTXT,
+            onShowHelp: () => setShowHelp(true),
+            isRecording,
+            isPlaying,
+        }),
+        enabled: !showHelp && !showModelManager, // Отключаем shortcuts когда открыты модальные окна
+    });
+
+    // Drag & Drop for file import
+    const handleFileDrop = useCallback(async (file: File) => {
+        addLog(`Импорт файла: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
+        
+        try {
+            const formData = new FormData();
+            formData.append('audio', file);
+            formData.append('model', activeModelId || '');
+            formData.append('language', language);
+            
+            const response = await fetch(`${API_BASE}/api/import`, {
+                method: 'POST',
+                body: formData,
+            });
+            
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(errorText || `HTTP ${response.status}`);
+            }
+            
+            const result = await response.json();
+            addLog(`Файл импортирован, сессия: ${result.sessionId || 'создана'}`);
+            addLog('Транскрипция запущена в фоновом режиме');
+        } catch (err: any) {
+            addLog(`Ошибка импорта: ${err.message}`);
+            throw err; // Re-throw для отображения ошибки в useDragDrop
+        }
+    }, [addLog, API_BASE, activeModelId, language]);
+
+    const { isDragging, isProcessing, dragHandlers } = useDragDrop({
+        onFileDrop: handleFileDrop,
+        enabled: !isRecording,
+    });
+
+    // Don't render until settings are loaded
+    if (!settingsLoaded) {
+        return (
+            <div style={{ 
+                display: 'flex', 
+                alignItems: 'center', 
+                justifyContent: 'center', 
+                height: '100vh',
+                background: 'var(--app-bg)',
+                color: 'var(--text-primary)'
+            }}>
+                <div style={{ textAlign: 'center' }}>
+                    <div style={{
+                        width: '40px',
+                        height: '40px',
+                        margin: '0 auto 1rem',
+                        border: '3px solid var(--glass-border)',
+                        borderTopColor: 'var(--primary)',
+                        borderRadius: '50%',
+                        animation: 'spin 1s linear infinite',
+                    }} />
+                    <div>Загрузка настроек...</div>
+                </div>
+            </div>
+        );
+    }
 
     return (
-        <div className="app-frame" style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)' }}>
+        <div 
+            className="app-frame" 
+            style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--app-bg)', color: 'var(--text-primary)' }}
+            {...dragHandlers}
+        >
+            {/* Drag & Drop Overlay */}
+            {isDragging && (
+                <div style={dropOverlayStyles.container}>
+                    <div style={dropOverlayStyles.content}>
+                        <div style={dropOverlayStyles.icon}>📁</div>
+                        <div style={dropOverlayStyles.title}>Перетащите аудиофайл сюда</div>
+                        <div style={dropOverlayStyles.subtitle}>MP3, WAV, M4A, OGG, FLAC</div>
+                    </div>
+                </div>
+            )}
+
+            {/* Import Processing Overlay */}
+            {isProcessing && (
+                <div style={{
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'rgba(0, 0, 0, 0.6)',
+                    backdropFilter: 'blur(8px)',
+                    zIndex: 200,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                }}>
+                    <div style={{
+                        background: 'var(--surface-elevated)',
+                        borderRadius: 'var(--radius-xl)',
+                        padding: '2rem 3rem',
+                        textAlign: 'center',
+                        boxShadow: 'var(--shadow-lg)',
+                        border: '1px solid var(--glass-border)',
+                    }}>
+                        <div style={{
+                            width: '48px',
+                            height: '48px',
+                            margin: '0 auto 1.5rem',
+                            border: '3px solid var(--glass-border)',
+                            borderTopColor: 'var(--primary)',
+                            borderRadius: '50%',
+                            animation: 'spin 1s linear infinite',
+                        }} />
+                        <div style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                            Импорт файла...
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Model Loading Overlay */}
             {modelLoading && (
                 <div
@@ -280,7 +406,6 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                             maxWidth: '400px',
                         }}
                     >
-                        {/* Spinner */}
                         <div
                             style={{
                                 width: '48px',
@@ -292,32 +417,13 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                                 animation: 'spin 1s linear infinite',
                             }}
                         />
-                        <div
-                            style={{
-                                fontSize: '1.1rem',
-                                fontWeight: 600,
-                                color: 'var(--text-primary)',
-                                marginBottom: '0.5rem',
-                            }}
-                        >
+                        <div style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.5rem' }}>
                             Загрузка модели
                         </div>
-                        <div
-                            style={{
-                                fontSize: '0.9rem',
-                                color: 'var(--text-muted)',
-                                marginBottom: '1rem',
-                            }}
-                        >
+                        <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
                             {loadingModelName}
                         </div>
-                        <div
-                            style={{
-                                fontSize: '0.8rem',
-                                color: 'var(--text-muted)',
-                                opacity: 0.7,
-                            }}
-                        >
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', opacity: 0.7 }}>
                             Первый запуск может занять до 30 секунд
                         </div>
                     </div>
@@ -331,90 +437,93 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                 }
             `}</style>
 
-            {/* Recording Overlay - shows when recording */}
+            {/* Recording Overlay */}
             <RecordingOverlay onStop={handleStartStop} />
             
             <div style={{ display: 'flex', flex: 1, overflow: 'hidden', marginTop: isRecording ? '48px' : 0, transition: 'margin-top 0.2s ease' }}>
-            <Sidebar
-                onStartRecording={handleStartStop}
-            />
+                <Sidebar onStartRecording={handleStartStop} />
 
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                <Header
-                    showSettings={showSettings}
-                    setShowSettings={setShowSettings}
-                />
-
-                {showSettings && (
-                    <SettingsPanel
-                        settingsLocked={settingsLocked}
-                        micDevice={micDevice} setMicDevice={setMicDevice}
-                        inputDevices={inputDevices}
-                        captureSystem={captureSystem} setCaptureSystem={setCaptureSystem}
-                        screenCaptureKitAvailable={true} // Hardcoded for now or detect via IPC
-                        useVoiceIsolation={useVoiceIsolation} setUseVoiceIsolation={setUseVoiceIsolation}
-                        echoCancel={echoCancel} setEchoCancel={setEchoCancel}
-                        ollamaModel={ollamaModel} setOllamaModel={setOllamaModel}
-                        loadOllamaModels={loadOllama}
-                        onShowModelManager={() => setShowModelManager(true)}
-                        enableStreaming={enableStreaming}
-                        setEnableStreaming={setEnableStreaming}
-                        pauseThreshold={pauseThreshold}
-                        setPauseThreshold={setPauseThreshold}
-                        streamingChunkSeconds={streamingChunkSeconds}
-                        setStreamingChunkSeconds={setStreamingChunkSeconds}
-                        streamingConfirmationThreshold={streamingConfirmationThreshold}
-                        setStreamingConfirmationThreshold={setStreamingConfirmationThreshold}
-                        theme={theme}
-                        setTheme={() => toggleTheme()}
-                        hybridTranscription={hybridTranscription}
-                        setHybridTranscription={setHybridTranscription}
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                    <Header 
+                        showSettings={showSettings} 
+                        setShowSettings={setShowSettings}
+                        onShowHelp={() => setShowHelp(true)}
                     />
-                )}
 
-                <ErrorBoundary>
-                    <TranscriptionView
-                        onPlayChunk={handlePlayChunk}
-                        playingUrl={playingUrl}
-                        ollamaModel={ollamaModel}
-                        // Player Props
-                        isPlaying={!!playingUrl && playingUrl.includes('audio.mp3')} // Heuristic
-                        onPlaySession={(id) => handlePlaySession(id)}
-                        onPauseSession={() => playingUrl && play(playingUrl)}
-                        currentTime={currentTime}
-                        duration={duration}
-                        onSeek={seek}
-                        // Session speakers - пока пустой массив, т.к. MainLayout не использует WebSocket напрямую
-                        sessionSpeakers={[]}
-                        // Retranscribe all chunks
-                        onRetranscribeAll={handleRetranscribeAll}
-                    />
-                </ErrorBoundary>
-            </div>
+                    {showSettings && (
+                        <SettingsPanel
+                            settingsLocked={settingsLocked}
+                            micDevice={micDevice}
+                            setMicDevice={setMicDevice}
+                            inputDevices={inputDevices}
+                            captureSystem={captureSystem}
+                            setCaptureSystem={setCaptureSystem}
+                            screenCaptureKitAvailable={true}
+                            useVoiceIsolation={useVoiceIsolation}
+                            setUseVoiceIsolation={setUseVoiceIsolation}
+                            echoCancel={echoCancel}
+                            setEchoCancel={setEchoCancel}
+                            ollamaModel={ollamaModel}
+                            setOllamaModel={setOllamaModel}
+                            loadOllamaModels={loadOllama}
+                            onShowModelManager={() => setShowModelManager(true)}
+                            enableStreaming={enableStreaming}
+                            setEnableStreaming={setEnableStreaming}
+                            pauseThreshold={pauseThreshold}
+                            setPauseThreshold={setPauseThreshold}
+                            streamingChunkSeconds={streamingChunkSeconds}
+                            setStreamingChunkSeconds={setStreamingChunkSeconds}
+                            streamingConfirmationThreshold={streamingConfirmationThreshold}
+                            setStreamingConfirmationThreshold={setStreamingConfirmationThreshold}
+                            theme={theme}
+                            setTheme={toggleTheme}
+                            hybridTranscription={hybridTranscription}
+                            setHybridTranscription={setHybridTranscription}
+                        />
+                    )}
+
+                    <ErrorBoundary>
+                        <TranscriptionView
+                            onPlayChunk={handlePlayChunk}
+                            playingUrl={playingUrl}
+                            ollamaModel={ollamaModel}
+                            isPlaying={isPlaying}
+                            onPlaySession={handlePlaySession}
+                            onPauseSession={pause}
+                            currentTime={currentTime}
+                            duration={duration}
+                            onSeek={seek}
+                            sessionSpeakers={[]}
+                            onRetranscribeAll={handleRetranscribeAll}
+                        />
+                    </ErrorBoundary>
+                </div>
             </div>
 
-            {/* Console Footer - Full Width */}
+            {/* Console Footer */}
             <ConsoleFooter logs={logs} />
 
-
-
-            {/* Global Modal */}
+            {/* Model Manager Modal */}
             {showModelManager && (
                 <ModelManager
                     models={models}
                     activeModelId={activeModelId}
                     onClose={() => setShowModelManager(false)}
-                    // Pass other props required for ModelManager
-                    // It uses sendMessage internally?
-                    // Check ModelManager signature from App.tsx. It seemed to take props.
-                    onDownload={(id) => downloadModel(id)}
-                    onCancelDownload={(id) => cancelDownload(id)}
-                    onDelete={(id) => deleteModel(id)}
-                    onSetActive={(id) => setActiveModel(id)}
+                    onDownload={downloadModel}
+                    onCancelDownload={cancelDownload}
+                    onDelete={deleteModel}
+                    onSetActive={setActiveModel}
                 />
             )}
 
-            {/* Audio Meter Bar - Full Height Right Side */}
+            {/* Help Modal */}
+            <HelpModal
+                isOpen={showHelp}
+                onClose={() => setShowHelp(false)}
+                appVersion="1.39.0"
+            />
+
+            {/* Audio Meter Bar */}
             <AudioMeterBar />
         </div>
     );

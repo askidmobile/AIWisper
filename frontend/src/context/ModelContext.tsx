@@ -7,6 +7,7 @@ interface ModelContextType {
     activeModelId: string | null;
     ollamaModels: OllamaModel[];
     ollamaError: string | null;
+    ollamaModelsLoading: boolean;
 
     // Actions
     downloadModel: (id: string) => void;
@@ -24,6 +25,7 @@ export const ModelProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const [activeModelId, setActiveModelId] = useState<string | null>(null);
     const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
     const [ollamaError, setOllamaError] = useState<string | null>(null);
+    const [ollamaModelsLoading, setOllamaModelsLoading] = useState(false);
 
     // Initial fetch
     useEffect(() => {
@@ -55,6 +57,7 @@ export const ModelProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         const unsubDeleted = subscribe('model_deleted', () => sendMessage({ type: 'get_models' }));
 
         const unsubOllama = subscribe('ollama_models', (msg) => {
+            setOllamaModelsLoading(false);
             if (msg.error) {
                 setOllamaError(msg.error);
                 setOllamaModels([]);
@@ -73,11 +76,14 @@ export const ModelProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const cancelDownload = (id: string) => sendMessage({ type: 'cancel_download', modelId: id });
     const deleteModel = (id: string) => sendMessage({ type: 'delete_model', modelId: id });
     const setActiveModel = (id: string) => sendMessage({ type: 'set_active_model', modelId: id });
-    const fetchOllamaModels = (url: string) => sendMessage({ type: 'get_ollama_models', ollamaUrl: url });
+    const fetchOllamaModels = (url: string) => {
+        setOllamaModelsLoading(true);
+        sendMessage({ type: 'get_ollama_models', ollamaUrl: url });
+    };
 
     return (
         <ModelContext.Provider value={{
-            models, activeModelId, ollamaModels, ollamaError,
+            models, activeModelId, ollamaModels, ollamaError, ollamaModelsLoading,
             downloadModel, cancelDownload, deleteModel, setActiveModel, fetchOllamaModels
         }}>
             {children}

@@ -93,6 +93,11 @@ type Message struct {
 	HybridOllamaModel         string   `json:"hybridOllamaModel,omitempty"`         // Модель Ollama для LLM
 	HybridOllamaURL           string   `json:"hybridOllamaUrl,omitempty"`           // URL Ollama API
 	HybridHotwords            []string `json:"hybridHotwords,omitempty"`            // Словарь подсказок (термины, имена)
+
+	// Search (поиск сессий)
+	SearchQuery   string              `json:"searchQuery,omitempty"`   // Текстовый поиск
+	SearchResults []SearchSessionInfo `json:"searchResults,omitempty"` // Результаты поиска
+	TotalCount    int                 `json:"totalCount,omitempty"`    // Всего найдено
 }
 
 type OllamaModel struct {
@@ -110,4 +115,11 @@ type SessionInfo struct {
 	TotalDuration int64     `json:"totalDuration"`
 	ChunksCount   int       `json:"chunksCount"`
 	Title         string    `json:"title,omitempty"`
+}
+
+// SearchSessionInfo расширенная информация о сессии с результатами поиска
+type SearchSessionInfo struct {
+	SessionInfo
+	MatchedText  string `json:"matchedText,omitempty"`  // Текст, где найдено совпадение
+	MatchContext string `json:"matchContext,omitempty"` // Контекст вокруг совпадения
 }

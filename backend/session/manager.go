@@ -1108,6 +1108,7 @@ func (m *Manager) LoadSessions() error {
 			Title         string        `json:"title,omitempty"`
 			TotalDuration int64         `json:"totalDuration"` // миллисекунды!
 			SampleCount   int64         `json:"sampleCount"`
+			Waveform      *WaveformData `json:"waveform,omitempty"`
 		}
 		if err := json.Unmarshal(data, &meta); err != nil {
 			continue
@@ -1123,6 +1124,7 @@ func (m *Manager) LoadSessions() error {
 			Title:         meta.Title,
 			TotalDuration: time.Duration(meta.TotalDuration) * time.Millisecond, // конвертируем из мс
 			SampleCount:   meta.SampleCount,
+			Waveform:      meta.Waveform,
 		}
 
 		// Устанавливаем DataDir (не сохраняется в JSON)
@@ -1191,6 +1193,7 @@ func (m *Manager) SaveSessionMeta(s *Session) error {
 		TotalDuration int64         `json:"totalDuration"`
 		SampleCount   int64         `json:"sampleCount"`
 		ChunksCount   int           `json:"chunksCount"`
+		Waveform      *WaveformData `json:"waveform,omitempty"`
 	}{
 		ID:            s.ID,
 		StartTime:     s.StartTime,
@@ -1202,6 +1205,7 @@ func (m *Manager) SaveSessionMeta(s *Session) error {
 		TotalDuration: int64(s.TotalDuration / time.Millisecond),
 		SampleCount:   s.SampleCount,
 		ChunksCount:   len(s.Chunks),
+		Waveform:      s.Waveform,
 	}
 
 	data, err := json.MarshalIndent(meta, "", "  ")
@@ -1815,4 +1819,146 @@ func (m *Manager) UpdateImprovedDialogue(sessionID string, improvedDialogue []Tr
 		sessionID, len(session.Chunks), len(improvedDialogue))
 
 	return nil
+}
+
+// SearchParams параметры для поиска сессий
+type SearchParams struct {
+	Query    string // Текстовый поиск по названию и транскрипции
+	DateFrom *time.Time
+	DateTo   *time.Time
+	Status   string // recording, completed, failed
+	Limit    int
+	Offset   int
+}
+
+// SearchResult результат поиска сессии
+type SearchResult struct {
+	Session      *Session
+	MatchedText  string // Фрагмент текста, где найдено совпадение
+	MatchContext string // Контекст вокруг совпадения
+}
+
+// SearchSessions ищет сессии по заданным параметрам
+func (m *Manager) SearchSessions(params SearchParams) ([]*SearchResult, int) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var results []*SearchResult
+	query := strings.ToLower(strings.TrimSpace(params.Query))
+
+	for _, session := range m.sessions {
+		// Фильтр по статусу
+		if params.Status != "" && string(session.Status) != params.Status {
+			continue
+		}
+
+		// Фильтр по дате
+		if params.DateFrom != nil && session.StartTime.Before(*params.DateFrom) {
+			continue
+		}
+		if params.DateTo != nil && session.StartTime.After(*params.DateTo) {
+			continue
+		}
+
+		// Если нет поискового запроса, добавляем все подходящие
+		if query == "" {
+			results = append(results, &SearchResult{Session: session})
+			continue
+		}
+
+		// Поиск по названию
+		if strings.Contains(strings.ToLower(session.Title), query) {
+			results = append(results, &SearchResult{
+				Session:     session,
+				MatchedText: session.Title,
+			})
+			continue
+		}
+
+		// Поиск по тексту транскрипции
+		found := false
+		for _, chunk := range session.Chunks {
+			if chunk.Status != ChunkStatusCompleted {
+				continue
+			}
+
+			// Поиск в диалоге
+			for _, seg := range chunk.Dialogue {
+				if strings.Contains(strings.ToLower(seg.Text), query) {
+					// Формируем контекст
+					context := seg.Text
+					if len(context) > 100 {
+						// Находим позицию совпадения и берём контекст вокруг
+						idx := strings.Index(strings.ToLower(context), query)
+						start := idx - 30
+						if start < 0 {
+							start = 0
+						}
+						end := idx + len(query) + 30
+						if end > len(context) {
+							end = len(context)
+						}
+						context = "..." + context[start:end] + "..."
+					}
+
+					results = append(results, &SearchResult{
+						Session:      session,
+						MatchedText:  seg.Text,
+						MatchContext: context,
+					})
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+
+			// Fallback: поиск в полном тексте транскрипции
+			if !found && strings.Contains(strings.ToLower(chunk.Transcription), query) {
+				context := chunk.Transcription
+				if len(context) > 100 {
+					idx := strings.Index(strings.ToLower(context), query)
+					start := idx - 30
+					if start < 0 {
+						start = 0
+					}
+					end := idx + len(query) + 30
+					if end > len(context) {
+						end = len(context)
+					}
+					context = "..." + context[start:end] + "..."
+				}
+
+				results = append(results, &SearchResult{
+					Session:      session,
+					MatchedText:  chunk.Transcription,
+					MatchContext: context,
+				})
+				found = true
+				break
+			}
+		}
+	}
+
+	// Сортируем по дате (новые первые)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Session.StartTime.After(results[j].Session.StartTime)
+	})
+
+	total := len(results)
+
+	// Применяем пагинацию
+	if params.Offset > 0 {
+		if params.Offset >= len(results) {
+			results = nil
+		} else {
+			results = results[params.Offset:]
+		}
+	}
+	if params.Limit > 0 && len(results) > params.Limit {
+		results = results[:params.Limit]
+	}
+
+	return results, total
 }

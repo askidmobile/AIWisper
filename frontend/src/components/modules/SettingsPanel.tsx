@@ -62,7 +62,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     hybridTranscription,
     setHybridTranscription
 }) => {
-    const { models, activeModelId, ollamaModels, ollamaError, ollamaModelsLoading } = useModelContext() as any;
+    const { models, activeModelId, ollamaModels, ollamaError, ollamaModelsLoading } = useModelContext();
     // Note: setShowModelManager is not in context yet. I need to add it or manage modal in parent.
     // For now, I'll assume parent handles modal or I add it to context.
     // Actually ModelContext has downloadModel etc. but UI state (show modal) is usually local or UI context.

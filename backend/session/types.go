@@ -24,6 +24,17 @@ const (
 	ChunkStatusFailed       ChunkStatus = "failed"
 )
 
+// WaveformData кешированные данные waveform для визуализации
+type WaveformData struct {
+	Peaks          [][]float32 `json:"peaks"`          // Peak values per channel [channel][sample] normalized 0..1
+	RMS            [][]float32 `json:"rms"`            // RMS values per channel [channel][sample] normalized 0..1
+	RMSAbsolute    [][]float32 `json:"rmsAbsolute"`    // Absolute RMS values for VU meter
+	SampleDuration float64     `json:"sampleDuration"` // Duration per sample in seconds
+	Duration       float64     `json:"duration"`       // Total duration in seconds
+	SampleCount    int         `json:"sampleCount"`    // Number of samples
+	ChannelCount   int         `json:"channelCount"`   // Number of channels
+}
+
 // Session представляет сессию записи
 type Session struct {
 	ID            string        `json:"id"`
@@ -36,7 +47,8 @@ type Session struct {
 	DataDir       string        `json:"dataDir"`
 	TotalDuration time.Duration `json:"totalDuration"`
 	SampleCount   int64         `json:"sampleCount"`
-	Summary       string        `json:"summary,omitempty"` // AI-generated summary
+	Summary       string        `json:"summary,omitempty"`  // AI-generated summary
+	Waveform      *WaveformData `json:"waveform,omitempty"` // Cached waveform data for visualization
 
 	Chunks []*Chunk `json:"chunks"`
 
