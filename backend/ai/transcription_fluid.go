@@ -193,6 +193,10 @@ func (e *FluidASREngine) Transcribe(samples []float32, useContext bool) (string,
 }
 
 // TranscribeWithSegments возвращает сегменты с таймстемпами
+// MinSamplesForFluidASR минимальное количество samples для FluidASR (Parakeet)
+// Parakeet TDT требует минимум 1 секунду аудио (16000 samples при 16kHz)
+const MinSamplesForFluidASR = 16000
+
 func (e *FluidASREngine) TranscribeWithSegments(samples []float32) ([]TranscriptSegment, error) {
 	// Не используем mutex здесь - subprocess изолирован, можем запускать параллельно
 	if !e.initialized {
@@ -201,6 +205,13 @@ func (e *FluidASREngine) TranscribeWithSegments(samples []float32) ([]Transcript
 
 	if len(samples) == 0 {
 		return nil, nil
+	}
+
+	// Parakeet TDT требует минимум 1 секунду аудио
+	if len(samples) < MinSamplesForFluidASR {
+		log.Printf("FluidASREngine: audio too short (%d samples = %.2fs), minimum 1 second required",
+			len(samples), float64(len(samples))/16000.0)
+		return nil, nil // Возвращаем пустой результат вместо ошибки
 	}
 
 	startTime := time.Now()
