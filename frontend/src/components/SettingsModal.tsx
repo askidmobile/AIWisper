@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { ModelState, OllamaModel, DiarizationStatus } from '../types/models';
+import { ModelState, OllamaModel, DiarizationStatus, HybridTranscriptionSettings } from '../types/models';
+import { HybridTranscriptionSettingsPanel } from './modules/HybridTranscriptionSettings';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -37,6 +38,9 @@ interface SettingsModalProps {
     embeddingModels?: ModelState[];
     onEnableDiarization?: (segModelId: string, embModelId: string, provider: string) => void;
     onDisableDiarization?: () => void;
+    // Гибридная транскрипция
+    hybridTranscription?: HybridTranscriptionSettings;
+    onHybridTranscriptionChange?: (settings: HybridTranscriptionSettings) => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -75,6 +79,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     embeddingModels = [],
     onEnableDiarization,
     onDisableDiarization,
+    // Гибридная транскрипция
+    hybridTranscription,
+    onHybridTranscriptionChange,
 }) => {
     // Локальное состояние для выбора моделей диаризации
     const [selectedSegModel, setSelectedSegModel] = useState(
@@ -705,6 +712,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         >
                             Диаризация определяет кто говорит в mono-записи. При записи mic+sys спикеры определяются автоматически.
                         </div>
+                    </div>
+                )}
+
+                {/* Hybrid Transcription Section */}
+                {hybridTranscription && onHybridTranscriptionChange && (
+                    <div style={sectionStyle}>
+                        <span style={labelStyle}>Улучшенное распознавание</span>
+                        <HybridTranscriptionSettingsPanel
+                            settings={hybridTranscription}
+                            onChange={onHybridTranscriptionChange}
+                            availableModels={models.filter(m => m.status === 'downloaded' && (m.engine === 'whisper' || m.engine === 'gigaam' || m.engine === 'fluid-asr'))}
+                            currentModelId={activeModelId || ''}
+                            disabled={false}
+                        />
                     </div>
                 )}
 

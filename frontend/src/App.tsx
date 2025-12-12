@@ -7,7 +7,7 @@ import SettingsModal from './components/SettingsModal';
 import AudioMeterSidebar from './components/AudioMeterSidebar';
 import WaveformDisplay from './components/WaveformDisplay';
 import SpeakersTab from './components/modules/SpeakersTab';
-import { ModelState, AppSettings, OllamaModel } from './types/models';
+import { ModelState, AppSettings, OllamaModel, HybridTranscriptionSettings } from './types/models';
 import { SessionSpeaker } from './types/voiceprint';
 import { WaveformData, computeWaveform } from './utils/waveform';
 import { groupSessionsByTime, formatDuration as formatDurationUtil, formatDate as formatDateUtil, formatTime as formatTimeUtil } from './utils/groupSessions';
@@ -343,6 +343,15 @@ function App() {
     const [savedDiarizationEnabled, setSavedDiarizationEnabled] = useState(false);
     const diarizationAutoEnableAttempted = useRef(false);
 
+    // Hybrid Transcription settings
+    const [hybridTranscription, setHybridTranscription] = useState<HybridTranscriptionSettings>({
+        enabled: false,
+        secondaryModelId: '',
+        confidenceThreshold: 0.5,
+        contextWords: 3,
+        useLLMForMerge: true,
+    });
+
     // Drag & Drop state
     const [isDragging, setIsDragging] = useState(false);
     const [isImporting, setIsImporting] = useState(false);
@@ -400,6 +409,10 @@ function App() {
                     if (settings.showSessionStats !== undefined) {
                         setShowSessionStats(settings.showSessionStats);
                     }
+                    // Гибридная транскрипция
+                    if (settings.hybridTranscription) {
+                        setHybridTranscription(settings.hybridTranscription);
+                    }
                     addLog('Settings loaded');
                     if (settings.diarizationEnabled) {
                         addLog(`Diarization settings: enabled=${settings.diarizationEnabled}, seg=${settings.diarizationSegModelId}, emb=${settings.diarizationEmbModelId}`);
@@ -435,14 +448,16 @@ function App() {
                     diarizationEmbModelId: savedDiarizationEmbModelId,
                     diarizationProvider: savedDiarizationProvider,
                     // UI настройки
-                    showSessionStats
+                    showSessionStats,
+                    // Гибридная транскрипция
+                    hybridTranscription
                 });
             } catch (err) {
                 console.error('Failed to save settings:', err);
             }
         };
         saveSettings();
-    }, [language, activeModelId, echoCancel, useVoiceIsolation, vadMode, captureSystem, ollamaModel, ollamaUrl, theme, settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider, showSessionStats]);
+    }, [language, activeModelId, echoCancel, useVoiceIsolation, vadMode, captureSystem, ollamaModel, ollamaUrl, theme, settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider, showSessionStats, hybridTranscription]);
 
     // Применяем тему к корню документа
     useEffect(() => {
@@ -3055,6 +3070,9 @@ function App() {
                     embeddingModels={models.filter(m => m.engine === 'diarization' && m.diarizationType === 'embedding')}
                     onEnableDiarization={handleEnableDiarization}
                     onDisableDiarization={handleDisableDiarization}
+                    // Гибридная транскрипция
+                    hybridTranscription={hybridTranscription}
+                    onHybridTranscriptionChange={setHybridTranscription}
                 />
 
                 {/* Transcription Area */}
