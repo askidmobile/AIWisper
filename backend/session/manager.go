@@ -804,6 +804,7 @@ func isMicSpeaker(speaker string) bool {
 }
 
 // postProcessDialogue объединяет соседние короткие фразы одного спикера
+// ВАЖНО: сравнивает спикеров точно, чтобы не объединять разных собеседников
 func postProcessDialogue(phrases []TranscriptSegment) []TranscriptSegment {
 	if len(phrases) <= 1 {
 		return phrases
@@ -819,12 +820,12 @@ func postProcessDialogue(phrases []TranscriptSegment) []TranscriptSegment {
 
 		prev := &result[len(result)-1]
 
-		// Проверяем одинаковый ли спикер (с учётом нормализации)
-		prevIsMic := isMicSpeaker(prev.Speaker)
-		phraseIsMic := isMicSpeaker(phrase.Speaker)
+		// Проверяем ТОЧНО одинаковый ли спикер
+		// Это важно для диаризации: "Собеседник 1" != "Собеседник 2"
+		sameSpeaker := prev.Speaker == phrase.Speaker
 
-		// Объединяем соседние фразы одного спикера
-		if prevIsMic == phraseIsMic {
+		// Объединяем соседние фразы ТОЛЬКО одного и того же спикера
+		if sameSpeaker {
 			gap := phrase.Start - prev.End
 			prevDuration := prev.End - prev.Start
 			prevWordCount := len(strings.Fields(prev.Text))

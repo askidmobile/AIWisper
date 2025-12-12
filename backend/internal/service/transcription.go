@@ -1153,6 +1153,7 @@ func convertWords(aiWords []ai.TranscriptWord, speaker string, chunkStartMs int6
 }
 
 // applySpeakersToTranscriptSegments применяет спикеров из диаризации к сегментам транскрипции
+// Если сегмент содержит word-level timestamps, разбивает его по границам диаризации
 // Timestamps в обоих случаях должны быть в одной системе координат (оригинальное аудио)
 func applySpeakersToTranscriptSegments(segments []ai.TranscriptSegment, speakerSegs []ai.SpeakerSegment) []ai.TranscriptSegment {
 	if len(speakerSegs) == 0 {
@@ -1175,57 +1176,162 @@ func applySpeakersToTranscriptSegments(segments []ai.TranscriptSegment, speakerS
 		}
 	}
 
+	// Проверяем, есть ли word-level timestamps
+	hasWords := false
+	for _, seg := range segments {
+		if len(seg.Words) > 0 {
+			hasWords = true
+			break
+		}
+	}
+
+	// Если есть word-level timestamps, разбиваем сегменты по границам диаризации
+	if hasWords {
+		return splitSegmentsBySpeakers(segments, speakerSegs)
+	}
+
+	// Fallback: простое присвоение спикера целому сегменту
+	return assignSpeakersToSegments(segments, speakerSegs)
+}
+
+// splitSegmentsBySpeakers разбивает сегменты транскрипции по границам диаризации
+// используя word-level timestamps для точного разделения
+func splitSegmentsBySpeakers(segments []ai.TranscriptSegment, speakerSegs []ai.SpeakerSegment) []ai.TranscriptSegment {
+	var result []ai.TranscriptSegment
+
+	for _, seg := range segments {
+		if len(seg.Words) == 0 {
+			// Нет слов - присваиваем спикера целому сегменту
+			newSeg := seg
+			newSeg.Speaker = getSpeakerForTimeRange(float32(seg.Start)/1000.0, float32(seg.End)/1000.0, speakerSegs)
+			result = append(result, newSeg)
+			continue
+		}
+
+		// Группируем слова по спикерам
+		var currentWords []ai.TranscriptWord
+		var currentSpeaker string
+		var segStart, segEnd int64
+
+		for i, word := range seg.Words {
+			wordStartSec := float32(word.Start) / 1000.0
+			wordEndSec := float32(word.End) / 1000.0
+			wordSpeaker := getSpeakerForTimeRange(wordStartSec, wordEndSec, speakerSegs)
+
+			if i == 0 {
+				// Первое слово
+				currentSpeaker = wordSpeaker
+				currentWords = []ai.TranscriptWord{word}
+				segStart = word.Start
+				segEnd = word.End
+				continue
+			}
+
+			if wordSpeaker == currentSpeaker {
+				// Тот же спикер - добавляем слово
+				currentWords = append(currentWords, word)
+				segEnd = word.End
+			} else {
+				// Смена спикера - сохраняем текущий сегмент и начинаем новый
+				if len(currentWords) > 0 {
+					newSeg := createSegmentFromWords(currentWords, currentSpeaker, segStart, segEnd)
+					result = append(result, newSeg)
+				}
+
+				// Начинаем новый сегмент
+				currentSpeaker = wordSpeaker
+				currentWords = []ai.TranscriptWord{word}
+				segStart = word.Start
+				segEnd = word.End
+			}
+		}
+
+		// Сохраняем последний сегмент
+		if len(currentWords) > 0 {
+			newSeg := createSegmentFromWords(currentWords, currentSpeaker, segStart, segEnd)
+			result = append(result, newSeg)
+		}
+	}
+
+	log.Printf("splitSegmentsBySpeakers: split %d segments into %d segments by speaker boundaries",
+		len(segments), len(result))
+
+	return result
+}
+
+// createSegmentFromWords создаёт сегмент транскрипции из списка слов
+func createSegmentFromWords(words []ai.TranscriptWord, speaker string, start, end int64) ai.TranscriptSegment {
+	var texts []string
+	for _, w := range words {
+		texts = append(texts, w.Text)
+	}
+
+	return ai.TranscriptSegment{
+		Start:   start,
+		End:     end,
+		Text:    strings.Join(texts, " "),
+		Speaker: speaker,
+		Words:   words,
+	}
+}
+
+// getSpeakerForTimeRange находит спикера для заданного временного диапазона
+// Возвращает спикера с максимальным перекрытием или ближайшего по времени
+func getSpeakerForTimeRange(startSec, endSec float32, speakerSegs []ai.SpeakerSegment) string {
+	midSec := (startSec + endSec) / 2.0
+
+	// Ищем спикера с максимальным перекрытием
+	bestSpeaker := -1
+	bestOverlap := float32(0)
+
+	for _, ss := range speakerSegs {
+		// Вычисляем перекрытие
+		overlapStart := startSec
+		if ss.Start > overlapStart {
+			overlapStart = ss.Start
+		}
+		overlapEnd := endSec
+		if ss.End < overlapEnd {
+			overlapEnd = ss.End
+		}
+		overlap := overlapEnd - overlapStart
+		if overlap > 0 && overlap > bestOverlap {
+			bestOverlap = overlap
+			bestSpeaker = ss.Speaker
+		}
+	}
+
+	// Если нет перекрытия, ищем ближайшего спикера по середине
+	if bestSpeaker == -1 {
+		minDist := float32(1e9)
+		for _, ss := range speakerSegs {
+			ssMid := (ss.Start + ss.End) / 2.0
+			dist := midSec - ssMid
+			if dist < 0 {
+				dist = -dist
+			}
+			if dist < minDist {
+				minDist = dist
+				bestSpeaker = ss.Speaker
+			}
+		}
+	}
+
+	if bestSpeaker >= 0 {
+		return fmt.Sprintf("Собеседник %d", bestSpeaker)
+	}
+	return "Собеседник"
+}
+
+// assignSpeakersToSegments присваивает спикеров сегментам без разбиения (fallback)
+func assignSpeakersToSegments(segments []ai.TranscriptSegment, speakerSegs []ai.SpeakerSegment) []ai.TranscriptSegment {
 	result := make([]ai.TranscriptSegment, len(segments))
 	copy(result, segments)
 
 	for i := range result {
-		// Время сегмента в секундах (timestamps уже в ms, конвертируем)
 		segStartSec := float32(result[i].Start) / 1000.0
 		segEndSec := float32(result[i].End) / 1000.0
-		segMidSec := (segStartSec + segEndSec) / 2.0
-
-		// Ищем спикера с максимальным перекрытием
-		bestSpeaker := -1
-		bestOverlap := float32(0)
-
-		for _, ss := range speakerSegs {
-			// Вычисляем перекрытие
-			overlapStart := segStartSec
-			if ss.Start > overlapStart {
-				overlapStart = ss.Start
-			}
-			overlapEnd := segEndSec
-			if ss.End < overlapEnd {
-				overlapEnd = ss.End
-			}
-			overlap := overlapEnd - overlapStart
-			if overlap > 0 && overlap > bestOverlap {
-				bestOverlap = overlap
-				bestSpeaker = ss.Speaker
-			}
-		}
-
-		// Если нет перекрытия, ищем ближайшего спикера по середине сегмента
-		if bestSpeaker == -1 {
-			minDist := float32(1e9)
-			for _, ss := range speakerSegs {
-				ssMid := (ss.Start + ss.End) / 2.0
-				dist := segMidSec - ssMid
-				if dist < 0 {
-					dist = -dist
-				}
-				if dist < minDist {
-					minDist = dist
-					bestSpeaker = ss.Speaker
-				}
-			}
-		}
-
-		if bestSpeaker >= 0 {
-			result[i].Speaker = fmt.Sprintf("Собеседник %d", bestSpeaker)
-		} else {
-			result[i].Speaker = "Собеседник"
-		}
+		result[i].Speaker = getSpeakerForTimeRange(segStartSec, segEndSec, speakerSegs)
 	}
 
 	return result

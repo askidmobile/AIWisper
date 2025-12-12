@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.2] - 2025-12-13
+
+### Fixed
+- **Speaker Diarization Not Splitting Text**: Fixed critical bug where all text was assigned to single speaker despite diarization finding multiple speakers
+  - **Problem**: FluidASR (Parakeet) returned 1 large segment for entire audio (55+ seconds), and `applySpeakersToTranscriptSegments` assigned speaker to whole segment by max overlap
+  - **Root Cause 1**: Function didn't use word-level timestamps to split segments by speaker boundaries
+  - **Root Cause 2**: `postProcessDialogue` merged all "Собеседник N" speakers together (checked only mic vs non-mic, not exact speaker match)
+  - **Solution**: 
+    - Rewrote `applySpeakersToTranscriptSegments` to split segments by speaker using word-level timestamps
+    - Added `splitSegmentsBySpeakers()` function that groups words by speaker and creates new segments at speaker changes
+    - Fixed `postProcessDialogue` to compare speakers exactly (`prev.Speaker == phrase.Speaker`) instead of just mic/non-mic
+  - **Result**: Diarization now correctly splits transcription into separate speaker segments (e.g., "Собеседник 1", "Собеседник 2", "Собеседник 3")
+
+### Technical
+- `backend/internal/service/transcription.go`:
+  - Added `splitSegmentsBySpeakers()` - splits transcript segments by diarization speaker boundaries using word timestamps
+  - Added `createSegmentFromWords()` - creates segment from word list with proper text joining
+  - Added `getSpeakerForTimeRange()` - finds speaker for time range by max overlap or nearest
+  - Added `assignSpeakersToSegments()` - fallback for segments without word-level timestamps
+  - Refactored `applySpeakersToTranscriptSegments()` to use word-level splitting when available
+- `backend/session/manager.go`:
+  - Fixed `postProcessDialogue()` to use exact speaker comparison instead of `isMicSpeaker()` check
+
 ## [1.40.1] - 2025-12-13
 
 ### Fixed
