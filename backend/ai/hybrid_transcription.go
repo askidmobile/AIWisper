@@ -188,8 +188,61 @@ func (h *HybridTranscriber) Transcribe(samples []float32) (*HybridTranscriptionR
 	}
 }
 
-// transcribeParallel выполняет параллельную транскрипцию обеими моделями
-// и использует собственный анализатор для выбора лучших слов на основе confidence
+// GPUBackend тип GPU бэкенда для определения конфликтов
+type GPUBackend int
+
+const (
+	GPUBackendNone   GPUBackend = iota // CPU only или безопасный для параллельной работы
+	GPUBackendMetal                    // Apple Metal (whisper.cpp, ggml)
+	GPUBackendCoreML                   // Apple CoreML/ANE (FluidAudio, Parakeet)
+)
+
+// getEngineGPUBackend определяет GPU бэкенд движка по его имени
+func getEngineGPUBackend(engineName string) GPUBackend {
+	switch engineName {
+	case "whisper":
+		return GPUBackendMetal // whisper.cpp использует Metal
+	case "fluid-asr":
+		return GPUBackendCoreML // FluidAudio/Parakeet использует CoreML
+	case "gigaam", "gigaam-rnnt":
+		// GigaAM использует ONNX Runtime - работает корректно параллельно с Metal и CoreML
+		// INT8 модели работают на CPU, обычные могут использовать CoreML,
+		// но ONNX Runtime корректно управляет ресурсами и не конфликтует
+		return GPUBackendNone
+	default:
+		return GPUBackendNone
+	}
+}
+
+// canRunParallel проверяет, могут ли два движка работать параллельно без конфликтов
+//
+// Известные конфликты на Apple Silicon:
+// - Metal (Whisper/ggml) + CoreML (Parakeet/FluidAudio) = crash на уровне GPU драйвера
+//
+// Безопасные комбинации:
+// - GigaAM (ONNX) + Whisper (Metal) = OK
+// - GigaAM (ONNX) + Parakeet (CoreML) = OK
+// - Whisper + Whisper = OK (mutex защитит)
+// - Parakeet + Parakeet = OK (subprocess изолирован)
+func canRunParallel(primary, secondary GPUBackend) bool {
+	// Если хотя бы один не использует конфликтующий GPU бэкенд - можно параллельно
+	if primary == GPUBackendNone || secondary == GPUBackendNone {
+		return true
+	}
+
+	// Metal + CoreML = конфликт на Apple Silicon
+	// Это единственная известная конфликтующая комбинация
+	if (primary == GPUBackendMetal && secondary == GPUBackendCoreML) ||
+		(primary == GPUBackendCoreML && secondary == GPUBackendMetal) {
+		return false
+	}
+
+	// Одинаковые бэкенды - можно параллельно (внутренние mutex защитят)
+	return true
+}
+
+// transcribeParallel выполняет транскрипцию обеими моделями
+// Автоматически определяет, могут ли модели работать параллельно или нужно последовательно
 func (h *HybridTranscriber) transcribeParallel(samples []float32) (*HybridTranscriptionResult, error) {
 	if h.secondaryEngine == nil {
 		// Нет вторичной модели - просто транскрибируем первичной
@@ -200,82 +253,117 @@ func (h *HybridTranscriber) transcribeParallel(samples []float32) (*HybridTransc
 		return &HybridTranscriptionResult{Segments: segments}, nil
 	}
 
-	// Запускаем обе модели параллельно
-	type transcriptionResult struct {
-		segments []TranscriptSegment
-		err      error
-		name     string
+	// Определяем GPU бэкенды движков
+	primaryBackend := getEngineGPUBackend(h.primaryEngine.Name())
+	secondaryBackend := getEngineGPUBackend(h.secondaryEngine.Name())
+
+	// Проверяем, можно ли запускать параллельно
+	parallel := canRunParallel(primaryBackend, secondaryBackend)
+
+	var primarySegments, secondarySegments []TranscriptSegment
+	var primaryErr, secondaryErr error
+
+	if parallel {
+		// Безопасно запускать параллельно
+		log.Printf("[HybridTranscriber] Parallel mode: %s (%d) + %s (%d) - no GPU conflict",
+			h.primaryEngine.Name(), primaryBackend, h.secondaryEngine.Name(), secondaryBackend)
+
+		primaryChan := make(chan struct {
+			segments []TranscriptSegment
+			err      error
+		}, 1)
+		secondaryChan := make(chan struct {
+			segments []TranscriptSegment
+			err      error
+		}, 1)
+
+		go func() {
+			log.Printf("[HybridTranscriber] Parallel: Starting primary transcription with %s", h.primaryEngine.Name())
+			segs, err := h.primaryEngine.TranscribeWithSegments(samples)
+			primaryChan <- struct {
+				segments []TranscriptSegment
+				err      error
+			}{segs, err}
+		}()
+
+		go func() {
+			log.Printf("[HybridTranscriber] Parallel: Starting secondary transcription with %s", h.secondaryEngine.Name())
+			segs, err := h.secondaryEngine.TranscribeWithSegments(samples)
+			secondaryChan <- struct {
+				segments []TranscriptSegment
+				err      error
+			}{segs, err}
+		}()
+
+		primaryResult := <-primaryChan
+		secondaryResult := <-secondaryChan
+
+		primarySegments, primaryErr = primaryResult.segments, primaryResult.err
+		secondarySegments, secondaryErr = secondaryResult.segments, secondaryResult.err
+
+		log.Printf("[HybridTranscriber] Parallel: Primary (%s) done, err=%v", h.primaryEngine.Name(), primaryErr)
+		log.Printf("[HybridTranscriber] Parallel: Secondary (%s) done, err=%v", h.secondaryEngine.Name(), secondaryErr)
+	} else {
+		// GPU конфликт - выполняем последовательно
+		log.Printf("[HybridTranscriber] Sequential mode: %s (%d) + %s (%d) - GPU conflict detected",
+			h.primaryEngine.Name(), primaryBackend, h.secondaryEngine.Name(), secondaryBackend)
+
+		// Первичная модель
+		log.Printf("[HybridTranscriber] Sequential: Starting primary transcription with %s", h.primaryEngine.Name())
+		primarySegments, primaryErr = h.primaryEngine.TranscribeWithSegments(samples)
+		log.Printf("[HybridTranscriber] Sequential: Primary (%s) done, err=%v", h.primaryEngine.Name(), primaryErr)
+
+		// Вторичная модель - ПОСЛЕ завершения primary
+		log.Printf("[HybridTranscriber] Sequential: Starting secondary transcription with %s", h.secondaryEngine.Name())
+		secondarySegments, secondaryErr = h.secondaryEngine.TranscribeWithSegments(samples)
+		log.Printf("[HybridTranscriber] Sequential: Secondary (%s) done, err=%v", h.secondaryEngine.Name(), secondaryErr)
 	}
 
-	primaryChan := make(chan transcriptionResult, 1)
-	secondaryChan := make(chan transcriptionResult, 1)
-
-	// Первичная модель
-	go func() {
-		log.Printf("[HybridTranscriber] Parallel: Starting primary transcription with %s", h.primaryEngine.Name())
-		segments, err := h.primaryEngine.TranscribeWithSegments(samples)
-		primaryChan <- transcriptionResult{segments: segments, err: err, name: h.primaryEngine.Name()}
-	}()
-
-	// Вторичная модель
-	go func() {
-		log.Printf("[HybridTranscriber] Parallel: Starting secondary transcription with %s", h.secondaryEngine.Name())
-		segments, err := h.secondaryEngine.TranscribeWithSegments(samples)
-		secondaryChan <- transcriptionResult{segments: segments, err: err, name: h.secondaryEngine.Name()}
-	}()
-
-	// Ждём результаты
-	primaryResult := <-primaryChan
-	secondaryResult := <-secondaryChan
-
-	log.Printf("[HybridTranscriber] Parallel: Primary (%s) done, err=%v", primaryResult.name, primaryResult.err)
-	log.Printf("[HybridTranscriber] Parallel: Secondary (%s) done, err=%v", secondaryResult.name, secondaryResult.err)
-
 	// Если первичная модель упала - пробуем вторичную
-	if primaryResult.err != nil {
-		if secondaryResult.err != nil {
-			return nil, fmt.Errorf("both models failed: primary: %v, secondary: %v", primaryResult.err, secondaryResult.err)
+	if primaryErr != nil {
+		if secondaryErr != nil {
+			return nil, fmt.Errorf("both models failed: primary: %v, secondary: %v", primaryErr, secondaryErr)
 		}
-		return &HybridTranscriptionResult{Segments: secondaryResult.segments}, nil
+		return &HybridTranscriptionResult{Segments: secondarySegments}, nil
 	}
 
 	// Если вторичная модель упала - используем первичную
-	if secondaryResult.err != nil {
-		return &HybridTranscriptionResult{Segments: primaryResult.segments}, nil
+	if secondaryErr != nil {
+		return &HybridTranscriptionResult{Segments: primarySegments}, nil
 	}
 
 	// Обе модели отработали - анализируем и объединяем результаты
-	primaryText := segmentsToFullText(primaryResult.segments)
-	secondaryText := segmentsToFullText(secondaryResult.segments)
+	primaryText := segmentsToFullText(primarySegments)
+	secondaryText := segmentsToFullText(secondarySegments)
 
-	log.Printf("[HybridTranscriber] Parallel: Primary text: %q", primaryText)
-	log.Printf("[HybridTranscriber] Parallel: Secondary text: %q", secondaryText)
+	log.Printf("[HybridTranscriber] Sequential: Primary text: %q", primaryText)
+	log.Printf("[HybridTranscriber] Sequential: Secondary text: %q", secondaryText)
 
 	// Если тексты идентичны - возвращаем первичный
 	if primaryText == secondaryText {
-		log.Printf("[HybridTranscriber] Parallel: Texts identical, using primary")
-		return &HybridTranscriptionResult{Segments: primaryResult.segments}, nil
+		log.Printf("[HybridTranscriber] Sequential: Texts identical, using primary")
+		return &HybridTranscriptionResult{Segments: primarySegments}, nil
 	}
 
 	// Анализируем и объединяем на основе confidence
-	mergedSegments, improvements := h.mergeByConfidence(primaryResult.segments, secondaryResult.segments)
+	mergedSegments, improvements := h.mergeByConfidence(primarySegments, secondarySegments)
 
 	// Применяем hotwords для исправления известных терминов
 	if len(h.config.Hotwords) > 0 {
-		mergedSegments = h.applyHotwords(mergedSegments, primaryResult.segments, secondaryResult.segments)
+		mergedSegments = h.applyHotwords(mergedSegments, primarySegments, secondarySegments)
 	}
 
 	// Если есть LLM и он включён - дополнительно проверяем через LLM
 	if h.config.UseLLMForMerge && h.llmSelector != nil && len(improvements) > 0 {
 		mergedText := segmentsToFullText(mergedSegments)
-		log.Printf("[HybridTranscriber] Parallel: Merged text: %q", mergedText)
-		log.Printf("[HybridTranscriber] Parallel: Verifying with LLM...")
+		log.Printf("[HybridTranscriber] Sequential: Merged text: %q", mergedText)
+		log.Printf("[HybridTranscriber] Sequential: Verifying with LLM...")
 
 		// LLM проверяет объединённый результат
 		selected, err := h.llmSelector.SelectBestTranscription(primaryText, mergedText, "")
 		if err == nil && selected != primaryText && selected != mergedText {
 			// LLM предложил свой вариант
-			log.Printf("[HybridTranscriber] Parallel: LLM suggested: %q", selected)
+			log.Printf("[HybridTranscriber] Sequential: LLM suggested: %q", selected)
 			mergedSegments = []TranscriptSegment{{
 				Start: 0,
 				End:   int64(len(samples) * 1000 / 16000),
@@ -558,19 +646,61 @@ func (h *HybridTranscriber) applyHotwords(merged, primary, secondary []Transcrip
 
 	for _, hotword := range h.config.Hotwords {
 		hotwordLower := strings.ToLower(hotword)
+		hotwordLen := len([]rune(hotwordLower)) // Длина в символах (для Unicode)
 
 		for word := range allWords {
-			// Проверяем похожесть (расстояние Левенштейна <= 30% длины)
+			wordLen := len([]rune(word))
+
+			// Пропускаем слишком короткие слова (< 3 символов) - они слишком часто ложно срабатывают
+			if wordLen < 3 {
+				continue
+			}
+
+			// Пропускаем если длины слишком разные (> 50% разницы)
+			lenDiff := hotwordLen - wordLen
+			if lenDiff < 0 {
+				lenDiff = -lenDiff
+			}
+			maxLenDiff := hotwordLen / 2
+			if maxLenDiff < 1 {
+				maxLenDiff = 1
+			}
+			if lenDiff > maxLenDiff {
+				continue
+			}
+
+			// Проверяем похожесть (расстояние Левенштейна)
 			dist := levenshteinDistance(word, hotwordLower)
-			maxDist := len(hotwordLower) * 3 / 10 // 30%
-			if maxDist < 2 {
-				maxDist = 2
+
+			// Вычисляем максимально допустимое расстояние:
+			// - Для коротких слов (<=4 символов): только dist=1 (опечатка в 1 символ)
+			// - Для средних слов (5-8 символов): до 20% длины, минимум 1
+			// - Для длинных слов (>8 символов): до 25% длины
+			var maxDist int
+			if hotwordLen <= 4 {
+				maxDist = 1 // Для коротких hotwords очень строго
+			} else if hotwordLen <= 8 {
+				maxDist = hotwordLen * 2 / 10 // 20%
+				if maxDist < 1 {
+					maxDist = 1
+				}
+			} else {
+				maxDist = hotwordLen * 25 / 100 // 25%
+			}
+
+			// Дополнительная проверка: первый символ должен совпадать для коротких слов
+			if hotwordLen <= 5 && len(word) > 0 && len(hotwordLower) > 0 {
+				wordRunes := []rune(word)
+				hotwordRunes := []rune(hotwordLower)
+				if wordRunes[0] != hotwordRunes[0] {
+					continue // Первые буквы разные - скорее всего не то слово
+				}
 			}
 
 			if dist <= maxDist && dist > 0 {
 				// Слово похоже на hotword - запоминаем замену
 				replacements[word] = hotword
-				log.Printf("[HybridTranscriber] Hotword match: '%s' -> '%s' (dist=%d)", word, hotword, dist)
+				log.Printf("[HybridTranscriber] Hotword match: '%s' -> '%s' (dist=%d, maxDist=%d)", word, hotword, dist, maxDist)
 			}
 		}
 	}
