@@ -1,5 +1,7 @@
 import React from 'react';
 import { useModelContext } from '../../context/ModelContext';
+import { HybridTranscriptionSettingsPanel } from './HybridTranscriptionSettings';
+import { HybridTranscriptionSettings } from '../../types/models';
 
 interface AudioDevice {
     id: string;
@@ -34,6 +36,9 @@ interface SettingsPanelProps {
     setStreamingConfirmationThreshold?: (v: number) => void;
     theme?: 'light' | 'dark';
     setTheme?: (v: 'light' | 'dark') => void;
+    // Гибридная транскрипция
+    hybridTranscription?: HybridTranscriptionSettings;
+    setHybridTranscription?: (v: HybridTranscriptionSettings) => void;
 }
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
@@ -53,7 +58,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     streamingConfirmationThreshold = 0.85,
     setStreamingConfirmationThreshold,
     theme = 'dark',
-    setTheme
+    setTheme,
+    hybridTranscription,
+    setHybridTranscription
 }) => {
     const { models, activeModelId, ollamaModels, ollamaError, ollamaModelsLoading } = useModelContext() as any;
     // Note: setShowModelManager is not in context yet. I need to add it or manage modal in parent.
@@ -297,6 +304,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                     </span>
                 )}
             </div>
+
+            {/* Hybrid Transcription Settings */}
+            {hybridTranscription && setHybridTranscription && (
+                <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px dashed var(--border)', opacity: settingsLocked ? 0.55 : 1, pointerEvents: settingsLocked ? 'none' : 'auto' }}>
+                    <HybridTranscriptionSettingsPanel
+                        settings={hybridTranscription}
+                        onChange={setHybridTranscription}
+                        availableModels={models}
+                        currentModelId={activeModelId || ''}
+                        disabled={settingsLocked}
+                    />
+                </div>
+            )}
         </div>
     );
 };

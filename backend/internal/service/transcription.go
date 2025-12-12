@@ -30,6 +30,11 @@ type TranscriptionService struct {
 	OllamaURL          string // URL Ollama API
 	OllamaModel        string // Модель для улучшения
 
+	// Гибридная транскрипция (двухпроходное распознавание)
+	HybridConfig      *ai.HybridTranscriptionConfig // Конфигурация гибридной транскрипции
+	hybridTranscriber *ai.HybridTranscriber         // Экземпляр гибридного транскрибера
+	secondaryEngine   ai.TranscriptionEngine        // Вторичный движок для гибридной транскрипции
+
 	// Callbacks for UI updates
 	OnChunkTranscribed func(chunk *session.Chunk)
 }
@@ -90,6 +95,88 @@ func (s *TranscriptionService) EnableAutoImprove(ollamaURL, ollamaModel string) 
 func (s *TranscriptionService) DisableAutoImprove() {
 	s.AutoImproveWithLLM = false
 	log.Println("Auto-improve disabled")
+}
+
+// SetHybridConfig устанавливает конфигурацию гибридной транскрипции
+func (s *TranscriptionService) SetHybridConfig(config *ai.HybridTranscriptionConfig) {
+	// Закрываем старый вторичный движок если был
+	if s.secondaryEngine != nil {
+		s.secondaryEngine.Close()
+		s.secondaryEngine = nil
+	}
+	s.hybridTranscriber = nil
+	s.HybridConfig = config
+
+	if config == nil || !config.Enabled || config.SecondaryModelID == "" {
+		log.Println("Hybrid transcription disabled")
+		return
+	}
+
+	// Создаём вторичный движок
+	secondaryEngine, err := s.EngineMgr.CreateEngineForModel(config.SecondaryModelID)
+	if err != nil {
+		log.Printf("Failed to create secondary engine for hybrid transcription: %v", err)
+		s.HybridConfig = nil
+		return
+	}
+	s.secondaryEngine = secondaryEngine
+
+	// Создаём LLM selector если нужен
+	var llmSelector ai.LLMTranscriptionSelector
+	if config.UseLLMForMerge && s.LLMService != nil {
+		llmSelector = &llmSelectorAdapter{
+			llmService:  s.LLMService,
+			ollamaURL:   s.OllamaURL,
+			ollamaModel: s.OllamaModel,
+		}
+	}
+
+	// Создаём HybridTranscriber
+	s.hybridTranscriber = ai.NewHybridTranscriber(
+		s.EngineMgr.GetActiveEngine(),
+		secondaryEngine,
+		*config,
+		llmSelector,
+	)
+
+	log.Printf("Hybrid transcription enabled: secondaryModel=%s, threshold=%.2f, useLLM=%v",
+		config.SecondaryModelID, config.ConfidenceThreshold, config.UseLLMForMerge)
+}
+
+// IsHybridEnabled возвращает true если гибридная транскрипция включена
+func (s *TranscriptionService) IsHybridEnabled() bool {
+	return s.HybridConfig != nil && s.HybridConfig.Enabled && s.hybridTranscriber != nil
+}
+
+// llmSelectorAdapter адаптер для LLMService к интерфейсу LLMTranscriptionSelector
+type llmSelectorAdapter struct {
+	llmService  *LLMService
+	ollamaURL   string
+	ollamaModel string
+}
+
+func (a *llmSelectorAdapter) SelectBestTranscription(original, alternative, context string) (string, error) {
+	return a.llmService.SelectBestTranscription(original, alternative, context, a.ollamaModel, a.ollamaURL)
+}
+
+// transcribeWithHybrid выполняет транскрипцию с поддержкой гибридного режима
+// Если гибридная транскрипция включена - использует HybridTranscriber
+// Иначе - обычную транскрипцию через EngineMgr
+func (s *TranscriptionService) transcribeWithHybrid(samples []float32) ([]ai.TranscriptSegment, error) {
+	if s.IsHybridEnabled() && s.hybridTranscriber != nil {
+		log.Printf("Using hybrid transcription (primary + %s)", s.HybridConfig.SecondaryModelID)
+		result, err := s.hybridTranscriber.Transcribe(samples)
+		if err != nil {
+			log.Printf("Hybrid transcription failed: %v, falling back to primary engine", err)
+			return s.EngineMgr.TranscribeWithSegments(samples)
+		}
+		if result.RetranscribedCount > 0 {
+			log.Printf("Hybrid transcription: improved %d regions (low confidence: %d words)",
+				result.RetranscribedCount, result.LowConfidenceCount)
+		}
+		return result.Segments, nil
+	}
+	return s.EngineMgr.TranscribeWithSegments(samples)
 }
 
 // SetPipeline устанавливает AudioPipeline для расширенной обработки (диаризация)
@@ -303,7 +390,7 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk, useDia
 				float64(len(micCompressed.CompressedSamples))/16000,
 				float64(len(micSamples))/16000)
 
-			micSegments, micErr = s.EngineMgr.TranscribeWithSegments(micCompressed.CompressedSamples)
+			micSegments, micErr = s.transcribeWithHybrid(micCompressed.CompressedSamples)
 			if micErr == nil {
 				// Восстанавливаем оригинальные timestamps
 				micSegments = restoreAISegmentTimestamps(micSegments, micCompressed.Regions)
@@ -345,8 +432,8 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk, useDia
 			// Проверяем нужна ли диаризация
 			diarizationEnabled := s.Pipeline != nil && s.Pipeline.IsDiarizationEnabled()
 
-			// 1. Транскрипция на сжатом аудио (быстрее)
-			sysSegments, sysErr = s.EngineMgr.TranscribeWithSegments(sysCompressed.CompressedSamples)
+			// 1. Транскрипция на сжатом аудио (быстрее) - с поддержкой гибридного режима
+			sysSegments, sysErr = s.transcribeWithHybrid(sysCompressed.CompressedSamples)
 			if sysErr == nil {
 				// Восстанавливаем оригинальные timestamps СРАЗУ
 				sysSegments = restoreAISegmentTimestamps(sysSegments, sysCompressed.Regions)
@@ -453,8 +540,8 @@ func (s *TranscriptionService) transcribeRegionsSeparately(samples []float32, re
 		log.Printf("  region[%d]: %dms-%dms (duration: %dms, samples: %d)",
 			i, region.StartMs, region.EndMs, regionDurationMs, len(regionSamples))
 
-		// Транскрибируем регион
-		segments, err := s.EngineMgr.TranscribeWithSegments(regionSamples)
+		// Транскрибируем регион (с поддержкой гибридного режима)
+		segments, err := s.transcribeWithHybrid(regionSamples)
 		if err != nil {
 			log.Printf("  region[%d] transcription error: %v", i, err)
 			continue
@@ -742,16 +829,29 @@ func (s *TranscriptionService) processMonoFromMP3Impl(chunk *session.Chunk, useD
 		return
 	}
 
-	// Fallback: обычная транскрипция без диаризации
-	text, err := s.EngineMgr.Transcribe(samples, false)
+	// Fallback: транскрипция с сегментами но без диаризации (спикеров)
+	// Это даёт таймкоды и разбивку на предложения
+	// Используем гибридную транскрипцию если включена
+	segments, err := s.transcribeWithHybrid(samples)
 	if err != nil {
 		log.Printf("Transcription error for chunk %d: %v", chunk.Index, err)
 		s.SessionMgr.UpdateChunkTranscription(chunk.SessionID, chunk.ID, "", err)
 		return
 	}
 
-	log.Printf("Transcription complete for chunk %d: %d chars", chunk.Index, len(text))
-	s.SessionMgr.UpdateChunkTranscription(chunk.SessionID, chunk.ID, text, nil)
+	// Собираем полный текст
+	var texts []string
+	for _, seg := range segments {
+		texts = append(texts, seg.Text)
+	}
+	fullText := strings.Join(texts, " ")
+
+	log.Printf("Transcription complete for chunk %d: %d chars, %d segments (no diarization)",
+		chunk.Index, len(fullText), len(segments))
+
+	// Конвертируем сегменты без спикеров (они останутся пустыми)
+	sessionSegs := convertPipelineSegments(segments, chunk.StartMs)
+	s.SessionMgr.UpdateChunkWithDiarizedSegments(chunk.SessionID, chunk.ID, fullText, sessionSegs, nil)
 }
 
 // convertPipelineSegments конвертирует сегменты из pipeline в формат session

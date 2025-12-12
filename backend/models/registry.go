@@ -45,6 +45,11 @@ type ModelInfo struct {
 	DownloadURL string     `json:"downloadUrl,omitempty"`
 	VocabURL    string     `json:"vocabUrl,omitempty"` // URL словаря (для ONNX моделей)
 
+	// Поля для RNNT моделей (3 файла: encoder, decoder, joint)
+	IsRNNT     bool   `json:"isRnnt,omitempty"`     // Модель типа RNNT (требует 3 файла)
+	DecoderURL string `json:"decoderUrl,omitempty"` // URL decoder модели
+	JointURL   string `json:"jointUrl,omitempty"`   // URL joint модели
+
 	// Поля для диаризации
 	DiarizationType DiarizationModelType `json:"diarizationType,omitempty"` // Тип модели диаризации
 	IsArchive       bool                 `json:"isArchive,omitempty"`       // Модель в архиве (tar.bz2)
@@ -166,6 +171,7 @@ var Registry = []ModelInfo{
 	},
 
 	// ===== ONNX модели (GigaAM) =====
+	// CTC модели - быстрые, параллельное декодирование
 	{
 		ID:          "gigaam-v3-ctc",
 		Name:        "GigaAM V3 CTC",
@@ -175,26 +181,63 @@ var Registry = []ModelInfo{
 		SizeBytes:   225_000_000,
 		Description: "Быстрая модель для русского языка (Sber GigaAM v3)",
 		Languages:   []string{"ru"},
-		WER:         "9.1%",
-		Speed:       "~50x",
+		WER:         "9.2%",
+		Speed:       "~50x (быстрая)",
 		Recommended: true,
 		DownloadURL: "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_ctc.int8.onnx",
 		VocabURL:    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_vocab.txt",
 	},
 	{
 		ID:          "gigaam-v3-e2e-ctc",
-		Name:        "GigaAM V3 E2E (с пунктуацией)",
+		Name:        "GigaAM V3 E2E CTC (с пунктуацией)",
 		Type:        ModelTypeONNX,
 		Engine:      EngineTypeGigaAM,
 		Size:        "225 MB",
 		SizeBytes:   225_000_000,
-		Description: "End-to-end модель с пунктуацией для русского (Sber GigaAM v3)",
+		Description: "Быстрая модель с пунктуацией для русского (Sber GigaAM v3)",
 		Languages:   []string{"ru"},
-		WER:         "9.1%",
-		Speed:       "~50x",
+		WER:         "12.0%",
+		Speed:       "~50x (быстрая)",
 		Recommended: true,
 		DownloadURL: "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_e2e_ctc.int8.onnx",
-		VocabURL:    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_e2e_vocab.txt",
+		VocabURL:    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_e2e_ctc_vocab.txt",
+	},
+	// RNNT модели - лучшее качество, последовательное декодирование
+	{
+		ID:          "gigaam-v3-rnnt",
+		Name:        "GigaAM V3 RNNT (лучшее качество)",
+		Type:        ModelTypeONNX,
+		Engine:      EngineTypeGigaAM,
+		Size:        "227 MB",
+		SizeBytes:   227_000_000,
+		Description: "Лучшее качество для русского, медленнее CTC (Sber GigaAM v3)",
+		Languages:   []string{"ru"},
+		WER:         "8.4%",
+		Speed:       "~20x (медленнее CTC)",
+		Recommended: false,
+		IsRNNT:      true,
+		DownloadURL: "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_rnnt_encoder.int8.onnx",
+		DecoderURL:  "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_rnnt_decoder.int8.onnx",
+		JointURL:    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_rnnt_joint.int8.onnx",
+		VocabURL:    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_vocab.txt",
+	},
+	{
+		ID:          "gigaam-v3-e2e-rnnt",
+		Name:        "GigaAM V3 E2E RNNT (лучшее качество + пунктуация)",
+		Type:        ModelTypeONNX,
+		Engine:      EngineTypeGigaAM,
+		Size:        "227 MB",
+		SizeBytes:   227_000_000,
+		Description: "Лучшее качество с пунктуацией для русского (Sber GigaAM v3)",
+		Languages:   []string{"ru"},
+		WER:         "11.2%",
+		Speed:       "~20x (медленнее CTC)",
+		Recommended: false,
+		IsRNNT:      true,
+		DownloadURL: "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_e2e_rnnt_encoder.int8.onnx",
+		DecoderURL:  "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_e2e_rnnt_decoder.int8.onnx",
+		JointURL:    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_e2e_rnnt_joint.int8.onnx",
+		VocabURL:    "https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_e2e_rnnt_vocab.txt",
 	},
 
 	// ===== Модели диаризации (Diarization) =====

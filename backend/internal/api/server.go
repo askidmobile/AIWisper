@@ -492,6 +492,27 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			s.TranscriptionService.ResetDiarizationState()
 			// Устанавливаем режим VAD
 			s.TranscriptionService.SetVADMode(config.VADMode)
+
+			// Настраиваем гибридную транскрипцию если включена
+			if msg.HybridEnabled && msg.HybridSecondaryModelID != "" {
+				hybridConfig := &ai.HybridTranscriptionConfig{
+					Enabled:             true,
+					SecondaryModelID:    msg.HybridSecondaryModelID,
+					ConfidenceThreshold: float32(msg.HybridConfidenceThreshold),
+					ContextWords:        msg.HybridContextWords,
+					UseLLMForMerge:      msg.HybridUseLLMForMerge,
+				}
+				// Устанавливаем дефолты если не указаны
+				if hybridConfig.ConfidenceThreshold <= 0 {
+					hybridConfig.ConfidenceThreshold = 0.5
+				}
+				if hybridConfig.ContextWords <= 0 {
+					hybridConfig.ContextWords = 3
+				}
+				s.TranscriptionService.SetHybridConfig(hybridConfig)
+			} else {
+				s.TranscriptionService.SetHybridConfig(nil)
+			}
 		}
 
 		sess, err := s.RecordingService.StartSession(config, ec, msg.UseVoiceIsolation)
@@ -570,6 +591,58 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			AutoImproveEnabled: s.TranscriptionService.AutoImproveWithLLM,
 			OllamaModel:        s.TranscriptionService.OllamaModel,
 			OllamaUrl:          s.TranscriptionService.OllamaURL,
+		})
+
+	case "set_hybrid_transcription":
+		// Включение/отключение гибридной транскрипции
+		if s.TranscriptionService == nil {
+			send(Message{Type: "error", Data: "Transcription service not available"})
+			return
+		}
+		if msg.HybridEnabled && msg.HybridSecondaryModelID != "" {
+			hybridConfig := &ai.HybridTranscriptionConfig{
+				Enabled:             true,
+				SecondaryModelID:    msg.HybridSecondaryModelID,
+				ConfidenceThreshold: float32(msg.HybridConfidenceThreshold),
+				ContextWords:        msg.HybridContextWords,
+				UseLLMForMerge:      msg.HybridUseLLMForMerge,
+			}
+			if hybridConfig.ConfidenceThreshold <= 0 {
+				hybridConfig.ConfidenceThreshold = 0.5
+			}
+			if hybridConfig.ContextWords <= 0 {
+				hybridConfig.ContextWords = 3
+			}
+			s.TranscriptionService.SetHybridConfig(hybridConfig)
+			send(Message{
+				Type:                      "hybrid_transcription_status",
+				HybridEnabled:             true,
+				HybridSecondaryModelID:    msg.HybridSecondaryModelID,
+				HybridConfidenceThreshold: msg.HybridConfidenceThreshold,
+				HybridContextWords:        msg.HybridContextWords,
+				HybridUseLLMForMerge:      msg.HybridUseLLMForMerge,
+			})
+		} else {
+			s.TranscriptionService.SetHybridConfig(nil)
+			send(Message{Type: "hybrid_transcription_status", HybridEnabled: false})
+		}
+		log.Printf("Hybrid transcription: enabled=%v, secondaryModel=%s, threshold=%.2f",
+			msg.HybridEnabled, msg.HybridSecondaryModelID, msg.HybridConfidenceThreshold)
+
+	case "get_hybrid_transcription_status":
+		// Получить текущий статус гибридной транскрипции
+		if s.TranscriptionService == nil || s.TranscriptionService.HybridConfig == nil {
+			send(Message{Type: "hybrid_transcription_status", HybridEnabled: false})
+			return
+		}
+		cfg := s.TranscriptionService.HybridConfig
+		send(Message{
+			Type:                      "hybrid_transcription_status",
+			HybridEnabled:             cfg.Enabled,
+			HybridSecondaryModelID:    cfg.SecondaryModelID,
+			HybridConfidenceThreshold: float64(cfg.ConfidenceThreshold),
+			HybridContextWords:        cfg.ContextWords,
+			HybridUseLLMForMerge:      cfg.UseLLMForMerge,
 		})
 
 	case "get_ollama_models":
@@ -1379,9 +1452,10 @@ func (s *Server) handleImportAudio(w http.ResponseWriter, r *http.Request) {
 			Data:      "Транскрипция аудио...",
 		})
 
-		// Транскрибируем чанк
+		// Транскрибируем чанк с включённой диаризацией (если доступна)
+		// Для моно файлов это создаст сегментацию с таймкодами и определением спикеров
 		if s.TranscriptionService != nil {
-			s.TranscriptionService.HandleChunkSyncWithDiarization(chunk, false)
+			s.TranscriptionService.HandleChunkSyncWithDiarization(chunk, true)
 		}
 
 		// Финальный прогресс
@@ -1485,64 +1559,88 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 	// - "sys", "Speaker 0", "Speaker 1", "Собеседник", "Собеседник 1" - собеседники
 	speakerMap := make(map[string]*voiceprint.SessionSpeaker)
 
+	// Вспомогательная функция для обработки сегмента
+	processSpeaker := func(speaker string, duration int64) {
+		if speaker == "" {
+			return
+		}
+
+		// Нормализуем ключ для группировки
+		normalizedKey := speaker
+
+		if _, ok := speakerMap[normalizedKey]; !ok {
+			localID := 0
+			isMic := false
+			displayName := speaker
+
+			// Определяем тип спикера и формируем displayName
+			switch {
+			case speaker == "mic" || speaker == "Вы":
+				isMic = true
+				localID = -1
+				displayName = "Вы"
+
+			case speaker == "sys" || speaker == "Собеседник":
+				localID = 0
+				displayName = "Собеседник 1"
+
+			case strings.HasPrefix(speaker, "Speaker "):
+				// "Speaker 0" -> localID = 0, displayName = "Собеседник 1"
+				var num int
+				fmt.Sscanf(speaker, "Speaker %d", &num)
+				localID = num
+				displayName = fmt.Sprintf("Собеседник %d", num+1)
+
+			case strings.HasPrefix(speaker, "Собеседник "):
+				// "Собеседник 1" -> localID = 0
+				var num int
+				fmt.Sscanf(speaker, "Собеседник %d", &num)
+				localID = num - 1
+				displayName = speaker // Уже в нужном формате
+
+			default:
+				// Кастомное имя (уже переименованный спикер)
+				// Пытаемся определить localID по позиции
+				localID = len(speakerMap) // Присваиваем следующий ID
+				displayName = speaker
+			}
+
+			speakerMap[normalizedKey] = &voiceprint.SessionSpeaker{
+				LocalID:      localID,
+				DisplayName:  displayName,
+				IsMic:        isMic,
+				IsRecognized: false,
+			}
+		}
+
+		sp := speakerMap[normalizedKey]
+		sp.SegmentCount++
+		sp.TotalDuration += float32(duration) / 1000.0 // мс -> сек
+	}
+
 	for _, chunk := range sess.Chunks {
-		for _, seg := range chunk.Dialogue {
-			speaker := seg.Speaker
-			if speaker == "" {
-				continue
+		// 1. Сначала проверяем Dialogue (объединённый диалог)
+		if len(chunk.Dialogue) > 0 {
+			for _, seg := range chunk.Dialogue {
+				processSpeaker(seg.Speaker, seg.End-seg.Start)
 			}
-
-			// Нормализуем ключ для группировки
-			normalizedKey := speaker
-
-			if _, ok := speakerMap[normalizedKey]; !ok {
-				localID := 0
-				isMic := false
-				displayName := speaker
-
-				// Определяем тип спикера и формируем displayName
-				switch {
-				case speaker == "mic" || speaker == "Вы":
-					isMic = true
-					localID = -1
-					displayName = "Вы"
-
-				case speaker == "sys" || speaker == "Собеседник":
-					localID = 0
-					displayName = "Собеседник 1"
-
-				case strings.HasPrefix(speaker, "Speaker "):
-					// "Speaker 0" -> localID = 0, displayName = "Собеседник 1"
-					var num int
-					fmt.Sscanf(speaker, "Speaker %d", &num)
-					localID = num
-					displayName = fmt.Sprintf("Собеседник %d", num+1)
-
-				case strings.HasPrefix(speaker, "Собеседник "):
-					// "Собеседник 1" -> localID = 0
-					var num int
-					fmt.Sscanf(speaker, "Собеседник %d", &num)
-					localID = num - 1
-					displayName = speaker // Уже в нужном формате
-
-				default:
-					// Кастомное имя (уже переименованный спикер)
-					// Пытаемся определить localID по позиции
-					localID = len(speakerMap) // Присваиваем следующий ID
-					displayName = speaker
+		} else {
+			// 2. Если Dialogue пустой, проверяем MicSegments и SysSegments
+			// Это важно для сессий без диаризации, где есть только раздельные каналы
+			for _, seg := range chunk.MicSegments {
+				speaker := seg.Speaker
+				if speaker == "" {
+					speaker = "mic" // По умолчанию для mic канала
 				}
-
-				speakerMap[normalizedKey] = &voiceprint.SessionSpeaker{
-					LocalID:      localID,
-					DisplayName:  displayName,
-					IsMic:        isMic,
-					IsRecognized: false,
-				}
+				processSpeaker(speaker, seg.End-seg.Start)
 			}
-
-			sp := speakerMap[normalizedKey]
-			sp.SegmentCount++
-			sp.TotalDuration += float32(seg.End-seg.Start) / 1000.0 // мс -> сек
+			for _, seg := range chunk.SysSegments {
+				speaker := seg.Speaker
+				if speaker == "" {
+					speaker = "sys" // По умолчанию для sys канала
+				}
+				processSpeaker(speaker, seg.End-seg.Start)
+			}
 		}
 	}
 

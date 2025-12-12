@@ -235,3 +235,98 @@ func FindOnnxModelInDir(dir string) (string, error) {
 
 	return modelPath, nil
 }
+
+// DownloadRNNTModel скачивает все 3 файла RNNT модели (encoder, decoder, joint)
+// Возвращает путь к encoder файлу (decoder и joint будут рядом)
+func DownloadRNNTModel(ctx context.Context, model ModelInfo, destDir string, onProgress ProgressFunc) (string, error) {
+	if !model.IsRNNT {
+		return "", fmt.Errorf("model %s is not RNNT type", model.ID)
+	}
+
+	// Создаём директорию
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Определяем имена файлов
+	encoderName := filepath.Base(model.DownloadURL)
+	decoderName := filepath.Base(model.DecoderURL)
+	jointName := filepath.Base(model.JointURL)
+
+	encoderPath := filepath.Join(destDir, encoderName)
+	decoderPath := filepath.Join(destDir, decoderName)
+	jointPath := filepath.Join(destDir, jointName)
+
+	// Общий размер для прогресса (примерно: encoder ~225MB, decoder ~1MB, joint ~0.5MB)
+	totalSize := model.SizeBytes
+	downloadedSize := int64(0)
+
+	// Обёртка для прогресса с учётом всех файлов
+	wrapProgress := func(fileSize int64) ProgressFunc {
+		return func(progress float64) {
+			if onProgress != nil {
+				// Вычисляем общий прогресс
+				fileProgress := float64(fileSize) * progress / 100
+				totalProgress := (float64(downloadedSize) + fileProgress) / float64(totalSize) * 100
+				onProgress(totalProgress)
+			}
+		}
+	}
+
+	// Скачиваем encoder (основной файл, ~99% размера)
+	encoderSize := int64(float64(totalSize) * 0.99)
+	if err := DownloadFile(ctx, model.DownloadURL, encoderPath, encoderSize, wrapProgress(encoderSize)); err != nil {
+		return "", fmt.Errorf("failed to download encoder: %w", err)
+	}
+	downloadedSize += encoderSize
+
+	// Скачиваем decoder (~0.5% размера)
+	decoderSize := int64(float64(totalSize) * 0.005)
+	if err := DownloadFile(ctx, model.DecoderURL, decoderPath, decoderSize, wrapProgress(decoderSize)); err != nil {
+		// Удаляем encoder если decoder не скачался
+		os.Remove(encoderPath)
+		return "", fmt.Errorf("failed to download decoder: %w", err)
+	}
+	downloadedSize += decoderSize
+
+	// Скачиваем joint (~0.5% размера)
+	jointSize := int64(float64(totalSize) * 0.005)
+	if err := DownloadFile(ctx, model.JointURL, jointPath, jointSize, wrapProgress(jointSize)); err != nil {
+		// Удаляем encoder и decoder если joint не скачался
+		os.Remove(encoderPath)
+		os.Remove(decoderPath)
+		return "", fmt.Errorf("failed to download joint: %w", err)
+	}
+
+	// Финальный прогресс
+	if onProgress != nil {
+		onProgress(100)
+	}
+
+	return encoderPath, nil
+}
+
+// IsRNNTModelComplete проверяет, что все 3 файла RNNT модели скачаны
+func IsRNNTModelComplete(encoderPath string) bool {
+	// Вычисляем пути к decoder и joint
+	dir := filepath.Dir(encoderPath)
+	base := filepath.Base(encoderPath)
+
+	var decoderPath, jointPath string
+	if strings.Contains(base, ".int8.") {
+		decoderPath = filepath.Join(dir, strings.Replace(base, "_encoder.int8.", "_decoder.int8.", 1))
+		jointPath = filepath.Join(dir, strings.Replace(base, "_encoder.int8.", "_joint.int8.", 1))
+	} else {
+		decoderPath = filepath.Join(dir, strings.Replace(base, "_encoder.", "_decoder.", 1))
+		jointPath = filepath.Join(dir, strings.Replace(base, "_encoder.", "_joint.", 1))
+	}
+
+	// Проверяем существование всех файлов
+	for _, path := range []string{encoderPath, decoderPath, jointPath} {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return false
+		}
+	}
+
+	return true
+}

@@ -11,6 +11,7 @@ interface AppSettings {
     useVoiceIsolation: boolean;
     captureSystem: boolean;
     theme?: 'light' | 'dark';
+    showSessionStats?: boolean; // Показывать статистику записей в сайдбаре
 }
 
 interface StoreSchema {

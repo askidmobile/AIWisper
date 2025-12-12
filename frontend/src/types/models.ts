@@ -29,6 +29,10 @@ export interface ModelInfo {
     // Поля для диаризации
     diarizationType?: DiarizationModelType;
     isArchive?: boolean;
+    // Поля для RNNT моделей
+    isRnnt?: boolean;
+    decoderUrl?: string;
+    jointUrl?: string;
 }
 
 export interface ModelState extends ModelInfo {
@@ -65,6 +69,19 @@ export interface AppSettings {
     diarizationSegModelId?: string;
     diarizationEmbModelId?: string;
     diarizationProvider?: string;
+    // UI settings
+    showSessionStats?: boolean; // Показывать статистику записей в сайдбаре
+    // Гибридная транскрипция (двухпроходное распознавание)
+    hybridTranscription?: HybridTranscriptionSettings;
+}
+
+// Настройки гибридной транскрипции
+export interface HybridTranscriptionSettings {
+    enabled: boolean;                    // Включена ли гибридная транскрипция
+    secondaryModelId: string;            // ID дополнительной модели для второго прохода
+    confidenceThreshold: number;         // Порог уверенности (0.0 - 1.0), ниже которого слово перетранскрибируется
+    contextWords: number;                // Количество слов контекста вокруг проблемного слова (1-5)
+    useLLMForMerge: boolean;             // Использовать LLM для выбора лучшего варианта
 }
 
 // Модель Ollama для summary

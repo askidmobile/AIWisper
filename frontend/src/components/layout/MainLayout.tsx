@@ -12,6 +12,7 @@ import { useWebSocketContext } from '../../context/WebSocketContext';
 import ModelManager from '../ModelManager';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { AudioMeterBar } from '../common/AudioMeterBar';
+import { HybridTranscriptionSettings } from '../../types/models';
 
 interface MainLayoutProps {
     theme: 'light' | 'dark';
@@ -49,6 +50,15 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     const [pauseThreshold, setPauseThreshold] = useState(0.5); // Pause threshold for segmentation (seconds)
     const [streamingChunkSeconds, setStreamingChunkSeconds] = useState(15); // Streaming chunk size
     const [streamingConfirmationThreshold, setStreamingConfirmationThreshold] = useState(0.85); // Streaming confirmation threshold
+    
+    // Гибридная транскрипция (двухпроходное распознавание)
+    const [hybridTranscription, setHybridTranscription] = useState<HybridTranscriptionSettings>({
+        enabled: false,
+        secondaryModelId: '',
+        confidenceThreshold: 0.5,
+        contextWords: 3,
+        useLLMForMerge: true
+    });
 
     // Devices (fetched via navigator.mediaDevices usually, or Electron IPC)
     const [inputDevices, setInputDevices] = useState<any[]>([]);
@@ -89,6 +99,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                 if (p.pauseThreshold !== undefined) setPauseThreshold(p.pauseThreshold);
                 if (p.streamingChunkSeconds !== undefined) setStreamingChunkSeconds(p.streamingChunkSeconds);
                 if (p.streamingConfirmationThreshold !== undefined) setStreamingConfirmationThreshold(p.streamingConfirmationThreshold);
+                if (p.hybridTranscription) setHybridTranscription(p.hybridTranscription);
             }
         } catch (e) {
             console.error("Failed to load settings", e);
@@ -99,10 +110,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     useEffect(() => {
         const settings = {
             micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold,
-            streamingChunkSeconds, streamingConfirmationThreshold
+            streamingChunkSeconds, streamingConfirmationThreshold, hybridTranscription
         };
         localStorage.setItem('aiwisper_settings', JSON.stringify(settings));
-    }, [micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold, streamingChunkSeconds, streamingConfirmationThreshold]);
+    }, [micDevice, captureSystem, useVoiceIsolation, echoCancel, ollamaModel, enableStreaming, pauseThreshold, streamingChunkSeconds, streamingConfirmationThreshold, hybridTranscription]);
 
     // Subscribe to model loading events
     useEffect(() => {
@@ -150,9 +161,18 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                     useVoiceIsolation: useVoiceIsolation,
                     echoCancel: echoCancel,
                     pauseThreshold: pauseThreshold,
-                    useNativeCapture: true // Use SCK by default on macOS 12+
+                    useNativeCapture: true, // Use SCK by default on macOS 12+
+                    // Гибридная транскрипция
+                    hybridEnabled: hybridTranscription.enabled,
+                    hybridSecondaryModelId: hybridTranscription.secondaryModelId,
+                    hybridConfidenceThreshold: hybridTranscription.confidenceThreshold,
+                    hybridContextWords: hybridTranscription.contextWords,
+                    hybridUseLLMForMerge: hybridTranscription.useLLMForMerge,
                 });
                 addLog('Recording started');
+                if (hybridTranscription.enabled && hybridTranscription.secondaryModelId) {
+                    addLog(`Hybrid transcription enabled: secondary model = ${hybridTranscription.secondaryModelId}`);
+                }
             } catch (e: any) {
                 addLog(`Error starting session: ${e.message}`);
             }
@@ -345,6 +365,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                         setStreamingConfirmationThreshold={setStreamingConfirmationThreshold}
                         theme={theme}
                         setTheme={() => toggleTheme()}
+                        hybridTranscription={hybridTranscription}
+                        setHybridTranscription={setHybridTranscription}
                     />
                 )}
 

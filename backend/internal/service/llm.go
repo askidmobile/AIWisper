@@ -169,16 +169,26 @@ func (s *LLMService) ImproveTranscriptionWithLLM(dialogue []session.TranscriptSe
 func (s *LLMService) improveDialogueBatch(dialogue []session.TranscriptSegment, ollamaModel string, ollamaUrl string) ([]session.TranscriptSegment, error) {
 	var dialogueText strings.Builder
 	for _, seg := range dialogue {
-		speaker := "Вы"
+		// Определяем отображаемую метку для LLM
+		displaySpeaker := "Вы"
 		if seg.Speaker != "" && seg.Speaker != "mic" {
-			// Поддержка "sys", "Собеседник", "Собеседник 1", "Собеседник 2" и т.д.
-			if strings.HasPrefix(seg.Speaker, "Собеседник") {
-				speaker = seg.Speaker
-			} else {
-				speaker = "Собеседник"
+			// Поддержка "sys", "Собеседник", "Собеседник 1", "Собеседник 2", "Speaker N" и т.д.
+			switch {
+			case strings.HasPrefix(seg.Speaker, "Собеседник"):
+				displaySpeaker = seg.Speaker // Уже в нужном формате
+			case strings.HasPrefix(seg.Speaker, "Speaker "):
+				// "Speaker 0" -> "Собеседник 1"
+				var num int
+				fmt.Sscanf(seg.Speaker, "Speaker %d", &num)
+				displaySpeaker = fmt.Sprintf("Собеседник %d", num+1)
+			case seg.Speaker == "sys":
+				displaySpeaker = "Собеседник" // Один собеседник без номера
+			default:
+				// Кастомное имя - сохраняем как есть
+				displaySpeaker = seg.Speaker
 			}
 		}
-		dialogueText.WriteString(fmt.Sprintf("[%s] %s\n", speaker, seg.Text))
+		dialogueText.WriteString(fmt.Sprintf("[%s] %s\n", displaySpeaker, seg.Text))
 	}
 
 	text := dialogueText.String()
@@ -237,7 +247,32 @@ func (s *LLMService) parseImprovedDialogue(improvedText string, originalDialogue
 	lines := strings.Split(improvedText, "\n")
 	var improved []session.TranscriptSegment
 	origIdx := 0 // Индекс в оригинальном диалоге для timestamps
-	var lastSpeaker string
+	var lastSpeakerType string
+
+	// Вспомогательная функция для определения типа спикера (mic или sys)
+	getSpeakerType := func(speaker string) string {
+		if speaker == "mic" || speaker == "Вы" {
+			return "mic"
+		}
+		return "sys" // Все остальные - собеседники
+	}
+
+	// Вспомогательная функция для получения оригинального спикера по типу
+	// Это нужно чтобы сохранить оригинальные метки (sys, Speaker 0, etc.)
+	getOriginalSpeaker := func(speakerType string, origIdx int) string {
+		if origIdx < len(originalDialogue) {
+			origSpeaker := originalDialogue[origIdx].Speaker
+			origType := getSpeakerType(origSpeaker)
+			if origType == speakerType {
+				return origSpeaker
+			}
+		}
+		// Fallback: возвращаем стандартные метки
+		if speakerType == "mic" {
+			return "mic"
+		}
+		return "sys"
+	}
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -245,38 +280,28 @@ func (s *LLMService) parseImprovedDialogue(improvedText string, originalDialogue
 			continue
 		}
 
-		var speaker, text string
+		var parsedSpeakerType, text string
 
 		// Парсим разные форматы спикеров
 		switch {
 		case strings.HasPrefix(line, "[Вы]"):
-			speaker = "mic"
+			parsedSpeakerType = "mic"
 			text = strings.TrimPrefix(line, "[Вы]")
 		case strings.HasPrefix(line, "[Собеседник"):
 			// Поддержка [Собеседник], [Собеседник 1], [Собеседник 2] и т.д.
-			// ВАЖНО: сохраняем номер собеседника!
+			parsedSpeakerType = "sys"
 			idx := strings.Index(line, "]")
 			if idx > 0 {
-				speakerLabel := strings.TrimSpace(line[1:idx]) // "Собеседник" или "Собеседник 1"
-				// Извлекаем номер собеседника если есть
-				if speakerLabel == "Собеседник" {
-					speaker = "Собеседник"
-				} else {
-					// "Собеседник 1", "Собеседник 2" и т.д. - сохраняем как есть
-					speaker = speakerLabel
-				}
 				text = line[idx+1:]
 			}
 		case strings.HasPrefix(line, "Вы:"):
-			speaker = "mic"
+			parsedSpeakerType = "mic"
 			text = strings.TrimPrefix(line, "Вы:")
 		case strings.HasPrefix(line, "Собеседник"):
 			// Поддержка Собеседник:, Собеседник 1:, Собеседник 2: и т.д.
-			// ВАЖНО: сохраняем номер собеседника!
+			parsedSpeakerType = "sys"
 			idx := strings.Index(line, ":")
 			if idx > 0 {
-				speakerLabel := strings.TrimSpace(line[:idx]) // "Собеседник" или "Собеседник 1"
-				speaker = speakerLabel
 				text = line[idx+1:]
 			}
 		default:
@@ -290,32 +315,31 @@ func (s *LLMService) parseImprovedDialogue(improvedText string, originalDialogue
 			continue
 		}
 
-		// Определяем timestamps
+		// Определяем timestamps и оригинального спикера
 		var start, end int64
-
-		// Нормализуем спикера для сравнения (mic vs Собеседник*)
-		speakerType := speaker
-		if speaker == "mic" {
-			speakerType = "mic"
-		} else if strings.HasPrefix(speaker, "Собеседник") {
-			speakerType = "sys" // Все собеседники - это "sys" канал
-		}
-
-		lastSpeakerType := lastSpeaker
-		if lastSpeaker == "mic" {
-			lastSpeakerType = "mic"
-		} else if strings.HasPrefix(lastSpeaker, "Собеседник") {
-			lastSpeakerType = "sys"
-		}
+		var speaker string
 
 		// Если тип спикера (mic/sys) сменился - берём следующий оригинальный сегмент
 		// Если тот же тип (разбитая реплика) - интерполируем время
-		if speakerType != lastSpeakerType {
+		if parsedSpeakerType != lastSpeakerType {
 			// Новый тип спикера - синхронизируем с оригиналом
+			// Ищем следующий оригинальный сегмент с таким же типом
+			for origIdx < len(originalDialogue) {
+				origType := getSpeakerType(originalDialogue[origIdx].Speaker)
+				if origType == parsedSpeakerType {
+					break
+				}
+				origIdx++
+			}
+
 			if origIdx < len(originalDialogue) {
 				start = originalDialogue[origIdx].Start
 				end = originalDialogue[origIdx].End
+				speaker = originalDialogue[origIdx].Speaker // ВАЖНО: сохраняем оригинальную метку!
 				origIdx++
+			} else {
+				// Fallback если не нашли
+				speaker = getOriginalSpeaker(parsedSpeakerType, 0)
 			}
 		} else {
 			// Тот же тип спикера - это разбитая реплика от LLM
@@ -323,24 +347,23 @@ func (s *LLMService) parseImprovedDialogue(improvedText string, originalDialogue
 			if len(improved) > 0 {
 				prev := improved[len(improved)-1]
 				start = prev.End
-				end = start + 2000 // +2 секунды по умолчанию
-				// Если есть следующий оригинальный сегмент с тем же типом спикера - подтягиваем
-				origSpeakerType := ""
+				end = start + 2000     // +2 секунды по умолчанию
+				speaker = prev.Speaker // Сохраняем того же спикера
+
+				// Если есть следующий оригинальный сегмент с тем же типом спикера - подтягиваем время
 				if origIdx < len(originalDialogue) {
-					if originalDialogue[origIdx].Speaker == "mic" {
-						origSpeakerType = "mic"
-					} else {
-						origSpeakerType = "sys"
+					origType := getSpeakerType(originalDialogue[origIdx].Speaker)
+					if origType == parsedSpeakerType {
+						end = originalDialogue[origIdx].End
+						origIdx++
 					}
 				}
-				if origIdx < len(originalDialogue) && origSpeakerType == speakerType {
-					end = originalDialogue[origIdx].End
-					origIdx++
-				}
+			} else {
+				speaker = getOriginalSpeaker(parsedSpeakerType, 0)
 			}
 		}
 
-		lastSpeaker = speaker
+		lastSpeakerType = parsedSpeakerType
 
 		improved = append(improved, session.TranscriptSegment{
 			Start: start, End: end, Text: text, Speaker: speaker,
@@ -687,6 +710,81 @@ func sortSegmentsByTime(segments []session.TranscriptSegment) {
 			}
 		}
 	}
+}
+
+// SelectBestTranscription выбирает лучший вариант транскрипции с помощью LLM
+// Используется для гибридной транскрипции
+func (s *LLMService) SelectBestTranscription(original, alternative, context, ollamaModel, ollamaUrl string) (string, error) {
+	resp, err := http.Get(ollamaUrl + "/api/tags")
+	if err != nil {
+		return "", fmt.Errorf("Ollama not running at %s", ollamaUrl)
+	}
+	resp.Body.Close()
+
+	systemPrompt := `Ты — эксперт по выбору лучшей транскрипции речи.
+
+ТВОЯ ЗАДАЧА:
+Выбрать наиболее правильный вариант транскрипции из двух предложенных.
+
+КРИТЕРИИ ВЫБОРА (в порядке приоритета):
+1. Грамматическая корректность
+2. Соответствие контексту разговора
+3. Правильность технических терминов (API, B2C, UMS и т.д.)
+4. Естественность речи
+
+ФОРМАТ ОТВЕТА:
+Верни ТОЛЬКО выбранный текст, без объяснений и комментариев.
+Если оба варианта одинаково хороши — верни первый.
+Если оба варианта плохие — верни первый.`
+
+	userPrompt := fmt.Sprintf(`Контекст разговора:
+%s
+
+Вариант 1 (основная модель):
+%s
+
+Вариант 2 (дополнительная модель):
+%s
+
+Выбери лучший вариант:`, context, original, alternative)
+
+	reqBody := map[string]interface{}{
+		"model": ollamaModel,
+		"messages": []map[string]string{
+			{"role": "system", "content": systemPrompt},
+			{"role": "user", "content": userPrompt},
+		},
+		"stream": false,
+		"options": map[string]interface{}{
+			"temperature": 0.1,
+			"num_predict": 512,
+		},
+	}
+
+	response, err := s.callOllama(ollamaUrl, reqBody)
+	if err != nil {
+		return "", err
+	}
+
+	// Проверяем что ответ похож на один из вариантов
+	response = strings.TrimSpace(response)
+
+	// Если LLM вернул что-то совсем другое — возвращаем оригинал
+	if len(response) == 0 {
+		return original, nil
+	}
+
+	// Проверяем схожесть с вариантами
+	origSim := textSimilarity(strings.ToLower(response), strings.ToLower(original))
+	altSim := textSimilarity(strings.ToLower(response), strings.ToLower(alternative))
+
+	// Если ответ больше похож на альтернативу — возвращаем её
+	if altSim > origSim && altSim > 0.5 {
+		return alternative, nil
+	}
+
+	// Иначе возвращаем оригинал
+	return original, nil
 }
 
 // GetOllamaModels gets models list from Ollama

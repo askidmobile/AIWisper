@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { flushSync } from 'react-dom';
 import ModelManager from './components/ModelManager';
 import SessionTabs, { TabType } from './components/SessionTabs';
@@ -312,6 +312,7 @@ function App() {
     // UI state
     const [isStopping, setIsStopping] = useState(false); // Индикатор остановки записи
     const [consoleExpanded, setConsoleExpanded] = useState(false); // Сворачиваемая консоль
+    const [showSessionStats, setShowSessionStats] = useState(true); // Показывать статистику в сайдбаре
 
     // Full transcription state
     const [isFullTranscribing, setIsFullTranscribing] = useState(false);
@@ -393,6 +394,10 @@ function App() {
                     if (settings.diarizationProvider) {
                         setSavedDiarizationProvider(settings.diarizationProvider);
                     }
+                    // UI настройки
+                    if (settings.showSessionStats !== undefined) {
+                        setShowSessionStats(settings.showSessionStats);
+                    }
                     addLog('Settings loaded');
                     if (settings.diarizationEnabled) {
                         addLog(`Diarization settings: enabled=${settings.diarizationEnabled}, seg=${settings.diarizationSegModelId}, emb=${settings.diarizationEmbModelId}`);
@@ -426,14 +431,16 @@ function App() {
                     diarizationEnabled: savedDiarizationEnabled,
                     diarizationSegModelId: savedDiarizationSegModelId,
                     diarizationEmbModelId: savedDiarizationEmbModelId,
-                    diarizationProvider: savedDiarizationProvider
+                    diarizationProvider: savedDiarizationProvider,
+                    // UI настройки
+                    showSessionStats
                 });
             } catch (err) {
                 console.error('Failed to save settings:', err);
             }
         };
         saveSettings();
-    }, [language, activeModelId, echoCancel, useVoiceIsolation, vadMode, captureSystem, ollamaModel, ollamaUrl, theme, settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider]);
+    }, [language, activeModelId, echoCancel, useVoiceIsolation, vadMode, captureSystem, ollamaModel, ollamaUrl, theme, settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider, showSessionStats]);
 
     // Применяем тему к корню документа
     useEffect(() => {
@@ -1021,9 +1028,29 @@ function App() {
         if (!settingsLoaded) return;
         if (!savedDiarizationEnabled) return;
         if (diarizationAutoEnableAttempted.current) return;
+        if (status !== 'Connected') return;
+
+        // FluidAudio (coreml) не требует моделей - модели скачиваются автоматически
+        if (savedDiarizationProvider === 'coreml') {
+            diarizationAutoEnableAttempted.current = true;
+            console.log('[Diarization] Auto-enabling FluidAudio (coreml)...');
+            addLog('Auto-enabling FluidAudio diarization...');
+
+            setDiarizationLoading(true);
+            setDiarizationError(null);
+
+            wsRef.current?.send(JSON.stringify({
+                type: 'enable_diarization',
+                segmentationModelPath: '',
+                embeddingModelPath: '',
+                diarizationProvider: 'coreml'
+            }));
+            return;
+        }
+
+        // Для Sherpa-ONNX нужны модели
         if (!savedDiarizationSegModelId || !savedDiarizationEmbModelId) return;
         if (models.length === 0) return;
-        if (status !== 'Connected') return;
 
         // Находим модели
         const segModel = models.find(m => m.id === savedDiarizationSegModelId);
@@ -1128,6 +1155,30 @@ function App() {
         wsRef.current?.send(JSON.stringify({ type: 'get_session_speakers', sessionId }));
     };
 
+    // Вычисляем статистику сессий
+    const sessionStats = useMemo(() => {
+        if (sessions.length === 0) {
+            return { totalSessions: 0, totalDuration: 0, avgDuration: 0, totalChunks: 0 };
+        }
+
+        let totalDuration = 0;
+        let totalChunks = 0;
+
+        sessions.forEach(session => {
+            // Длительность в секундах
+            totalDuration += (session.totalDuration || 0) / 1000;
+            // Количество чанков
+            totalChunks += session.chunksCount || 0;
+        });
+
+        return {
+            totalSessions: sessions.length,
+            totalDuration,
+            avgDuration: totalDuration / sessions.length,
+            totalChunks
+        };
+    }, [sessions]);
+
     const handleRetranscribe = (chunkId: string) => {
         if (!selectedSession) return;
 
@@ -1215,17 +1266,35 @@ function App() {
     const handleEnableDiarization = useCallback((segModelId: string, embModelId: string, provider: string) => {
         if (!wsRef.current || wsRef.current.readyState !== RPC_READY_STATE.OPEN) return;
 
-        // Найти пути к моделям
+        setDiarizationLoading(true);
+        setDiarizationError(null);
+
+        // FluidAudio (coreml) не требует моделей - они скачиваются автоматически
+        if (provider === 'coreml') {
+            setSavedDiarizationEnabled(true);
+            setSavedDiarizationSegModelId('');
+            setSavedDiarizationEmbModelId('');
+            setSavedDiarizationProvider('coreml');
+
+            wsRef.current.send(JSON.stringify({
+                type: 'enable_diarization',
+                segmentationModelPath: '',
+                embeddingModelPath: '',
+                diarizationProvider: 'coreml'
+            }));
+            addLog('Enabling FluidAudio diarization...');
+            return;
+        }
+
+        // Для Sherpa-ONNX нужны модели
         const segModel = models.find(m => m.id === segModelId);
         const embModel = models.find(m => m.id === embModelId);
 
         if (!segModel?.path || !embModel?.path) {
             setDiarizationError('Модели не найдены или не скачаны');
+            setDiarizationLoading(false);
             return;
         }
-
-        setDiarizationLoading(true);
-        setDiarizationError(null);
 
         // Сохраняем настройки для авто-включения при перезапуске
         setSavedDiarizationEnabled(true);
@@ -2381,8 +2450,70 @@ function App() {
                                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                             </svg>
                         </button>
+                        <button
+                            className="btn-icon btn-icon-sm"
+                            onClick={() => setShowSessionStats(!showSessionStats)}
+                            title="Статистика"
+                            style={{
+                                width: '32px',
+                                height: '32px',
+                                background: showSessionStats ? 'var(--primary-alpha)' : undefined,
+                            }}
+                        >
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <line x1="18" y1="20" x2="18" y2="10"/>
+                                <line x1="12" y1="20" x2="12" y2="4"/>
+                                <line x1="6" y1="20" x2="6" y2="14"/>
+                            </svg>
+                        </button>
                     </div>
                 </div>
+
+                {/* Stats Panel */}
+                {showSessionStats && sessions.length > 0 && (
+                    <div
+                        style={{
+                            padding: '0.75rem 1rem',
+                            borderBottom: '1px solid var(--glass-border-subtle)',
+                            background: 'var(--surface-alpha)',
+                        }}
+                    >
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                            <div style={{ textAlign: 'center' }}>
+                                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--primary)' }}>
+                                    {sessionStats.totalSessions}
+                                </div>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                    Записей
+                                </div>
+                            </div>
+                            <div style={{ textAlign: 'center' }}>
+                                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--success)' }}>
+                                    {formatDurationUtil(sessionStats.totalDuration)}
+                                </div>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                    Всего
+                                </div>
+                            </div>
+                            <div style={{ textAlign: 'center' }}>
+                                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--warning)' }}>
+                                    {formatDurationUtil(sessionStats.avgDuration)}
+                                </div>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                    Средняя
+                                </div>
+                            </div>
+                            <div style={{ textAlign: 'center' }}>
+                                <div style={{ fontSize: '1.5rem', fontWeight: 700, color: 'var(--info)' }}>
+                                    {sessionStats.totalChunks}
+                                </div>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                    Чанков
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {/* Sessions List with Grouping */}
                 <div
@@ -3539,7 +3670,7 @@ function App() {
                                     onDrop={handleDrop}
                                     style={{
                                         marginTop: '1.5rem',
-                                        padding: '2rem',
+                                        padding: '1.25rem 2rem',
                                         border: `2px dashed ${isDragging ? 'var(--primary)' : 'var(--glass-border)'}`,
                                         borderRadius: 'var(--radius-xl)',
                                         background: isDragging ? 'rgba(139, 92, 246, 0.1)' : 'var(--surface)',
@@ -3553,9 +3684,8 @@ function App() {
                                 >
                                     {isImporting ? (
                                         <>
-                                            <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>⏳</div>
-                                            <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.5rem' }}>
-                                                {importProgress || 'Импорт...'}
+                                            <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.75rem' }}>
+                                                {importProgress || 'Идет транскрибирование'}
                                             </div>
                                             <div style={{
                                                 width: '100%',
@@ -3563,7 +3693,6 @@ function App() {
                                                 background: 'var(--glass-border)',
                                                 borderRadius: '2px',
                                                 overflow: 'hidden',
-                                                marginTop: '0.75rem',
                                             }}>
                                                 <div style={{
                                                     width: '30%',
@@ -3581,17 +3710,13 @@ function App() {
                                             `}</style>
                                         </>
                                     ) : (
-                                        <>
-                                            <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>
-                                                {isDragging ? '📥' : '📁'}
-                                            </div>
-                                            <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.5rem' }}>
-                                                {isDragging ? 'Отпустите для импорта' : 'Или импортируйте аудио файл'}
-                                            </div>
-                                            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                                                Перетащите сюда MP3, WAV, M4A, OGG или FLAC
-                                            </div>
-                                        </>
+                                        <div style={{ 
+                                            fontSize: '0.95rem', 
+                                            color: isDragging ? 'var(--primary)' : 'var(--text-muted)',
+                                            fontWeight: isDragging ? 600 : 400,
+                                        }}>
+                                            {isDragging ? 'Отпустите для импорта' : 'Перетащите сюда MP3, WAV, M4A, OGG или FLAC'}
+                                        </div>
                                     )}
                                 </div>
 

@@ -81,6 +81,13 @@ type Message struct {
 	StreamingTimestamp             int64   `json:"streamingTimestamp,omitempty"`             // Unix timestamp в миллисекундах
 	StreamingChunkSeconds          float64 `json:"streamingChunkSeconds,omitempty"`          // Размер чанка в секундах (1-30)
 	StreamingConfirmationThreshold float64 `json:"streamingConfirmationThreshold,omitempty"` // Порог подтверждения (0.5-1.0)
+
+	// Hybrid Transcription (двухпроходное распознавание)
+	HybridEnabled             bool    `json:"hybridEnabled,omitempty"`             // Включена ли гибридная транскрипция
+	HybridSecondaryModelID    string  `json:"hybridSecondaryModelId,omitempty"`    // ID дополнительной модели
+	HybridConfidenceThreshold float64 `json:"hybridConfidenceThreshold,omitempty"` // Порог уверенности (0.0-1.0)
+	HybridContextWords        int     `json:"hybridContextWords,omitempty"`        // Количество слов контекста
+	HybridUseLLMForMerge      bool    `json:"hybridUseLLMForMerge,omitempty"`      // Использовать LLM для слияния
 }
 
 type OllamaModel struct {

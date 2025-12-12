@@ -4,8 +4,66 @@ import { useWebSocketContext } from '../../context/WebSocketContext';
 import SessionTabs, { TabType } from '../SessionTabs';
 import SummaryView from '../SummaryView';
 import { SessionControls } from './SessionControls';
-import { TranscriptSegment } from '../../types/session';
+import { TranscriptSegment, TranscriptWord } from '../../types/session';
 import { SessionSpeaker } from '../../types/voiceprint';
+
+// Компонент для отображения слова с визуализацией confidence
+const ConfidenceWord: React.FC<{ word: TranscriptWord; showConfidence: boolean }> = ({ word, showConfidence }) => {
+    if (!showConfidence || !word.p || word.p >= 0.7) {
+        // Высокая уверенность или confidence не показываем - обычный текст
+        return <span>{word.text} </span>;
+    }
+    
+    // Низкая уверенность - подсвечиваем
+    const isVeryLow = word.p < 0.4;
+    const isLow = word.p < 0.7;
+    
+    const style: React.CSSProperties = {
+        backgroundColor: isVeryLow 
+            ? 'rgba(255, 152, 0, 0.25)' // Оранжевый для очень низкой
+            : isLow 
+                ? 'rgba(255, 193, 7, 0.15)' // Жёлтый для низкой
+                : 'transparent',
+        borderRadius: '2px',
+        padding: '0 2px',
+        cursor: 'help',
+        borderBottom: isVeryLow ? '1px dashed rgba(255, 152, 0, 0.6)' : undefined,
+    };
+    
+    return (
+        <span 
+            style={style} 
+            title={`Уверенность: ${Math.round(word.p * 100)}%`}
+        >
+            {word.text}{' '}
+        </span>
+    );
+};
+
+// Компонент для отображения текста сегмента с confidence
+const SegmentText: React.FC<{ 
+    segment: TranscriptSegment; 
+    showConfidence: boolean;
+    isCurrentSegment: boolean;
+}> = ({ segment, showConfidence, isCurrentSegment }) => {
+    // Если нет слов или не показываем confidence - просто текст
+    if (!showConfidence || !segment.words || segment.words.length === 0) {
+        return (
+            <span style={{ color: isCurrentSegment ? 'var(--text-primary)' : 'var(--text-primary)' }}>
+                {segment.text || ''}
+            </span>
+        );
+    }
+    
+    // Отображаем слова с confidence
+    return (
+        <span style={{ color: isCurrentSegment ? 'var(--text-primary)' : 'var(--text-primary)' }}>
+            {segment.words.map((word, idx) => (
+                <ConfidenceWord key={idx} word={word} showConfidence={showConfidence} />
+            ))}
+        </span>
+    );
+};
 
 const API_BASE = `http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}`;
 
@@ -41,6 +99,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     // Local state for UI
     const [activeTab, setActiveTab] = useState<TabType>('dialogue');
     const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
+    const [showConfidence, setShowConfidence] = useState(false); // Показывать confidence слов
 
     // Refs
     const transcriptionRef = useRef<HTMLDivElement>(null);
@@ -562,6 +621,27 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                                     {autoScrollToPlayback ? '📍 Следить' : '📍 Не следить'}
                                                 </button>
                                             )}
+                                            {/* Кнопка показа confidence */}
+                                            <button
+                                                onClick={() => setShowConfidence(!showConfidence)}
+                                                style={{
+                                                    padding: '4px 8px',
+                                                    fontSize: '0.75rem',
+                                                    backgroundColor: showConfidence ? 'var(--warning)' : 'transparent',
+                                                    color: showConfidence ? 'white' : 'var(--text-muted)',
+                                                    border: '1px solid var(--border)',
+                                                    borderRadius: '4px',
+                                                    cursor: 'pointer',
+                                                    transition: 'all 0.2s',
+                                                    marginLeft: isPlaying ? '4px' : '0'
+                                                }}
+                                                title={showConfidence 
+                                                    ? 'Скрыть подсветку уверенности распознавания' 
+                                                    : 'Показать слова с низкой уверенностью распознавания (жёлтый <70%, оранжевый <40%)'
+                                                }
+                                            >
+                                                {showConfidence ? '🎯 Confidence' : '🎯 Confidence'}
+                                            </button>
                                         </div>
                                         {allDialogue.map((seg, idx) => {
                                             const totalMs = seg.start || 0;
@@ -618,7 +698,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                                         [{timeStr}]
                                                     </span>{' '}
                                                     <span style={{ color: speakerColor, fontWeight: 'bold' }}>{speakerName}:</span>{' '}
-                                                    <span style={{ color: isCurrentSegment ? 'var(--text-primary)' : 'var(--text-primary)' }}>{seg.text || ''}</span>
+                                                    <SegmentText segment={seg} showConfidence={showConfidence} isCurrentSegment={isCurrentSegment} />
                                                 </div>
                                             );
                                         })}

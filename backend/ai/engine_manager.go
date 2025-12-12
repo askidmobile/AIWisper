@@ -77,9 +77,18 @@ func (em *EngineManager) SetActiveModel(modelID string) error {
 		if vocabPath == "" {
 			return fmt.Errorf("vocab path not found for GigaAM model %s", modelID)
 		}
-		newEngine, err = NewGigaAMEngine(modelPath, vocabPath)
-		if err != nil {
-			return fmt.Errorf("failed to create GigaAM engine: %w", err)
+
+		// Проверяем, является ли модель RNNT
+		if modelInfo.IsRNNT {
+			newEngine, err = NewGigaAMRNNTEngine(modelPath, vocabPath)
+			if err != nil {
+				return fmt.Errorf("failed to create GigaAM RNNT engine: %w", err)
+			}
+		} else {
+			newEngine, err = NewGigaAMEngine(modelPath, vocabPath)
+			if err != nil {
+				return fmt.Errorf("failed to create GigaAM engine: %w", err)
+			}
 		}
 
 	case models.EngineTypeFluidASR:
@@ -207,7 +216,7 @@ func (em *EngineManager) GetEngineInfo() map[string]interface{} {
 	return info
 }
 
-// IsGigaAMActive проверяет, активен ли GigaAM движок
+// IsGigaAMActive проверяет, активен ли GigaAM движок (CTC или RNNT)
 func (em *EngineManager) IsGigaAMActive() bool {
 	em.mu.RLock()
 	defer em.mu.RUnlock()
@@ -215,7 +224,8 @@ func (em *EngineManager) IsGigaAMActive() bool {
 	if em.activeEngine == nil {
 		return false
 	}
-	return em.activeEngine.Name() == "gigaam"
+	name := em.activeEngine.Name()
+	return name == "gigaam" || name == "gigaam-rnnt"
 }
 
 // IsWhisperActive проверяет, активен ли Whisper движок
@@ -229,12 +239,74 @@ func (em *EngineManager) IsWhisperActive() bool {
 	return em.activeEngine.Name() == "whisper"
 }
 
+// CreateEngineForModel создаёт движок для указанной модели без установки его как активного
+// Используется для гибридной транскрипции (вторичная модель)
+func (em *EngineManager) CreateEngineForModel(modelID string) (TranscriptionEngine, error) {
+	// Получаем информацию о модели
+	modelInfo := models.GetModelByID(modelID)
+	if modelInfo == nil {
+		return nil, fmt.Errorf("unknown model: %s", modelID)
+	}
+
+	// Проверяем что модель скачана
+	if !em.modelsManager.IsModelDownloaded(modelID) {
+		return nil, fmt.Errorf("model %s is not downloaded", modelID)
+	}
+
+	// Создаём движок в зависимости от типа
+	var engine TranscriptionEngine
+	var err error
+
+	switch modelInfo.Engine {
+	case models.EngineTypeWhisper:
+		modelPath := em.modelsManager.GetModelPath(modelID)
+		engine, err = NewWhisperEngine(modelPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create Whisper engine: %w", err)
+		}
+
+	case models.EngineTypeGigaAM:
+		modelPath := em.modelsManager.GetModelPath(modelID)
+		vocabPath := em.modelsManager.GetVocabPath(modelID)
+		if vocabPath == "" {
+			return nil, fmt.Errorf("vocab path not found for GigaAM model %s", modelID)
+		}
+
+		if modelInfo.IsRNNT {
+			engine, err = NewGigaAMRNNTEngine(modelPath, vocabPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create GigaAM RNNT engine: %w", err)
+			}
+		} else {
+			engine, err = NewGigaAMEngine(modelPath, vocabPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create GigaAM engine: %w", err)
+			}
+		}
+
+	case models.EngineTypeFluidASR:
+		modelCacheDir := em.modelsManager.GetModelsDir()
+		engine, err = NewFluidASREngine(FluidASRConfig{
+			ModelCacheDir: modelCacheDir,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create FluidASR engine: %w", err)
+		}
+
+	default:
+		return nil, fmt.Errorf("unsupported engine type: %s", modelInfo.Engine)
+	}
+
+	log.Printf("EngineManager: created secondary engine for model %s (engine: %s)", modelID, modelInfo.Engine)
+	return engine, nil
+}
+
 // GetRecommendedModelForLanguage возвращает рекомендуемую модель для языка
 func GetRecommendedModelForLanguage(lang string) string {
 	switch lang {
 	case "ru":
-		// Для русского языка рекомендуем GigaAM
-		return "gigaam-v2-ctc"
+		// Для русского языка рекомендуем GigaAM v3 E2E CTC (быстрая + пунктуация)
+		return "gigaam-v3-e2e-ctc"
 	default:
 		// Для остальных языков - Whisper Large V3 Turbo
 		return "ggml-large-v3-turbo"

@@ -618,6 +618,7 @@ func (e *GigaAMEngine) decodeCTCWithTimestamps(logits [][]float32, audioDuration
 // - токены могут быть subwords: "пр", "овер", "ка"
 // - ▁ означает начало нового слова (пробел перед токеном)
 // - пунктуация: ".", ",", "!" и т.д.
+// Возвращает сегменты со словами и их confidence для гибридной транскрипции
 func (e *GigaAMEngine) decodeE2EWithTimestamps(logits [][]float32, audioDuration float64) []TranscriptSegment {
 	if len(logits) == 0 {
 		return nil
@@ -626,9 +627,8 @@ func (e *GigaAMEngine) decodeE2EWithTimestamps(logits [][]float32, audioDuration
 	frameMs := audioDuration * 1000 / float64(len(logits))
 
 	var segments []TranscriptSegment
-	var allTokens strings.Builder
-	var segmentStart int64 = -1
-	var segmentEnd int64 = 0
+	var currentTokens []bpeTokenInfo
+	var currentWords []TranscriptWord
 	prevToken := e.blankID
 
 	for t, frame := range logits {
@@ -643,6 +643,7 @@ func (e *GigaAMEngine) decodeE2EWithTimestamps(logits [][]float32, audioDuration
 		}
 
 		frameTime := int64(float64(t) * frameMs)
+		currentConfidence := softmaxMax(frame)
 
 		// CTC правило: пропускаем blank и повторяющиеся токены
 		if maxIdx != e.blankID && maxIdx != prevToken {
@@ -651,45 +652,98 @@ func (e *GigaAMEngine) decodeE2EWithTimestamps(logits [][]float32, audioDuration
 
 				// Пропускаем <unk>
 				if token != "<unk>" {
-					if segmentStart < 0 {
-						segmentStart = frameTime
+					// ▁ означает начало нового слова
+					if strings.HasPrefix(token, "▁") {
+						// Сохраняем предыдущее слово если есть токены
+						if len(currentTokens) > 0 {
+							word := e.mergeTokensToWord(currentTokens)
+							if word.Text != "" {
+								currentWords = append(currentWords, word)
+							}
+							currentTokens = nil
+						}
+						// Убираем ▁ из токена
+						token = strings.TrimPrefix(token, "▁")
 					}
-					segmentEnd = frameTime
 
-					// Добавляем токен как есть (включая ▁)
-					allTokens.WriteString(token)
+					// Добавляем токен (если не пустой после удаления ▁)
+					if token != "" {
+						currentTokens = append(currentTokens, bpeTokenInfo{
+							text:       token,
+							startTime:  frameTime,
+							endTime:    frameTime,
+							confidence: currentConfidence,
+						})
+					}
 				}
 			}
 		}
 		prevToken = maxIdx
 	}
 
-	// Обрабатываем собранный текст
-	text := allTokens.String()
-	if text != "" {
-		// Заменяем ▁ на пробел
-		text = strings.ReplaceAll(text, "▁", " ")
-		// Убираем начальный пробел если есть
-		text = strings.TrimLeft(text, " ")
-		// Убираем лишние пробелы
-		text = strings.Join(strings.Fields(text), " ")
-
-		if segmentStart < 0 {
-			segmentStart = 0
+	// Добавляем последнее слово
+	if len(currentTokens) > 0 {
+		word := e.mergeTokensToWord(currentTokens)
+		if word.Text != "" {
+			currentWords = append(currentWords, word)
 		}
-		if segmentEnd == 0 {
-			segmentEnd = int64(audioDuration * 1000)
+	}
+
+	// Формируем сегмент из всех слов
+	if len(currentWords) > 0 {
+		var fullText strings.Builder
+		for i, w := range currentWords {
+			if i > 0 {
+				fullText.WriteString(" ")
+			}
+			fullText.WriteString(w.Text)
 		}
 
 		segment := TranscriptSegment{
-			Start: segmentStart,
-			End:   segmentEnd,
-			Text:  text,
+			Start: currentWords[0].Start,
+			End:   currentWords[len(currentWords)-1].End,
+			Text:  fullText.String(),
+			Words: currentWords,
 		}
 		segments = append(segments, segment)
 	}
 
 	return segments
+}
+
+// bpeTokenInfo внутренняя структура для накопления информации о BPE токене
+type bpeTokenInfo struct {
+	text       string
+	startTime  int64
+	endTime    int64
+	confidence float32
+}
+
+// mergeTokensToWord объединяет BPE токены в слово с усреднённым confidence
+func (e *GigaAMEngine) mergeTokensToWord(tokens []bpeTokenInfo) TranscriptWord {
+	if len(tokens) == 0 {
+		return TranscriptWord{}
+	}
+
+	var text strings.Builder
+	var totalConfidence float32
+	startTime := tokens[0].startTime
+	endTime := tokens[0].endTime
+
+	for _, t := range tokens {
+		text.WriteString(t.text)
+		totalConfidence += t.confidence
+		if t.endTime > endTime {
+			endTime = t.endTime
+		}
+	}
+
+	return TranscriptWord{
+		Start: startTime,
+		End:   endTime,
+		Text:  text.String(),
+		P:     totalConfidence / float32(len(tokens)), // Среднее confidence
+	}
 }
 
 // softmaxMax возвращает максимальную вероятность после softmax

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -47,6 +48,7 @@ func (m *Manager) GetModelsDir() string {
 }
 
 // GetModelPath возвращает путь к модели
+// Для RNNT моделей возвращает путь к encoder файлу
 func (m *Manager) GetModelPath(modelID string) string {
 	info := GetModelByID(modelID)
 	if info == nil {
@@ -62,6 +64,11 @@ func (m *Manager) GetModelPath(modelID string) string {
 		}
 		// Fallback на стандартный путь
 		return filepath.Join(extractDir, "model.onnx")
+	}
+
+	// Для RNNT моделей - путь к encoder файлу
+	if info.IsRNNT {
+		return filepath.Join(m.modelsDir, modelID+"_encoder.onnx")
 	}
 
 	// Расширение зависит от типа модели
@@ -119,6 +126,13 @@ func (m *Manager) IsModelDownloaded(modelID string) bool {
 	// Проверяем что файл не пустой и примерно соответствует размеру
 	if stat.Size() < 1000000 { // < 1MB
 		return false
+	}
+
+	// Для RNNT моделей проверяем все 3 файла
+	if info.IsRNNT {
+		if !IsRNNTModelComplete(modelPath) {
+			return false
+		}
 	}
 
 	// Для ONNX моделей проверяем также наличие словаря
@@ -241,7 +255,58 @@ func (m *Manager) DownloadModel(modelID string) error {
 			return
 		}
 
-		// Для ONNX моделей с vocab - скачиваем оба файла
+		// Для RNNT моделей - скачиваем 3 файла (encoder, decoder, joint)
+		if info.IsRNNT {
+			progressCb := func(progress float64) {
+				// RNNT: 95% на модели, 5% на vocab
+				modelProgress := progress * 0.95
+				m.notifyProgress(modelID, modelProgress, ModelStatusDownloading, nil)
+			}
+
+			encoderPath, err := DownloadRNNTModel(ctx, *info, m.modelsDir, progressCb)
+			if err != nil {
+				if ctx.Err() == context.Canceled {
+					log.Printf("RNNT download cancelled for model: %s", modelID)
+					m.notifyProgress(modelID, 0, ModelStatusNotDownloaded, nil)
+					m.cleanupPartialDownload(modelID)
+				} else {
+					log.Printf("RNNT download failed for model %s: %v", modelID, err)
+					m.notifyProgress(modelID, 0, ModelStatusError, err)
+				}
+				return
+			}
+
+			// Переименовываем файлы в стандартный формат (modelID_encoder.onnx и т.д.)
+			m.renameRNNTFiles(modelID, encoderPath)
+
+			// Скачиваем vocab
+			if info.VocabURL != "" {
+				vocabPath := m.GetVocabPath(modelID)
+				vocabProgressCb := func(progress float64) {
+					totalProgress := 95 + progress*5
+					m.notifyProgress(modelID, totalProgress, ModelStatusDownloading, nil)
+				}
+
+				err = DownloadFile(ctx, info.VocabURL, vocabPath, 10000, vocabProgressCb)
+				if err != nil {
+					if ctx.Err() == context.Canceled {
+						log.Printf("Vocab download cancelled for RNNT model: %s", modelID)
+						m.notifyProgress(modelID, 0, ModelStatusNotDownloaded, nil)
+						m.cleanupPartialDownload(modelID)
+					} else {
+						log.Printf("Vocab download failed for RNNT model %s: %v", modelID, err)
+						m.notifyProgress(modelID, 0, ModelStatusError, err)
+					}
+					return
+				}
+			}
+
+			log.Printf("RNNT download completed for model: %s", modelID)
+			m.notifyProgress(modelID, 100, ModelStatusDownloaded, nil)
+			return
+		}
+
+		// Для обычных ONNX моделей с vocab - скачиваем оба файла
 		hasVocab := info.Type == ModelTypeONNX && info.VocabURL != ""
 		totalSize := info.SizeBytes
 		if hasVocab {
@@ -354,6 +419,26 @@ func (m *Manager) DeleteModel(modelID string) error {
 		return nil
 	}
 
+	// Для RNNT моделей удаляем все 3 файла
+	if info.IsRNNT {
+		encoderPath := filepath.Join(m.modelsDir, modelID+"_encoder.onnx")
+		decoderPath := filepath.Join(m.modelsDir, modelID+"_decoder.onnx")
+		jointPath := filepath.Join(m.modelsDir, modelID+"_joint.onnx")
+
+		os.Remove(encoderPath)
+		os.Remove(decoderPath)
+		os.Remove(jointPath)
+
+		// Удаляем vocab
+		if info.VocabURL != "" {
+			vocabPath := m.GetVocabPath(modelID)
+			os.Remove(vocabPath)
+		}
+
+		log.Printf("RNNT model deleted: %s", modelID)
+		return nil
+	}
+
 	modelPath := m.GetModelPath(modelID)
 
 	// Удаляем основной файл модели
@@ -397,6 +482,41 @@ func (m *Manager) cleanupPartialDownload(modelID string) {
 		return
 	}
 
+	// Для RNNT моделей удаляем все 3 файла
+	if info.IsRNNT {
+		encoderPath := filepath.Join(m.modelsDir, modelID+"_encoder.onnx")
+		decoderPath := filepath.Join(m.modelsDir, modelID+"_decoder.onnx")
+		jointPath := filepath.Join(m.modelsDir, modelID+"_joint.onnx")
+
+		os.Remove(encoderPath)
+		os.Remove(encoderPath + ".tmp")
+		os.Remove(decoderPath)
+		os.Remove(decoderPath + ".tmp")
+		os.Remove(jointPath)
+		os.Remove(jointPath + ".tmp")
+
+		// Удаляем также оригинальные файлы если они есть
+		// (на случай если переименование не произошло)
+		files, _ := filepath.Glob(filepath.Join(m.modelsDir, "*_encoder*.onnx"))
+		for _, f := range files {
+			if strings.Contains(f, "rnnt") {
+				os.Remove(f)
+			}
+		}
+		files, _ = filepath.Glob(filepath.Join(m.modelsDir, "*_decoder*.onnx"))
+		for _, f := range files {
+			if strings.Contains(f, "rnnt") {
+				os.Remove(f)
+			}
+		}
+		files, _ = filepath.Glob(filepath.Join(m.modelsDir, "*_joint*.onnx"))
+		for _, f := range files {
+			if strings.Contains(f, "rnnt") {
+				os.Remove(f)
+			}
+		}
+	}
+
 	modelPath := m.GetModelPath(modelID)
 	if modelPath == "" {
 		return
@@ -424,4 +544,37 @@ func (m *Manager) GetDownloadingModels() []string {
 		result = append(result, id)
 	}
 	return result
+}
+
+// renameRNNTFiles переименовывает скачанные RNNT файлы в стандартный формат
+// v3_rnnt_encoder.int8.onnx -> modelID_encoder.onnx
+func (m *Manager) renameRNNTFiles(modelID, encoderPath string) {
+	dir := filepath.Dir(encoderPath)
+	base := filepath.Base(encoderPath)
+
+	// Определяем исходные имена decoder и joint
+	var decoderSrc, jointSrc string
+	if strings.Contains(base, ".int8.") {
+		decoderSrc = filepath.Join(dir, strings.Replace(base, "_encoder.int8.", "_decoder.int8.", 1))
+		jointSrc = filepath.Join(dir, strings.Replace(base, "_encoder.int8.", "_joint.int8.", 1))
+	} else {
+		decoderSrc = filepath.Join(dir, strings.Replace(base, "_encoder.", "_decoder.", 1))
+		jointSrc = filepath.Join(dir, strings.Replace(base, "_encoder.", "_joint.", 1))
+	}
+
+	// Целевые имена
+	encoderDst := filepath.Join(m.modelsDir, modelID+"_encoder.onnx")
+	decoderDst := filepath.Join(m.modelsDir, modelID+"_decoder.onnx")
+	jointDst := filepath.Join(m.modelsDir, modelID+"_joint.onnx")
+
+	// Переименовываем файлы (если они отличаются)
+	if encoderPath != encoderDst {
+		os.Rename(encoderPath, encoderDst)
+	}
+	if decoderSrc != decoderDst {
+		os.Rename(decoderSrc, decoderDst)
+	}
+	if jointSrc != jointDst {
+		os.Rename(jointSrc, jointDst)
+	}
 }
