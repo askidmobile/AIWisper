@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, shell, ipcMain, Menu, MenuItemConstructorOptions } from 'electron';
 import path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
@@ -36,6 +36,223 @@ function log(message: string) {
 function logError(message: string) {
     const timestamp = new Date().toISOString();
     console.error(`[${timestamp}] ERROR: ${message}`);
+}
+
+function createApplicationMenu() {
+    const isMac = process.platform === 'darwin';
+
+    const template: MenuItemConstructorOptions[] = [
+        // App menu (macOS only)
+        ...(isMac ? [{
+            label: app.name,
+            submenu: [
+                { role: 'about' as const, label: 'О программе AIWisper' },
+                { type: 'separator' as const },
+                {
+                    label: 'Настройки...',
+                    accelerator: 'CmdOrCtrl+,',
+                    click: () => {
+                        mainWindow?.webContents.send('open-settings');
+                    }
+                },
+                { type: 'separator' as const },
+                { role: 'services' as const },
+                { type: 'separator' as const },
+                { role: 'hide' as const, label: 'Скрыть AIWisper' },
+                { role: 'hideOthers' as const, label: 'Скрыть остальные' },
+                { role: 'unhide' as const, label: 'Показать все' },
+                { type: 'separator' as const },
+                { role: 'quit' as const, label: 'Завершить AIWisper' }
+            ]
+        }] : []),
+
+        // File menu
+        {
+            label: 'Файл',
+            submenu: [
+                {
+                    label: 'Новая запись',
+                    accelerator: 'CmdOrCtrl+N',
+                    click: () => {
+                        mainWindow?.webContents.send('start-recording');
+                    }
+                },
+                {
+                    label: 'Остановить запись',
+                    accelerator: 'CmdOrCtrl+.',
+                    click: () => {
+                        mainWindow?.webContents.send('stop-recording');
+                    }
+                },
+                { type: 'separator' as const },
+                {
+                    label: 'Импорт аудио...',
+                    accelerator: 'CmdOrCtrl+O',
+                    click: () => {
+                        mainWindow?.webContents.send('import-audio');
+                    }
+                },
+                {
+                    label: 'Экспорт транскрипции...',
+                    accelerator: 'CmdOrCtrl+E',
+                    click: () => {
+                        mainWindow?.webContents.send('export-transcription');
+                    }
+                },
+                { type: 'separator' as const },
+                {
+                    label: 'Открыть папку с записями',
+                    accelerator: 'CmdOrCtrl+Shift+O',
+                    click: async () => {
+                        if (sessionsDataDir && fs.existsSync(sessionsDataDir)) {
+                            await shell.openPath(sessionsDataDir);
+                        }
+                    }
+                },
+                ...(isMac ? [] : [
+                    { type: 'separator' as const },
+                    { role: 'quit' as const, label: 'Выход' }
+                ])
+            ]
+        },
+
+        // Edit menu
+        {
+            label: 'Редактирование',
+            submenu: [
+                { role: 'undo' as const, label: 'Отменить' },
+                { role: 'redo' as const, label: 'Повторить' },
+                { type: 'separator' as const },
+                { role: 'cut' as const, label: 'Вырезать' },
+                { role: 'copy' as const, label: 'Копировать' },
+                { role: 'paste' as const, label: 'Вставить' },
+                { role: 'selectAll' as const, label: 'Выбрать все' },
+                { type: 'separator' as const },
+                {
+                    label: 'Копировать транскрипцию',
+                    accelerator: 'CmdOrCtrl+Shift+C',
+                    click: () => {
+                        mainWindow?.webContents.send('copy-transcription');
+                    }
+                }
+            ]
+        },
+
+        // View menu
+        {
+            label: 'Вид',
+            submenu: [
+                { role: 'reload' as const, label: 'Перезагрузить' },
+                { role: 'forceReload' as const, label: 'Принудительная перезагрузка' },
+                { role: 'toggleDevTools' as const, label: 'Инструменты разработчика' },
+                { type: 'separator' as const },
+                { role: 'resetZoom' as const, label: 'Сбросить масштаб' },
+                { role: 'zoomIn' as const, label: 'Увеличить' },
+                { role: 'zoomOut' as const, label: 'Уменьшить' },
+                { type: 'separator' as const },
+                { role: 'togglefullscreen' as const, label: 'Полноэкранный режим' }
+            ]
+        },
+
+        // Session menu
+        {
+            label: 'Сессия',
+            submenu: [
+                {
+                    label: 'Перетранскрибировать',
+                    accelerator: 'CmdOrCtrl+R',
+                    click: () => {
+                        mainWindow?.webContents.send('retranscribe-session');
+                    }
+                },
+                {
+                    label: 'Создать сводку',
+                    accelerator: 'CmdOrCtrl+S',
+                    click: () => {
+                        mainWindow?.webContents.send('generate-summary');
+                    }
+                },
+                { type: 'separator' as const },
+                {
+                    label: 'Воспроизвести/Пауза',
+                    accelerator: 'Space',
+                    click: () => {
+                        mainWindow?.webContents.send('toggle-playback');
+                    }
+                },
+                { type: 'separator' as const },
+                {
+                    label: 'Удалить сессию',
+                    accelerator: 'CmdOrCtrl+Backspace',
+                    click: () => {
+                        mainWindow?.webContents.send('delete-session');
+                    }
+                }
+            ]
+        },
+
+        // Window menu
+        {
+            label: 'Окно',
+            submenu: [
+                { role: 'minimize' as const, label: 'Свернуть' },
+                { role: 'zoom' as const, label: 'Масштабировать' },
+                ...(isMac ? [
+                    { type: 'separator' as const },
+                    { role: 'front' as const, label: 'Все на передний план' },
+                    { type: 'separator' as const },
+                    { role: 'window' as const, label: 'Окно' }
+                ] : [
+                    { role: 'close' as const, label: 'Закрыть' }
+                ])
+            ]
+        },
+
+        // Help menu
+        {
+            label: 'Справка',
+            role: 'help' as const,
+            submenu: [
+                {
+                    label: 'Руководство пользователя',
+                    accelerator: 'F1',
+                    click: () => {
+                        mainWindow?.webContents.send('show-help');
+                    }
+                },
+                {
+                    label: 'Горячие клавиши',
+                    accelerator: 'CmdOrCtrl+/',
+                    click: () => {
+                        mainWindow?.webContents.send('show-shortcuts');
+                    }
+                },
+                { type: 'separator' as const },
+                {
+                    label: 'Документация онлайн',
+                    click: async () => {
+                        await shell.openExternal('https://github.com/sst/AIWisper#readme');
+                    }
+                },
+                {
+                    label: 'Сообщить о проблеме',
+                    click: async () => {
+                        await shell.openExternal('https://github.com/sst/AIWisper/issues');
+                    }
+                },
+                { type: 'separator' as const },
+                {
+                    label: 'О программе AIWisper',
+                    click: () => {
+                        mainWindow?.webContents.send('show-about');
+                    }
+                }
+            ]
+        }
+    ];
+
+    const menu = Menu.buildFromTemplate(template);
+    Menu.setApplicationMenu(menu);
 }
 
 function createWindow() {
@@ -306,6 +523,9 @@ app.whenReady().then(async () => {
     log(`Resources path: ${getResourcesPath()}`);
 
     startGoBackend();
+
+    // Создаём меню приложения
+    createApplicationMenu();
 
     setTimeout(() => {
         createWindow();

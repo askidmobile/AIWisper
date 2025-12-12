@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.36.0] - 2025-12-12
+
+### Added
+- **System Help Menu**: Full macOS application menu with Help section
+  - **Menu Bar**: Complete native macOS menu (AIWisper, File, Edit, View, Session, Window, Help)
+  - **Help Menu**: User Guide (F1), Keyboard Shortcuts (⌘/), Online Documentation, Report Issue, About
+  - **Keyboard Shortcuts**: All major actions accessible via keyboard (⌘N, ⌘., ⌘O, ⌘E, ⌘R, ⌘S, etc.)
+  - **IPC Integration**: Menu commands trigger frontend actions via Electron IPC
+
+- **HelpModal Component**: Comprehensive in-app help system with 3 tabs
+  - **📖 Guide Tab**: Quick start guide, recording modes, AI features, recommendations, export formats
+  - **⌨️ Shortcuts Tab**: Categorized keyboard shortcuts (Recording, Files, Session, App, Navigation)
+  - **ℹ️ About Tab**: App info, version, technology stack, copyright
+
+### Technical
+- `frontend/electron/main.ts`: Added `createApplicationMenu()` with full menu structure
+- `frontend/src/components/HelpModal.tsx`: New modal component (450+ lines)
+- `frontend/src/App.tsx`:
+  - Added `showHelp`, `helpInitialTab` state
+  - Added IPC event handlers for menu commands
+  - Integrated HelpModal component
+
 ## [1.35.0] - 2025-12-12
 
 ### Added

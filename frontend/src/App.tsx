@@ -4,6 +4,7 @@ import ModelManager from './components/ModelManager';
 import SessionTabs, { TabType } from './components/SessionTabs';
 import SummaryView from './components/SummaryView';
 import SettingsModal from './components/SettingsModal';
+import HelpModal from './components/HelpModal';
 import AudioMeterSidebar from './components/AudioMeterSidebar';
 import WaveformDisplay from './components/WaveformDisplay';
 import SpeakersTab from './components/modules/SpeakersTab';
@@ -1668,14 +1669,14 @@ function App() {
             .reduce((sum, c) => sum + (c.duration || 0) / 1000000000, 0);
     };
 
-    const playFullRecording = (sessionId: string) => {
+    const playFullRecording = useCallback((sessionId: string) => {
         setPlaybackOffset(0);
         playbackOffsetRef.current = 0;
         if (waveformData?.duration) {
             setPlaybackDuration(waveformData.duration);
         }
         playAudio(`${API_BASE}/api/sessions/${sessionId}/full.mp3`);
-    };
+    }, [waveformData?.duration]);
 
     const playChunk = (sessionId: string, chunkIndex: number) => {
         const session = (selectedSession && selectedSession.id === sessionId)
@@ -2234,6 +2235,77 @@ function App() {
 
     // Состояние для модального окна справки по горячим клавишам
     const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
+    
+    // Состояние для полной справки (Help menu)
+    const [showHelp, setShowHelp] = useState(false);
+    const [helpInitialTab, setHelpInitialTab] = useState<'guide' | 'shortcuts' | 'about'>('guide');
+
+    // Обработчики IPC событий из системного меню
+    useEffect(() => {
+        if (!ipcRenderer) return;
+
+        const handlers: { [key: string]: () => void } = {
+            'show-help': () => {
+                setHelpInitialTab('guide');
+                setShowHelp(true);
+            },
+            'show-shortcuts': () => {
+                setHelpInitialTab('shortcuts');
+                setShowHelp(true);
+            },
+            'show-about': () => {
+                setHelpInitialTab('about');
+                setShowHelp(true);
+            },
+            'open-settings': () => {
+                if (!isRecording) setShowSettings(true);
+            },
+            'start-recording': () => {
+                if (!isRecording && status === 'Connected') handleStartStop();
+            },
+            'stop-recording': () => {
+                if (isRecording) handleStartStop();
+            },
+            'copy-transcription': () => {
+                if (selectedSession) handleCopyToClipboard();
+            },
+            'export-transcription': () => {
+                if (selectedSession) setShowShareMenu(true);
+            },
+            'retranscribe-session': () => {
+                if (selectedSession && !isRecording) handleFullRetranscribe();
+            },
+            'generate-summary': () => {
+                if (selectedSession && !isRecording) handleGenerateSummary();
+            },
+            'delete-session': () => {
+                if (selectedSession && !isRecording) setShowDeleteConfirm(true);
+            },
+            'toggle-playback': () => {
+                if (!isRecording && selectedSession) {
+                    if (playingAudio) {
+                        audioRef.current?.pause();
+                        setPlayingAudio(null);
+                    } else {
+                        playFullRecording(selectedSession.id);
+                    }
+                }
+            },
+        };
+
+        // Регистрируем обработчики
+        Object.entries(handlers).forEach(([event, handler]) => {
+            ipcRenderer.on(event, handler);
+        });
+
+        // Очистка при размонтировании
+        return () => {
+            Object.entries(handlers).forEach(([event, handler]) => {
+                ipcRenderer.removeListener(event, handler);
+            });
+        };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isRecording, status, selectedSession, playingAudio, handleStartStop, handleCopyToClipboard, handleFullRetranscribe, handleGenerateSummary, playFullRecording]);
 
     // Горячие клавиши
     useEffect(() => {
@@ -4308,6 +4380,14 @@ function App() {
                     }}
                 />
             )}
+
+            {/* Help Modal (from system menu) */}
+            <HelpModal
+                isOpen={showHelp}
+                onClose={() => setShowHelp(false)}
+                initialTab={helpInitialTab}
+                appVersion="1.35.0"
+            />
 
             {/* Keyboard Shortcuts Help Modal */}
             {showKeyboardHelp && (
