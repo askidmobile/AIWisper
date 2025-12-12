@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.4] - 2025-12-13
+
+### Fixed
+- **Short Diarization Segments Causing False Speaker Changes**: Fixed issue where short words were incorrectly assigned to different speakers
+  - **Problem**: Diarization sometimes creates very short segments (<1 sec) that are misclassified, causing words like "бридж" to appear as a different speaker
+  - **Example**: "отправлять в бридж" was split as "отправлять в" (Speaker 1) + "бридж" (Speaker 2) due to 0.66s diarization segment
+  - **Solution**: Added `mergeShortDiarizationSegments()` function that merges segments shorter than 1 second with their neighbors
+    - Prefers merging with previous segment of same speaker
+    - Falls back to merging with nearest neighbor if gap < 0.5s
+    - Logs all merge decisions for debugging
+  - **Result**: More accurate speaker attribution, fewer false speaker changes
+
+### Technical
+- `backend/internal/service/transcription.go`:
+  - Added `mergeShortDiarizationSegments()` - merges diarization segments shorter than minDurationSec (1.0s)
+  - Called at the beginning of `splitSegmentsBySpeakers()` before applying speakers to words
+  - Logs merged segments for debugging
+
 ## [1.40.3] - 2025-12-13
 
 ### Fixed

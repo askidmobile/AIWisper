@@ -1194,9 +1194,83 @@ func applySpeakersToTranscriptSegments(segments []ai.TranscriptSegment, speakerS
 	return assignSpeakersToSegments(segments, speakerSegs)
 }
 
+// mergeShortDiarizationSegments объединяет короткие сегменты диаризации с соседними
+// Это помогает избежать ошибок, когда короткое слово ошибочно отнесено к другому спикеру
+// minDurationSec - минимальная длительность сегмента (сегменты короче объединяются с соседями)
+func mergeShortDiarizationSegments(speakerSegs []ai.SpeakerSegment, minDurationSec float32) []ai.SpeakerSegment {
+	if len(speakerSegs) <= 1 {
+		return speakerSegs
+	}
+
+	var result []ai.SpeakerSegment
+	mergedCount := 0
+
+	for i, seg := range speakerSegs {
+		duration := seg.End - seg.Start
+
+		// Если сегмент достаточно длинный, добавляем как есть
+		if duration >= minDurationSec {
+			result = append(result, seg)
+			continue
+		}
+
+		// Короткий сегмент - решаем с кем объединить
+		// Предпочитаем объединить с предыдущим сегментом того же спикера
+		// или с ближайшим соседом
+
+		// Проверяем предыдущий сегмент
+		if len(result) > 0 {
+			prev := &result[len(result)-1]
+			// Если предыдущий сегмент того же спикера или очень близко по времени
+			gap := seg.Start - prev.End
+			if prev.Speaker == seg.Speaker || gap < 0.5 {
+				// Объединяем с предыдущим
+				prev.End = seg.End
+				mergedCount++
+				log.Printf("mergeShortDiarizationSegments: merged short segment (%.2fs) speaker=%d with previous speaker=%d",
+					duration, seg.Speaker, prev.Speaker)
+				continue
+			}
+		}
+
+		// Проверяем следующий сегмент
+		if i+1 < len(speakerSegs) {
+			next := speakerSegs[i+1]
+			gap := next.Start - seg.End
+			if next.Speaker == seg.Speaker || gap < 0.5 {
+				// Расширяем текущий короткий сегмент до начала следующего
+				// и меняем спикера на спикера следующего сегмента
+				seg.Speaker = next.Speaker
+				seg.End = next.Start
+				result = append(result, seg)
+				mergedCount++
+				log.Printf("mergeShortDiarizationSegments: extended short segment (%.2fs) to next speaker=%d",
+					duration, next.Speaker)
+				continue
+			}
+		}
+
+		// Не удалось объединить - добавляем как есть, но с предупреждением
+		log.Printf("mergeShortDiarizationSegments: keeping isolated short segment (%.2fs) speaker=%d at %.2f-%.2f",
+			duration, seg.Speaker, seg.Start, seg.End)
+		result = append(result, seg)
+	}
+
+	if mergedCount > 0 {
+		log.Printf("mergeShortDiarizationSegments: merged %d short segments, %d -> %d segments",
+			mergedCount, len(speakerSegs), len(result))
+	}
+
+	return result
+}
+
 // splitSegmentsBySpeakers разбивает сегменты транскрипции по границам диаризации
 // используя word-level timestamps для точного разделения
 func splitSegmentsBySpeakers(segments []ai.TranscriptSegment, speakerSegs []ai.SpeakerSegment) []ai.TranscriptSegment {
+	// Сначала объединяем короткие сегменты диаризации (< 1 сек)
+	// Это помогает избежать ошибок, когда короткое слово ошибочно отнесено к другому спикеру
+	speakerSegs = mergeShortDiarizationSegments(speakerSegs, 1.0)
+
 	var result []ai.TranscriptSegment
 
 	for _, seg := range segments {
