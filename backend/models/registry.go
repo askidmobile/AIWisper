@@ -19,6 +19,7 @@ const (
 	EngineTypeFluidASR    EngineType = "fluid-asr"   // FluidAudio CoreML (Parakeet TDT v3)
 	EngineTypeSpeaker     EngineType = "speaker"     // Speaker Recognition
 	EngineTypeDiarization EngineType = "diarization" // Speaker Diarization (segmentation + embedding)
+	EngineTypeVAD         EngineType = "vad"         // Voice Activity Detection
 )
 
 // DiarizationModelType тип модели диаризации
@@ -281,6 +282,21 @@ var Registry = []ModelInfo{
 		Speed:           "~40x",
 		Recommended:     true,
 		DownloadURL:     "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx",
+	},
+
+	// ===== Модели VAD (Voice Activity Detection) =====
+	{
+		ID:          "silero-vad-v5",
+		Name:        "Silero VAD v5",
+		Type:        ModelTypeONNX,
+		Engine:      EngineTypeVAD,
+		Size:        "2.2 MB",
+		SizeBytes:   2_327_524,
+		Description: "Enterprise-grade Voice Activity Detector (Silero)",
+		Languages:   []string{"multi"},
+		Speed:       "~1000x",
+		Recommended: true,
+		DownloadURL: "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx",
 	},
 }
 
