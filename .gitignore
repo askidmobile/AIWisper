@@ -23,6 +23,9 @@ frontend/dist/
 frontend/dist-electron/
 frontend/release/
 frontend/coverage/
+frontend/e2e-results/
+frontend/playwright-report/
+frontend/test-results/
 
 # Go
 # Binaries

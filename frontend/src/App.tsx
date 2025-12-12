@@ -346,6 +346,8 @@ function App() {
     const [savedDiarizationProvider, setSavedDiarizationProvider] = useState<string>('auto');
     const [savedDiarizationEnabled, setSavedDiarizationEnabled] = useState(false);
     const diarizationAutoEnableAttempted = useRef(false);
+    // Флаг подтверждения модели от backend (не из localStorage)
+    const backendModelConfirmed = useRef(false);
 
     // Hybrid Transcription settings
     const [hybridTranscription, setHybridTranscription] = useState<HybridTranscriptionSettings>({
@@ -794,6 +796,7 @@ function App() {
                             // Найти активную модель
                             const active = (msg.models || []).find((m: ModelState) => m.status === 'active');
                             if (active) {
+                                backendModelConfirmed.current = true;
                                 setActiveModelId(active.id);
                             } else {
                                 // Если backend не имеет активной модели, но у нас есть сохранённая - синхронизируем
@@ -832,6 +835,7 @@ function App() {
                             break;
 
                         case 'active_model_changed':
+                            backendModelConfirmed.current = true;
                             setActiveModelId(msg.modelId);
                             addLog(`Active model: ${msg.modelId}`);
                             break;
@@ -1088,6 +1092,9 @@ function App() {
             socket.onclose = () => {
                 setStatus('Disconnected');
                 setIsRecording(false);
+                // Сбрасываем флаги при отключении для корректного переподключения
+                backendModelConfirmed.current = false;
+                diarizationAutoEnableAttempted.current = false;
                 addLog('Disconnected. Reconnecting in 3s...');
                 wsRef.current = null;
                 reconnectTimeout = setTimeout(connect, 3000);
@@ -1119,6 +1126,9 @@ function App() {
         if (status !== 'Connected') return;
         // Ждём загрузки модели транскрипции - диаризация требует активную модель
         if (!activeModelId) return;
+        // Ждём подтверждения от backend, что модель действительно загружена
+        // (не просто из localStorage, а реально активна на backend)
+        if (!backendModelConfirmed.current) return;
 
         // FluidAudio (coreml) не требует моделей - модели скачиваются автоматически
         if (savedDiarizationProvider === 'coreml') {

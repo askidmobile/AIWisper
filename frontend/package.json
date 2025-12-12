@@ -1,6 +1,6 @@
 {
   "name": "aiwisper",
-  "version": "1.39.2",
+  "version": "1.40.1",
   "description": "AIWisper - Speech to Text Application",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -14,7 +14,10 @@
     "preelectron:build:dir": "npm run backend:build",
     "electron:build": "vite build && tsc -p electron/tsconfig.json && electron-builder --mac",
     "electron:build:dmg": "vite build && tsc -p electron/tsconfig.json && electron-builder --mac dmg",
-    "electron:build:dir": "vite build && tsc -p electron/tsconfig.json && electron-builder --mac dir"
+    "electron:build:dir": "vite build && tsc -p electron/tsconfig.json && electron-builder --mac dir",
+    "test:e2e": "npm run build && npx playwright test",
+    "test:e2e:ui": "npm run build && npx playwright test --ui",
+    "test:e2e:headed": "npm run build && npx playwright test --headed"
   },
   "keywords": [],
   "author": "AIWisper Team",
@@ -113,6 +116,7 @@
     "verror": "^1.10.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.57.0",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@types/semver": "^7.7.1",

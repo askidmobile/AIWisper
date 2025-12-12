@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.1] - 2025-12-13
+
+### Fixed
+- **Diarization Auto-Enable Race Condition (Complete Fix)**: Fixed persistent error "Не выбрана модель транскрипции" on app startup
+  - **Problem**: Previous fix checked `activeModelId`, but it was loaded from localStorage before backend confirmed the model
+  - **Root Cause**: Frontend loaded `activeModelId` from localStorage immediately, then sent `enable_diarization` before backend had time to load the model
+  - **Solution**: Added `backendModelConfirmed` ref that is set only when backend confirms model via `active_model_changed` or `models_list` with active model
+  - Diarization now waits for BOTH `activeModelId` AND backend confirmation before auto-enabling
+  - Also reset confirmation flag on WebSocket disconnect for proper reconnection handling
+
+### Technical
+- `frontend/src/App.tsx`:
+  - Added `backendModelConfirmed` ref to track backend model confirmation
+  - Set flag in `active_model_changed` and `models_list` (when active model found) handlers
+  - Added `backendModelConfirmed.current` check in diarization auto-enable useEffect
+  - Reset `backendModelConfirmed` and `diarizationAutoEnableAttempted` on WebSocket close
+
+## [1.40.0] - 2025-12-13
+
+### Added
+- **Statistics Section Redesign**: Complete visual overhaul of the Statistics tab
+  - **Adaptive Grid Layout**: 6 stat cards now arrange in 6→3→2 columns based on screen width
+    - 6 columns on wide screens (>1200px)
+    - 3 columns on medium screens (768-1200px)
+    - 2 columns on small screens (<768px)
+  - **Monochrome SVG Icons**: Replaced emoji icons with clean, monochrome SVG icons
+    - Icons use `stroke="currentColor"` for theme compatibility
+    - New icons: words, messages, speakers, speed, chart, clock
+  - **Wow Effects**: Premium visual experience with modern animations
+    - Staggered card appearance animation (`statCardAppear`)
+    - Hover effects: `translateY(-4px)`, `scale(1.02)`, glow shadow
+    - Gradient glow overlay on hover
+    - Icon wrapper with gradient background and scale animation
+    - Shimmer effect on speaker progress bars
+    - Gradient text for stat values
+
+- **E2E Testing with Playwright**: Added end-to-end testing infrastructure for Electron app
+  - `playwright.config.ts`: Playwright configuration for Electron testing
+  - `e2e/electron.helpers.ts`: Helper functions for launching and testing Electron app
+  - `e2e/stats.spec.ts`: Comprehensive tests for Statistics section
+    - App launch and tab navigation tests
+    - 6 stat cards verification
+    - SVG icon validation (no emoji)
+    - Responsive grid tests (6/3/2 columns)
+    - Animation and hover effect tests
+  - New npm scripts: `test:e2e`, `test:e2e:ui`, `test:e2e:headed`
+
+### Technical
+- `frontend/src/components/modules/SessionStats.tsx`: Complete rewrite with new design system
+  - New SVG icon components: `IconWords`, `IconMessages`, `IconSpeakers`, `IconSpeed`, `IconChart`, `IconClock`
+  - CSS-in-JS styles with Liquid Glass design tokens
+  - Media queries via injected `<style>` tag for responsive grid
+  - Keyframe animations: `statCardAppear`, `shimmer`, `progressGrow`
+- `frontend/package.json`: Added `@playwright/test` dependency and e2e scripts
+- `frontend/playwright.config.ts`: New Playwright configuration
+- `frontend/e2e/`: New directory for e2e tests
+- `.gitignore`: Added `e2e-results/`, `playwright-report/`, `test-results/`
+
 ## [1.39.2] - 2025-12-13
 
 ### Fixed
