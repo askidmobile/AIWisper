@@ -4,7 +4,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-13+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-1.30.0-orange)
+![Version](https://img.shields.io/badge/version-1.32.0-orange)
 
 ## Возможности
 
@@ -12,6 +12,7 @@
 - **Диаризация спикеров** — автоматическое определение кто говорит
 - **Запись системного звука** — транскрибация звонков, видео, подкастов
 - **Voice Isolation** — подавление фонового шума (macOS 15+)
+- **Silero VAD** — нейросетевая детекция голосовой активности (97% точность)
 - **AI-сводка** — генерация краткого содержания через Ollama
 - **GPU ускорение** — Metal и CoreML на Apple Silicon
 - **Полностью офлайн** — никакие данные не покидают устройство

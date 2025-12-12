@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.0] - 2025-12-12
+
+### Added
+- **Speaker Embedding API**: Access speaker voice embeddings from Pipeline
+  - `GetSpeakerEmbedding()` - get embedding by speaker ID
+  - `GetAllSpeakerProfiles()` - get all speaker profiles
+  - `GetSpeakerCount()` - count registered speakers
+  - `ResetSpeakerProfiles()` - clear speaker profiles for new session
+  - Enables VoicePrint feature for speaker identification
+
+- **Whisper Token Data**: Full token information in transcription segments
+  - `Segments()` now includes token data with timestamps and confidence
+  - `Tokens()` method returns all tokens from all segments
+  - Enables word-level timestamp analysis
+
+- **Mono Transcription with Timestamps**: Proper segment distribution
+  - New `UpdateFullTranscriptionMonoWithSegments()` function
+  - Distributes segments to chunks based on timestamps
+  - Fixes mono transcription chunk assignment
+
+### Fixed
+- **Import Cycle in Tests**: Resolved circular dependency between `ai` and `session` packages
+  - Removed `session` import from `silero_vad_test.go`
+  - Added `integration` build tag to regression tests
+  - Run integration tests with: `go test -tags=integration`
+
+### Technical
+- `backend/ai/pipeline.go`: Added speaker profile access methods
+- `backend/ai/binding/context.go`: Use `toSegment()` for token data
+- `backend/session/manager.go`: Added `UpdateFullTranscriptionMonoWithSegments()`
+- `backend/ai/silero_vad_test.go`: Synthetic-only tests (no external dependencies)
+- `backend/ai/transcription_regression_test.go`: Added `integration` build tag
+
 ## [1.31.0] - 2025-12-12
 
 ### Added
