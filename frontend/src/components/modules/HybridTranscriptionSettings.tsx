@@ -1,6 +1,6 @@
 import React from 'react';
 import { HelpTooltip } from '../common/HelpTooltip';
-import { ModelState, HybridTranscriptionSettings as HybridSettings } from '../../types/models';
+import { ModelState, HybridTranscriptionSettings as HybridSettings, HybridMode } from '../../types/models';
 
 interface HybridTranscriptionSettingsProps {
     settings: HybridSettings;
@@ -43,6 +43,10 @@ export const HybridTranscriptionSettingsPanel: React.FC<HybridTranscriptionSetti
 
     const handleLLMToggle = (useLLMForMerge: boolean) => {
         onChange({ ...settings, useLLMForMerge });
+    };
+    
+    const handleModeChange = (mode: HybridMode) => {
+        onChange({ ...settings, mode });
     };
 
     return (
@@ -143,58 +147,113 @@ export const HybridTranscriptionSettingsPanel: React.FC<HybridTranscriptionSetti
                         )}
                     </div>
 
-                    {/* Порог уверенности */}
+                    {/* Режим работы */}
                     <div>
-                        <div
+                        <label
                             style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
+                                display: 'block',
+                                fontSize: '0.8rem',
+                                color: 'var(--text-muted)',
                                 marginBottom: '6px',
                             }}
                         >
-                            <label
+                            Режим сравнения:
+                        </label>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                                onClick={() => handleModeChange('full_compare')}
+                                disabled={disabled}
                                 style={{
+                                    flex: 1,
+                                    padding: '8px 12px',
+                                    background: settings.mode === 'full_compare' ? 'var(--primary)' : 'var(--glass-bg)',
+                                    border: `1px solid ${settings.mode === 'full_compare' ? 'var(--primary)' : 'var(--glass-border)'}`,
+                                    borderRadius: '8px',
+                                    color: settings.mode === 'full_compare' ? 'white' : 'var(--text-primary)',
                                     fontSize: '0.8rem',
-                                    color: 'var(--text-muted)',
+                                    cursor: disabled ? 'not-allowed' : 'pointer',
                                 }}
                             >
-                                Порог уверенности:
-                            </label>
-                            <span
+                                🔄 Полное сравнение
+                            </button>
+                            <button
+                                onClick={() => handleModeChange('confidence')}
+                                disabled={disabled}
                                 style={{
-                                    fontSize: '0.85rem',
-                                    fontWeight: 500,
-                                    color: 'var(--primary)',
+                                    flex: 1,
+                                    padding: '8px 12px',
+                                    background: settings.mode === 'confidence' ? 'var(--primary)' : 'var(--glass-bg)',
+                                    border: `1px solid ${settings.mode === 'confidence' ? 'var(--primary)' : 'var(--glass-border)'}`,
+                                    borderRadius: '8px',
+                                    color: settings.mode === 'confidence' ? 'white' : 'var(--text-primary)',
+                                    fontSize: '0.8rem',
+                                    cursor: disabled ? 'not-allowed' : 'pointer',
                                 }}
                             >
-                                {Math.round(settings.confidenceThreshold * 100)}%
-                            </span>
+                                📊 По уверенности
+                            </button>
                         </div>
-                        <input
-                            type="range"
-                            min="20"
-                            max="80"
-                            step="5"
-                            value={settings.confidenceThreshold * 100}
-                            onChange={(e) => handleThresholdChange(Number(e.target.value) / 100)}
-                            disabled={disabled}
-                            style={{
-                                width: '100%',
-                                accentColor: 'var(--primary)',
-                            }}
-                        />
-                        <p
-                            style={{
-                                fontSize: '0.7rem',
-                                color: 'var(--text-muted)',
-                                marginTop: '4px',
-                            }}
-                        >
-                            Слова с уверенностью ниже {Math.round(settings.confidenceThreshold * 100)}% будут
-                            перетранскрибированы
+                        <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                            {settings.mode === 'full_compare' 
+                                ? '🔄 Обе модели транскрибируют весь текст, LLM выбирает лучший вариант'
+                                : '📊 Вторая модель перетранскрибирует только слова с низкой уверенностью'}
                         </p>
                     </div>
+
+                    {/* Порог уверенности (только для режима confidence) */}
+                    {settings.mode === 'confidence' && (
+                        <div>
+                            <div
+                                style={{
+                                    display: 'flex',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    marginBottom: '6px',
+                                }}
+                            >
+                                <label
+                                    style={{
+                                        fontSize: '0.8rem',
+                                        color: 'var(--text-muted)',
+                                    }}
+                                >
+                                    Порог уверенности:
+                                </label>
+                                <span
+                                    style={{
+                                        fontSize: '0.85rem',
+                                        fontWeight: 500,
+                                        color: 'var(--primary)',
+                                    }}
+                                >
+                                    {Math.round(settings.confidenceThreshold * 100)}%
+                                </span>
+                            </div>
+                            <input
+                                type="range"
+                                min="50"
+                                max="90"
+                                step="5"
+                                value={settings.confidenceThreshold * 100}
+                                onChange={(e) => handleThresholdChange(Number(e.target.value) / 100)}
+                                disabled={disabled}
+                                style={{
+                                    width: '100%',
+                                    accentColor: 'var(--primary)',
+                                }}
+                            />
+                            <p
+                                style={{
+                                    fontSize: '0.7rem',
+                                    color: 'var(--text-muted)',
+                                    marginTop: '4px',
+                                }}
+                            >
+                                Слова с уверенностью ниже {Math.round(settings.confidenceThreshold * 100)}% будут
+                                перетранскрибированы
+                            </p>
+                        </div>
+                    )}
 
                     {/* Использовать LLM */}
                     <label

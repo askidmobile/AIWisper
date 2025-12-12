@@ -7,13 +7,27 @@ import (
 	"sort"
 )
 
+// HybridMode режим гибридной транскрипции
+type HybridMode string
+
+const (
+	// HybridModeConfidence - перетранскрибировать только слова с низким confidence
+	// Проблема: GigaAM даёт высокий confidence даже для ошибок
+	HybridModeConfidence HybridMode = "confidence"
+
+	// HybridModeFullCompare - транскрибировать обеими моделями и сравнивать
+	// LLM выбирает лучший вариант для каждого сегмента
+	HybridModeFullCompare HybridMode = "full_compare"
+)
+
 // HybridTranscriptionConfig конфигурация гибридной транскрипции
 type HybridTranscriptionConfig struct {
-	Enabled             bool    // Включена ли гибридная транскрипция
-	SecondaryModelID    string  // ID дополнительной модели
-	ConfidenceThreshold float32 // Порог уверенности (0.0 - 1.0)
-	ContextWords        int     // Количество слов контекста вокруг проблемного слова
-	UseLLMForMerge      bool    // Использовать LLM для выбора лучшего варианта
+	Enabled             bool       // Включена ли гибридная транскрипция
+	SecondaryModelID    string     // ID дополнительной модели
+	ConfidenceThreshold float32    // Порог уверенности (0.0 - 1.0)
+	ContextWords        int        // Количество слов контекста вокруг проблемного слова
+	UseLLMForMerge      bool       // Использовать LLM для выбора лучшего варианта
+	Mode                HybridMode // Режим работы: confidence или full_compare
 }
 
 // LowConfidenceRegion участок с низкой уверенностью
@@ -74,6 +88,123 @@ func NewHybridTranscriber(
 
 // Transcribe выполняет гибридную транскрипцию
 func (h *HybridTranscriber) Transcribe(samples []float32) (*HybridTranscriptionResult, error) {
+	// Выбираем режим работы
+	mode := h.config.Mode
+	if mode == "" {
+		mode = HybridModeConfidence // По умолчанию - режим confidence
+	}
+
+	// Режим полного сравнения
+	if mode == HybridModeFullCompare {
+		return h.transcribeFullCompare(samples)
+	}
+
+	// Режим confidence (оригинальный)
+	return h.transcribeConfidenceBased(samples)
+}
+
+// transcribeFullCompare транскрибирует обеими моделями и сравнивает результаты через LLM
+func (h *HybridTranscriber) transcribeFullCompare(samples []float32) (*HybridTranscriptionResult, error) {
+	// Шаг 1: Транскрипция первичной моделью
+	log.Printf("[HybridTranscriber] FullCompare Step 1: Primary transcription with %s", h.primaryEngine.Name())
+	primarySegments, err := h.primaryEngine.TranscribeWithSegments(samples)
+	if err != nil {
+		return nil, fmt.Errorf("primary transcription failed: %w", err)
+	}
+
+	if h.secondaryEngine == nil {
+		return &HybridTranscriptionResult{Segments: primarySegments}, nil
+	}
+
+	// Шаг 2: Транскрипция вторичной моделью
+	log.Printf("[HybridTranscriber] FullCompare Step 2: Secondary transcription with %s", h.secondaryEngine.Name())
+	secondarySegments, err := h.secondaryEngine.TranscribeWithSegments(samples)
+	if err != nil {
+		log.Printf("[HybridTranscriber] Secondary transcription failed: %v, using primary only", err)
+		return &HybridTranscriptionResult{Segments: primarySegments}, nil
+	}
+
+	// Собираем полные тексты
+	primaryText := segmentsToFullText(primarySegments)
+	secondaryText := segmentsToFullText(secondarySegments)
+
+	log.Printf("[HybridTranscriber] Primary text: %q", primaryText)
+	log.Printf("[HybridTranscriber] Secondary text: %q", secondaryText)
+
+	// Если тексты идентичны - нет смысла сравнивать
+	if primaryText == secondaryText {
+		log.Printf("[HybridTranscriber] Texts are identical, no comparison needed")
+		return &HybridTranscriptionResult{Segments: primarySegments}, nil
+	}
+
+	// Шаг 3: LLM выбирает лучший вариант
+	if h.config.UseLLMForMerge && h.llmSelector != nil {
+		log.Printf("[HybridTranscriber] FullCompare Step 3: LLM selecting best transcription")
+
+		// Контекст для LLM - оба варианта
+		context := fmt.Sprintf("Модель 1 (%s): %s\nМодель 2 (%s): %s",
+			h.primaryEngine.Name(), primaryText,
+			h.secondaryEngine.Name(), secondaryText)
+
+		selected, err := h.llmSelector.SelectBestTranscription(primaryText, secondaryText, context)
+		if err != nil {
+			log.Printf("[HybridTranscriber] LLM selection failed: %v, using primary", err)
+			return &HybridTranscriptionResult{Segments: primarySegments}, nil
+		}
+
+		log.Printf("[HybridTranscriber] LLM selected: %q", selected)
+
+		// Определяем какой вариант выбран
+		var finalSegments []TranscriptSegment
+		var improvements []TranscriptionImprovement
+
+		if selected == secondaryText || levenshteinDistance(selected, secondaryText) < levenshteinDistance(selected, primaryText) {
+			// Выбран вторичный вариант
+			finalSegments = secondarySegments
+			improvements = append(improvements, TranscriptionImprovement{
+				StartMs:      0,
+				EndMs:        int64(len(samples) * 1000 / 16000),
+				OriginalText: primaryText,
+				ImprovedText: secondaryText,
+				Source:       "llm_full_compare",
+			})
+			log.Printf("[HybridTranscriber] Using secondary model result")
+		} else if selected == primaryText {
+			// Выбран первичный вариант
+			finalSegments = primarySegments
+			log.Printf("[HybridTranscriber] Using primary model result")
+		} else {
+			// LLM вернул модифицированный текст - используем его
+			// Создаём один сегмент с результатом LLM
+			finalSegments = []TranscriptSegment{{
+				Start: 0,
+				End:   int64(len(samples) * 1000 / 16000),
+				Text:  selected,
+			}}
+			improvements = append(improvements, TranscriptionImprovement{
+				StartMs:      0,
+				EndMs:        int64(len(samples) * 1000 / 16000),
+				OriginalText: primaryText,
+				ImprovedText: selected,
+				Source:       "llm_merged",
+			})
+			log.Printf("[HybridTranscriber] Using LLM merged result")
+		}
+
+		return &HybridTranscriptionResult{
+			Segments:           finalSegments,
+			RetranscribedCount: len(improvements),
+			Improvements:       improvements,
+		}, nil
+	}
+
+	// Без LLM - просто возвращаем первичный результат
+	log.Printf("[HybridTranscriber] No LLM configured, using primary result")
+	return &HybridTranscriptionResult{Segments: primarySegments}, nil
+}
+
+// transcribeConfidenceBased выполняет гибридную транскрипцию на основе confidence
+func (h *HybridTranscriber) transcribeConfidenceBased(samples []float32) (*HybridTranscriptionResult, error) {
 	// Шаг 1: Первичная транскрипция
 	log.Printf("[HybridTranscriber] Step 1: Primary transcription with %s", h.primaryEngine.Name())
 	primarySegments, err := h.primaryEngine.TranscribeWithSegments(samples)
@@ -127,9 +258,28 @@ func (h *HybridTranscriber) Transcribe(samples []float32) (*HybridTranscriptionR
 func (h *HybridTranscriber) findLowConfidenceRegions(segments []TranscriptSegment) []LowConfidenceRegion {
 	var regions []LowConfidenceRegion
 
+	// Статистика confidence
+	var totalWords, wordsWithConf, lowConfWords int
+	var minConf, maxConf, sumConf float32 = 1.0, 0.0, 0.0
+
 	for segIdx, seg := range segments {
 		if len(seg.Words) == 0 {
 			continue
+		}
+
+		// Собираем статистику confidence
+		for _, word := range seg.Words {
+			totalWords++
+			if word.P > 0 {
+				wordsWithConf++
+				sumConf += word.P
+				if word.P < minConf {
+					minConf = word.P
+				}
+				if word.P > maxConf {
+					maxConf = word.P
+				}
+			}
 		}
 
 		// Ищем последовательности слов с низкой уверенностью
@@ -137,6 +287,9 @@ func (h *HybridTranscriber) findLowConfidenceRegions(segments []TranscriptSegmen
 
 		for i, word := range seg.Words {
 			isLowConf := word.P > 0 && word.P < h.config.ConfidenceThreshold
+			if isLowConf {
+				lowConfWords++
+			}
 
 			if isLowConf {
 				if currentRegion == nil {
@@ -177,6 +330,14 @@ func (h *HybridTranscriber) findLowConfidenceRegions(segments []TranscriptSegmen
 
 	// Объединяем близкие регионы (менее 500мс между ними)
 	regions = h.mergeCloseRegions(regions, 500)
+
+	// Логируем итоговую статистику
+	avgConf := float32(0)
+	if wordsWithConf > 0 {
+		avgConf = sumConf / float32(wordsWithConf)
+	}
+	log.Printf("[HybridTranscriber] Confidence stats: totalWords=%d, wordsWithConf=%d, lowConfWords=%d, min=%.4f, max=%.4f, avg=%.4f, threshold=%.2f",
+		totalWords, wordsWithConf, lowConfWords, minConf, maxConf, avgConf, h.config.ConfidenceThreshold)
 
 	return regions
 }
@@ -465,4 +626,55 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// segmentsToFullText объединяет текст из всех сегментов
+func segmentsToFullText(segments []TranscriptSegment) string {
+	var result string
+	for i, seg := range segments {
+		if i > 0 {
+			result += " "
+		}
+		result += seg.Text
+	}
+	return result
+}
+
+// levenshteinDistance вычисляет расстояние Левенштейна между двумя строками
+func levenshteinDistance(s1, s2 string) int {
+	r1 := []rune(s1)
+	r2 := []rune(s2)
+
+	if len(r1) == 0 {
+		return len(r2)
+	}
+	if len(r2) == 0 {
+		return len(r1)
+	}
+
+	// Создаём матрицу
+	matrix := make([][]int, len(r1)+1)
+	for i := range matrix {
+		matrix[i] = make([]int, len(r2)+1)
+		matrix[i][0] = i
+	}
+	for j := range matrix[0] {
+		matrix[0][j] = j
+	}
+
+	// Заполняем матрицу
+	for i := 1; i <= len(r1); i++ {
+		for j := 1; j <= len(r2); j++ {
+			cost := 1
+			if r1[i-1] == r2[j-1] {
+				cost = 0
+			}
+			matrix[i][j] = minInt(
+				minInt(matrix[i-1][j]+1, matrix[i][j-1]+1),
+				matrix[i-1][j-1]+cost,
+			)
+		}
+	}
+
+	return matrix[len(r1)][len(r2)]
 }

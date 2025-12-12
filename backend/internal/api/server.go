@@ -507,13 +507,17 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 					ConfidenceThreshold: float32(msg.HybridConfidenceThreshold),
 					ContextWords:        msg.HybridContextWords,
 					UseLLMForMerge:      msg.HybridUseLLMForMerge,
+					Mode:                ai.HybridMode(msg.HybridMode),
 				}
 				// Устанавливаем дефолты если не указаны
 				if hybridConfig.ConfidenceThreshold <= 0 {
-					hybridConfig.ConfidenceThreshold = 0.5
+					hybridConfig.ConfidenceThreshold = 0.7 // Повышен с 0.5 до 0.7
 				}
 				if hybridConfig.ContextWords <= 0 {
 					hybridConfig.ContextWords = 3
+				}
+				if hybridConfig.Mode == "" {
+					hybridConfig.Mode = ai.HybridModeFullCompare // По умолчанию - полное сравнение
 				}
 				s.TranscriptionService.SetHybridConfig(hybridConfig)
 			} else {
@@ -612,12 +616,16 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 				ConfidenceThreshold: float32(msg.HybridConfidenceThreshold),
 				ContextWords:        msg.HybridContextWords,
 				UseLLMForMerge:      msg.HybridUseLLMForMerge,
+				Mode:                ai.HybridMode(msg.HybridMode),
 			}
 			if hybridConfig.ConfidenceThreshold <= 0 {
-				hybridConfig.ConfidenceThreshold = 0.5
+				hybridConfig.ConfidenceThreshold = 0.7 // Повышен с 0.5 до 0.7
 			}
 			if hybridConfig.ContextWords <= 0 {
 				hybridConfig.ContextWords = 3
+			}
+			if hybridConfig.Mode == "" {
+				hybridConfig.Mode = ai.HybridModeFullCompare // По умолчанию - полное сравнение
 			}
 			s.TranscriptionService.SetHybridConfig(hybridConfig)
 			send(Message{
@@ -627,13 +635,14 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 				HybridConfidenceThreshold: msg.HybridConfidenceThreshold,
 				HybridContextWords:        msg.HybridContextWords,
 				HybridUseLLMForMerge:      msg.HybridUseLLMForMerge,
+				HybridMode:                msg.HybridMode,
 			})
 		} else {
 			s.TranscriptionService.SetHybridConfig(nil)
 			send(Message{Type: "hybrid_transcription_status", HybridEnabled: false})
 		}
-		log.Printf("Hybrid transcription: enabled=%v, secondaryModel=%s, threshold=%.2f",
-			msg.HybridEnabled, msg.HybridSecondaryModelID, msg.HybridConfidenceThreshold)
+		log.Printf("Hybrid transcription: enabled=%v, secondaryModel=%s, threshold=%.2f, mode=%s",
+			msg.HybridEnabled, msg.HybridSecondaryModelID, msg.HybridConfidenceThreshold, msg.HybridMode)
 
 	case "get_hybrid_transcription_status":
 		// Получить текущий статус гибридной транскрипции

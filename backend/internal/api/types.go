@@ -89,6 +89,7 @@ type Message struct {
 	HybridConfidenceThreshold float64 `json:"hybridConfidenceThreshold,omitempty"` // Порог уверенности (0.0-1.0)
 	HybridContextWords        int     `json:"hybridContextWords,omitempty"`        // Количество слов контекста
 	HybridUseLLMForMerge      bool    `json:"hybridUseLLMForMerge,omitempty"`      // Использовать LLM для слияния
+	HybridMode                string  `json:"hybridMode,omitempty"`                // Режим: "confidence" или "full_compare"
 }
 
 type OllamaModel struct {

@@ -55,9 +55,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
     const [hybridTranscription, setHybridTranscription] = useState<HybridTranscriptionSettings>({
         enabled: false,
         secondaryModelId: '',
-        confidenceThreshold: 0.5,
+        confidenceThreshold: 0.7,
         contextWords: 3,
-        useLLMForMerge: true
+        useLLMForMerge: true,
+        mode: 'full_compare'
     });
 
     // Devices (fetched via navigator.mediaDevices usually, or Electron IPC)
@@ -168,6 +169,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({
                     hybridConfidenceThreshold: hybridTranscription.confidenceThreshold,
                     hybridContextWords: hybridTranscription.contextWords,
                     hybridUseLLMForMerge: hybridTranscription.useLLMForMerge,
+                    hybridMode: hybridTranscription.mode,
                 });
                 addLog('Recording started');
                 if (hybridTranscription.enabled && hybridTranscription.secondaryModelId) {

@@ -348,9 +348,10 @@ function App() {
     const [hybridTranscription, setHybridTranscription] = useState<HybridTranscriptionSettings>({
         enabled: false,
         secondaryModelId: '',
-        confidenceThreshold: 0.5,
+        confidenceThreshold: 0.7,
         contextWords: 3,
         useLLMForMerge: true,
+        mode: 'full_compare', // По умолчанию - полное сравнение (более надёжно)
     });
 
     // Drag & Drop state

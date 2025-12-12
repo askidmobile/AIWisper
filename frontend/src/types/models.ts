@@ -77,6 +77,9 @@ export interface AppSettings {
     hybridTranscription?: HybridTranscriptionSettings;
 }
 
+// Режим гибридной транскрипции
+export type HybridMode = 'confidence' | 'full_compare';
+
 // Настройки гибридной транскрипции
 export interface HybridTranscriptionSettings {
     enabled: boolean;                    // Включена ли гибридная транскрипция
@@ -84,6 +87,7 @@ export interface HybridTranscriptionSettings {
     confidenceThreshold: number;         // Порог уверенности (0.0 - 1.0), ниже которого слово перетранскрибируется
     contextWords: number;                // Количество слов контекста вокруг проблемного слова (1-5)
     useLLMForMerge: boolean;             // Использовать LLM для выбора лучшего варианта
+    mode: HybridMode;                    // Режим: confidence (по порогу) или full_compare (полное сравнение)
 }
 
 // Модель Ollama для summary
