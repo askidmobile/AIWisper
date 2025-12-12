@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.0] - 2025-12-12
+
+### Added
+- **Hybrid Transcription (Dual-Model)**: Two-pass transcription combining strengths of multiple ASR models
+  - **Problem**: GigaAM v3 is SOTA for Russian (WER 8.4%) but struggles with foreign terminology (API, B2C, UMS)
+  - **Solution**: Primary model transcribes everything, finds low-confidence words, secondary model (e.g., Whisper) retranscribes problem regions, LLM selects best variant
+  - **Backend**: `HybridTranscriber` with confidence-based region detection, `CreateEngineForModel()` for secondary model, `SelectBestTranscription()` LLM method
+  - **Frontend**: Full settings UI with model selection, confidence threshold slider, LLM toggle
+  - **Settings persist** in localStorage/electron-store
+
+- **Confidence Visualization**: Visual highlighting of low-confidence words in transcription
+  - **Toggle button** "🎯 Confidence" in dialogue header
+  - **Color coding**: Yellow (<70%), Orange with underline (<40%)
+  - **Tooltip** shows exact confidence percentage on hover
+
+- **HelpTooltip Component**: Reusable contextual help component
+  - Click-to-open popover with detailed information
+  - Supports positioning (top/bottom/left/right)
+  - Used in Hybrid Transcription settings
+
+- **GigaAM RNNT Models**: Support for RNN-T architecture models
+  - `gigaam-v3-rnnt` - Best quality (WER 8.4%)
+  - `gigaam-v3-e2e-rnnt` - Best quality + punctuation (WER 11.2%)
+  - Three-file structure: encoder, decoder, joint network
+
+### Technical
+- `backend/ai/hybrid_transcription.go`: Full hybrid transcription logic (469 lines)
+- `backend/ai/gigaam_rnnt.go`: RNNT model support with 3-session inference
+- `backend/ai/engine_manager.go`: Added `CreateEngineForModel()` method
+- `backend/internal/service/llm.go`: Added `SelectBestTranscription()` method
+- `backend/internal/service/transcription.go`: Integrated hybrid transcription
+- `backend/internal/api/server.go`: Added `set_hybrid_transcription`, `get_hybrid_transcription_status` commands
+- `frontend/src/components/common/HelpTooltip.tsx`: New reusable component
+- `frontend/src/components/modules/HybridTranscriptionSettings.tsx`: Full settings UI
+- `frontend/src/components/modules/TranscriptionView.tsx`: Confidence visualization
+
 ## [1.27.0] - 2025-12-12
 
 ### Added
