@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.30.0] - 2025-12-12
+
+### Added
+- **Batch Export**: Export multiple sessions at once to ZIP archive
+  - Multi-select sessions with `⌘+Click` (Mac) or `Ctrl+Click` (Windows/Linux)
+  - Visual indicator for selected sessions (purple highlight + checkmark)
+  - Batch export panel showing selection count
+  - Modal dialog for format selection (TXT, SRT, VTT, JSON, Markdown)
+  - Backend endpoint `/api/export/batch` for ZIP generation
+
+### Technical
+- `backend/internal/api/server.go`: Add batch export endpoint with format converters
+- `frontend/src/App.tsx`: Add multi-select state, BatchExportModal component
+- `frontend/src/index.css`: Add `.multi-selected` styles for session items
+
 ## [1.29.0] - 2025-12-12
 
 ### Added
