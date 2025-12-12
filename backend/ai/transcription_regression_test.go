@@ -1,4 +1,8 @@
-//go:build darwin
+//go:build darwin && integration
+
+// Интеграционные тесты для регрессионного тестирования транскрипции
+// Запуск: go test -tags=integration -v ./ai -run TestRegression
+// Требуют: реальные аудиофайлы в ~/Library/Application Support/aiwisper/sessions/
 
 package ai
 
