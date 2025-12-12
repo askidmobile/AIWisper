@@ -4,6 +4,7 @@ import { useWebSocketContext } from '../../context/WebSocketContext';
 import SessionTabs, { TabType } from '../SessionTabs';
 import SummaryView from '../SummaryView';
 import { SessionControls } from './SessionControls';
+import { SessionStats } from './SessionStats';
 import { TranscriptSegment, TranscriptWord } from '../../types/session';
 import { SessionSpeaker } from '../../types/voiceprint';
 
@@ -601,8 +602,18 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                             <>
                                 {allDialogue.length > 0 ? (
                                     <div style={{ marginBottom: '1.5rem', padding: '1rem', backgroundColor: 'var(--surface)', borderRadius: '8px', lineHeight: '1.9', fontSize: '0.95rem' }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                                            <h4 style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '8px' }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                                <h4 style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Диалог</h4>
+                                                {displaySession && (
+                                                    <SessionStats
+                                                        dialogue={allDialogue}
+                                                        totalDuration={displaySession.totalDuration}
+                                                        isCompact={true}
+                                                    />
+                                                )}
+                                            </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                                             {isPlaying && (
                                                 <button
                                                     onClick={() => setAutoScrollToPlayback(!autoScrollToPlayback)}
@@ -642,6 +653,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                             >
                                                 {showConfidence ? '🎯 Confidence' : '🎯 Confidence'}
                                             </button>
+                                            </div>
                                         </div>
                                         {allDialogue.map((seg, idx) => {
                                             const totalMs = seg.start || 0;
@@ -738,6 +750,14 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                     </div>
                                 ))}
                             </div>
+                        )}
+
+                        {/* Tab: Stats */}
+                        {activeTab === 'stats' && displaySession && (
+                            <SessionStats
+                                dialogue={allDialogue}
+                                totalDuration={displaySession.totalDuration}
+                            />
                         )}
 
                         {/* Tab: Summary */}

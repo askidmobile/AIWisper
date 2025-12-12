@@ -1,4 +1,4 @@
-export type TabType = 'dialogue' | 'chunks' | 'speakers' | 'summary';
+export type TabType = 'dialogue' | 'chunks' | 'speakers' | 'stats' | 'summary';
 
 interface SessionTabsProps {
     activeTab: TabType;
@@ -21,6 +21,7 @@ export default function SessionTabs({
         { id: 'dialogue', label: 'Транскрипция' },
         { id: 'chunks', label: 'Отрезки' },
         { id: 'speakers', label: 'Собеседники', hideWhenRecording: true },
+        { id: 'stats', label: 'Статистика', hideWhenRecording: true },
         { id: 'summary', label: 'Сводка', hideWhenRecording: true },
     ];
 
