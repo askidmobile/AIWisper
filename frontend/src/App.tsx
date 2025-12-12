@@ -10,7 +10,7 @@ import WaveformDisplay from './components/WaveformDisplay';
 import SpeakersTab from './components/modules/SpeakersTab';
 import SessionStats from './components/modules/SessionStats';
 import { ModelState, AppSettings, OllamaModel, HybridTranscriptionSettings } from './types/models';
-import { SessionSpeaker } from './types/voiceprint';
+import { SessionSpeaker, VoicePrint } from './types/voiceprint';
 import { WaveformData, computeWaveform } from './utils/waveform';
 import { groupSessionsByTime, formatDuration as formatDurationUtil, formatDate as formatDateUtil, formatTime as formatTimeUtil } from './utils/groupSessions';
 import { createGrpcSocket, RPC_READY_STATE, RpcSocketLike } from './utils/grpcStream';
@@ -244,6 +244,10 @@ function App() {
 
     // Session Speakers (for VoicePrint integration)
     const [sessionSpeakers, setSessionSpeakers] = useState<SessionSpeaker[]>([]);
+
+    // Global Voiceprints (saved speakers)
+    const [voiceprints, setVoiceprints] = useState<VoicePrint[]>([]);
+    const [voiceprintsLoading, setVoiceprintsLoading] = useState(false);
 
     // Devices
     const [devices, setDevices] = useState<AudioDevice[]>([]);
@@ -681,6 +685,7 @@ function App() {
                 socket.send(JSON.stringify({ type: 'get_sessions' }));
                 socket.send(JSON.stringify({ type: 'get_models' }));
                 socket.send(JSON.stringify({ type: 'get_diarization_status' }));
+                socket.send(JSON.stringify({ type: 'get_voiceprints' }));
             };
 
             socket.onmessage = (event) => {
@@ -1087,6 +1092,31 @@ function App() {
 
                         case 'voiceprint_saved':
                             addLog(`Voiceprint saved: ${msg.name} (${msg.voiceprintId?.substring(0, 8)}...)`);
+                            // Обновляем список voiceprints после сохранения
+                            socket.send(JSON.stringify({ type: 'get_voiceprints' }));
+                            break;
+
+                        // === Voiceprints Management ===
+                        case 'voiceprints_list':
+                            setVoiceprints(msg.voiceprints || []);
+                            setVoiceprintsLoading(false);
+                            addLog(`Voiceprints loaded: ${(msg.voiceprints || []).length}`);
+                            break;
+
+                        case 'voiceprint_updated':
+                            // Обновляем voiceprint в локальном состоянии
+                            setVoiceprints(prev => prev.map(vp =>
+                                vp.id === msg.voiceprintId
+                                    ? { ...vp, name: msg.name, updatedAt: new Date().toISOString() }
+                                    : vp
+                            ));
+                            addLog(`Voiceprint updated: ${msg.name}`);
+                            break;
+
+                        case 'voiceprint_deleted':
+                            // Удаляем voiceprint из локального состояния
+                            setVoiceprints(prev => prev.filter(vp => vp.id !== msg.voiceprintId));
+                            addLog(`Voiceprint deleted: ${msg.voiceprintId?.substring(0, 8)}...`);
                             break;
                     }
                 } catch {
@@ -1479,6 +1509,38 @@ function App() {
         
         addLog(`Playing sample for speaker ${localId}`);
     }, [selectedSession, addLog]);
+
+    // === Voiceprints Management ===
+    
+    // Обновить список voiceprints
+    const refreshVoiceprints = useCallback(() => {
+        if (!wsRef.current || wsRef.current.readyState !== RPC_READY_STATE.OPEN) return;
+        setVoiceprintsLoading(true);
+        wsRef.current.send(JSON.stringify({ type: 'get_voiceprints' }));
+    }, []);
+
+    // Переименовать voiceprint
+    const handleRenameVoiceprint = useCallback((id: string, name: string) => {
+        if (!wsRef.current || wsRef.current.readyState !== RPC_READY_STATE.OPEN) return;
+        
+        wsRef.current.send(JSON.stringify({
+            type: 'update_voiceprint',
+            voiceprintId: id,
+            name: name
+        }));
+        addLog(`Renaming voiceprint to "${name}"`);
+    }, [addLog]);
+
+    // Удалить voiceprint
+    const handleDeleteVoiceprint = useCallback((id: string) => {
+        if (!wsRef.current || wsRef.current.readyState !== RPC_READY_STATE.OPEN) return;
+        
+        wsRef.current.send(JSON.stringify({
+            type: 'delete_voiceprint',
+            voiceprintId: id
+        }));
+        addLog(`Deleting voiceprint ${id.substring(0, 8)}...`);
+    }, [addLog]);
 
     // Функция для получения отображаемого имени спикера с учётом кастомных имён
     // Приоритет: sessionSpeakers (кастомные имена) > дефолтные имена из getSpeakerInfo
@@ -3546,6 +3608,12 @@ function App() {
                     // Гибридная транскрипция
                     hybridTranscription={hybridTranscription}
                     onHybridTranscriptionChange={setHybridTranscription}
+                    // Voiceprints (сохранённые голоса)
+                    voiceprints={voiceprints}
+                    voiceprintsLoading={voiceprintsLoading}
+                    onRenameVoiceprint={handleRenameVoiceprint}
+                    onDeleteVoiceprint={handleDeleteVoiceprint}
+                    onRefreshVoiceprints={refreshVoiceprints}
                 />
 
                 {/* Transcription Area */}

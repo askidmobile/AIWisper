@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { ModelState, OllamaModel, DiarizationStatus, HybridTranscriptionSettings } from '../types/models';
+import { VoicePrint } from '../types/voiceprint';
 import { HybridTranscriptionSettingsPanel } from './modules/HybridTranscriptionSettings';
+import { VoiceprintsSettings } from './modules/VoiceprintsSettings';
 
 interface SettingsModalProps {
     isOpen: boolean;
@@ -43,6 +45,12 @@ interface SettingsModalProps {
     // Гибридная транскрипция
     hybridTranscription?: HybridTranscriptionSettings;
     onHybridTranscriptionChange?: (settings: HybridTranscriptionSettings) => void;
+    // Voiceprints (сохранённые голоса)
+    voiceprints?: VoicePrint[];
+    voiceprintsLoading?: boolean;
+    onRenameVoiceprint?: (id: string, name: string) => void;
+    onDeleteVoiceprint?: (id: string) => void;
+    onRefreshVoiceprints?: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -86,6 +94,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     // Гибридная транскрипция
     hybridTranscription,
     onHybridTranscriptionChange,
+    // Voiceprints
+    voiceprints = [],
+    voiceprintsLoading = false,
+    onRenameVoiceprint,
+    onDeleteVoiceprint,
+    onRefreshVoiceprints,
 }) => {
     // Локальное состояние для выбора моделей диаризации
     const [selectedSegModel, setSelectedSegModel] = useState(
@@ -754,6 +768,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             availableModels={models.filter(m => m.status === 'downloaded' && (m.engine === 'whisper' || m.engine === 'gigaam' || m.engine === 'fluid-asr'))}
                             currentModelId={activeModelId || ''}
                             disabled={false}
+                        />
+                    </div>
+                )}
+
+                {/* Voiceprints Section */}
+                {onRenameVoiceprint && onDeleteVoiceprint && onRefreshVoiceprints && (
+                    <div style={sectionStyle}>
+                        <span style={labelStyle}>Сохранённые голоса</span>
+                        <VoiceprintsSettings
+                            voiceprints={voiceprints}
+                            onRename={onRenameVoiceprint}
+                            onDelete={onDeleteVoiceprint}
+                            onRefresh={onRefreshVoiceprints}
+                            isLoading={voiceprintsLoading}
                         />
                     </div>
                 )}
