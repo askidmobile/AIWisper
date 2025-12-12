@@ -68,7 +68,7 @@ type Message struct {
 	// VoicePrint (спикеры)
 	VoicePrints      []voiceprint.VoicePrint     `json:"voiceprints,omitempty"`
 	VoicePrint       *voiceprint.VoicePrint      `json:"voiceprint,omitempty"`
-	SessionSpeakers  []voiceprint.SessionSpeaker `json:"sessionSpeakers,omitempty"`
+	SessionSpeakers  []voiceprint.SessionSpeaker `json:"speakers,omitempty"`
 	LocalSpeakerID   int                         `json:"localSpeakerId,omitempty"`
 	SpeakerName      string                      `json:"speakerName,omitempty"`
 	SaveAsVoiceprint bool                        `json:"saveAsVoiceprint,omitempty"`

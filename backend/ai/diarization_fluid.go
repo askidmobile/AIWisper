@@ -55,15 +55,23 @@ func DefaultFluidDiarizerConfig() FluidDiarizerConfig {
 
 // fluidDiarizationResult структура JSON ответа от diarization-fluid
 type fluidDiarizationResult struct {
-	Segments    []fluidSegment `json:"segments"`
-	NumSpeakers int            `json:"num_speakers"`
-	Error       string         `json:"error,omitempty"`
+	Segments          []fluidSegment          `json:"segments"`
+	NumSpeakers       int                     `json:"num_speakers"`
+	SpeakerEmbeddings []fluidSpeakerEmbedding `json:"speaker_embeddings,omitempty"`
+	Error             string                  `json:"error,omitempty"`
 }
 
 type fluidSegment struct {
 	Speaker int     `json:"speaker"`
 	Start   float64 `json:"start"`
 	End     float64 `json:"end"`
+}
+
+// fluidSpeakerEmbedding embedding спикера для глобального сопоставления
+type fluidSpeakerEmbedding struct {
+	Speaker   int       `json:"speaker"`
+	Embedding []float32 `json:"embedding"`
+	Duration  float64   `json:"duration"`
 }
 
 // getFluidBinaryPath ищет diarization-fluid binary в нескольких местах
@@ -223,6 +231,112 @@ func (d *FluidDiarizer) Diarize(samples []float32) ([]SpeakerSegment, error) {
 		float64(len(samples))/16000.0, elapsed.Seconds(), len(segments), result.NumSpeakers)
 
 	return segments, nil
+}
+
+// DiarizeWithEmbeddings выполняет диаризацию и возвращает embeddings спикеров
+// samples - аудио данные в формате float32, 16kHz, mono
+func (d *FluidDiarizer) DiarizeWithEmbeddings(samples []float32) (*DiarizationResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if !d.initialized {
+		return nil, fmt.Errorf("FluidDiarizer not initialized")
+	}
+
+	if len(samples) == 0 {
+		return &DiarizationResult{}, nil
+	}
+
+	startTime := time.Now()
+
+	// Запускаем subprocess с режимом --samples и параметрами
+	args := []string{"--samples"}
+	args = append(args, "--clustering-threshold", fmt.Sprintf("%.2f", d.clusteringThreshold))
+	args = append(args, "--min-segment-duration", fmt.Sprintf("%.2f", d.minSegmentDuration))
+	args = append(args, "--vbx-max-iterations", fmt.Sprintf("%d", d.vbxMaxIterations))
+	args = append(args, "--min-gap-duration", fmt.Sprintf("%.2f", d.minGapDuration))
+	if d.debug {
+		args = append(args, "--debug")
+	}
+
+	cmd := exec.Command(d.binaryPath, args...)
+
+	// Подготавливаем stdin с бинарными float32 данными
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stdin pipe: %w", err)
+	}
+
+	// Буфер для stdout
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// Запускаем процесс
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start diarization-fluid: %w", err)
+	}
+
+	// Пишем samples в stdin как бинарные float32
+	buf := make([]byte, len(samples)*4)
+	for i, s := range samples {
+		binary.LittleEndian.PutUint32(buf[i*4:], float32bits(s))
+	}
+	stdin.Write(buf)
+	stdin.Close()
+
+	// Ждём завершения процесса
+	if err := cmd.Wait(); err != nil {
+		if stderr.Len() > 0 {
+			log.Printf("FluidDiarizer stderr: %s", stderr.String())
+		}
+		return nil, fmt.Errorf("diarization-fluid failed: %w", err)
+	}
+
+	// Парсим JSON результат
+	var result fluidDiarizationResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse diarization result: %w (output: %s)", err, stdout.String())
+	}
+
+	if result.Error != "" {
+		return nil, fmt.Errorf("diarization error: %s", result.Error)
+	}
+
+	// Конвертируем сегменты
+	segments := make([]SpeakerSegment, len(result.Segments))
+	for i, seg := range result.Segments {
+		segments[i] = SpeakerSegment{
+			Start:   float32(seg.Start),
+			End:     float32(seg.End),
+			Speaker: seg.Speaker,
+		}
+	}
+
+	// Конвертируем embeddings
+	var embeddings []SpeakerEmbedding
+	if len(result.SpeakerEmbeddings) > 0 {
+		embeddings = make([]SpeakerEmbedding, len(result.SpeakerEmbeddings))
+		for i, emb := range result.SpeakerEmbeddings {
+			embeddings[i] = SpeakerEmbedding{
+				Speaker:   emb.Speaker,
+				Embedding: emb.Embedding,
+				Duration:  float32(emb.Duration),
+			}
+		}
+		log.Printf("FluidDiarizer: extracted %d speaker embeddings", len(embeddings))
+	}
+
+	elapsed := time.Since(startTime)
+	log.Printf("FluidDiarizer: processed %.1fs audio in %.2fs, found %d segments from %d speakers (with embeddings: %v)",
+		float64(len(samples))/16000.0, elapsed.Seconds(), len(segments), result.NumSpeakers, len(embeddings) > 0)
+
+	return &DiarizationResult{
+		Segments:          segments,
+		NumSpeakers:       result.NumSpeakers,
+		SpeakerEmbeddings: embeddings,
+	}, nil
 }
 
 // DiarizeFile выполняет диаризацию аудио файла напрямую

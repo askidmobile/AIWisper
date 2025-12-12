@@ -19,6 +19,20 @@ type SpeakerSegment struct {
 	Speaker int     // ID спикера (0, 1, 2...)
 }
 
+// SpeakerEmbedding представляет embedding спикера для глобального сопоставления
+type SpeakerEmbedding struct {
+	Speaker   int       // ID спикера (0, 1, 2...)
+	Embedding []float32 // 256-мерный вектор
+	Duration  float32   // Общая длительность речи спикера (сек)
+}
+
+// DiarizationResult результат диаризации с embeddings для сопоставления
+type DiarizationResult struct {
+	Segments          []SpeakerSegment   // Сегменты речи
+	NumSpeakers       int                // Количество уникальных спикеров
+	SpeakerEmbeddings []SpeakerEmbedding // Embeddings спикеров (для глобального сопоставления)
+}
+
 // SherpaDiarizerConfig конфигурация для SherpaDiarizer
 type SherpaDiarizerConfig struct {
 	SegmentationModelPath string  // Путь к модели сегментации (pyannote)

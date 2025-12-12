@@ -34,14 +34,22 @@ struct DiarizationSegment: Codable {
     let end: Double
 }
 
-struct DiarizationResult: Codable {
+// Embedding спикера для глобального сопоставления
+struct SpeakerEmbedding: Codable {
+    let speaker: Int           // ID спикера (0, 1, 2...)
+    let embedding: [Float]     // 256-мерный вектор
+    let duration: Double       // Общая длительность речи спикера (сек)
+}
+
+struct DiarizationOutput: Codable {
     let segments: [DiarizationSegment]
     let num_speakers: Int
+    let speaker_embeddings: [SpeakerEmbedding]?  // Embeddings для каждого спикера
     let error: String?
 }
 
 func printError(_ message: String) {
-    let result = DiarizationResult(segments: [], num_speakers: 0, error: message)
+    let result = DiarizationOutput(segments: [], num_speakers: 0, speaker_embeddings: nil, error: message)
     if let data = try? JSONEncoder().encode(result),
        let json = String(data: data, encoding: .utf8) {
         print(json)
@@ -242,9 +250,42 @@ struct DiarizationCLI {
                 fputs("[FluidAudio] Final: \(segments.count) segments, \(speakerSet.count) unique speakers: \(speakerSet.sorted())\n", stderr)
             }
             
-            let output = DiarizationResult(
+            // Извлекаем embeddings спикеров из speakerDatabase
+            var speakerEmbeddings: [SpeakerEmbedding] = []
+            if let database = result.speakerDatabase {
+                // Считаем длительность для каждого спикера
+                var speakerDurations: [Int: Double] = [:]
+                for segment in segments {
+                    let duration = segment.end - segment.start
+                    speakerDurations[segment.speaker, default: 0] += duration
+                }
+                
+                for (speakerId, embedding) in database {
+                    // Извлекаем числовой ID из строки "SPEAKER_00"
+                    let numericId: Int
+                    if let match = speakerId.range(of: #"\d+"#, options: .regularExpression) {
+                        numericId = Int(speakerId[match]) ?? 0
+                    } else {
+                        numericId = 0
+                    }
+                    
+                    let duration = speakerDurations[numericId] ?? 0
+                    speakerEmbeddings.append(SpeakerEmbedding(
+                        speaker: numericId,
+                        embedding: embedding,
+                        duration: duration
+                    ))
+                    
+                    if config.debug {
+                        fputs("[FluidAudio] Speaker \(numericId) embedding: \(embedding.count) dims, duration=\(String(format: "%.1f", duration))s\n", stderr)
+                    }
+                }
+            }
+            
+            let output = DiarizationOutput(
                 segments: segments,
                 num_speakers: speakerSet.count,
+                speaker_embeddings: speakerEmbeddings.isEmpty ? nil : speakerEmbeddings,
                 error: nil
             )
             

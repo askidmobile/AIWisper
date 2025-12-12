@@ -961,6 +961,10 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 				s.retranscribeCancelsMu.Unlock()
 			}()
 
+			// Очищаем профили спикеров для сессии при полной ретранскрипции
+			// чтобы начать сопоставление с чистого листа
+			s.TranscriptionService.ClearSessionSpeakerProfiles(sessionID)
+
 			if totalChunks == 0 {
 				log.Printf("Full retranscription: no chunks to process")
 				s.broadcast(Message{Type: "full_transcription_completed", SessionID: sessionID, Session: sess})
@@ -1226,6 +1230,11 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 		}
 
 		speakers := s.getSessionSpeakers(msg.SessionID)
+		log.Printf("get_session_speakers: sessionID=%s, found %d speakers", msg.SessionID, len(speakers))
+		for i, sp := range speakers {
+			log.Printf("  speaker[%d]: localID=%d, name=%s, isMic=%v, segments=%d, duration=%.1fs",
+				i, sp.LocalID, sp.DisplayName, sp.IsMic, sp.SegmentCount, sp.TotalDuration)
+		}
 		send(Message{Type: "session_speakers", SessionID: msg.SessionID, SessionSpeakers: speakers})
 
 	case "rename_session_speaker":
@@ -1716,8 +1725,11 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 
 	sess, err := s.SessionMgr.GetSession(sessionID)
 	if err != nil {
+		log.Printf("getSessionSpeakers: failed to get session %s: %v", sessionID, err)
 		return speakers
 	}
+
+	log.Printf("getSessionSpeakers: session %s has %d chunks", sessionID, len(sess.Chunks))
 
 	// Собираем информацию о спикерах из диалога
 	// Спикеры могут быть в разных форматах:
@@ -1731,46 +1743,50 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 			return
 		}
 
-		// Нормализуем ключ для группировки
+		// Определяем localID и нормализуем ключ для группировки
+		localID := 0
+		isMic := false
+		displayName := speaker
 		normalizedKey := speaker
 
+		// Определяем тип спикера и формируем displayName
+		switch {
+		case speaker == "mic" || speaker == "Вы":
+			isMic = true
+			localID = -1
+			displayName = "Вы"
+			normalizedKey = "mic" // Нормализуем ключ
+
+		case speaker == "sys" || speaker == "Собеседник":
+			localID = 0
+			displayName = "Собеседник 1"
+			normalizedKey = "speaker_0" // Нормализуем ключ
+
+		case strings.HasPrefix(speaker, "Speaker "):
+			// "Speaker 0" -> localID = 0, displayName = "Собеседник 1"
+			var num int
+			fmt.Sscanf(speaker, "Speaker %d", &num)
+			localID = num
+			displayName = fmt.Sprintf("Собеседник %d", num+1)
+			normalizedKey = fmt.Sprintf("speaker_%d", num) // Нормализуем ключ
+
+		case strings.HasPrefix(speaker, "Собеседник "):
+			// "Собеседник 1" -> localID = 0
+			var num int
+			fmt.Sscanf(speaker, "Собеседник %d", &num)
+			localID = num - 1
+			displayName = speaker                            // Уже в нужном формате
+			normalizedKey = fmt.Sprintf("speaker_%d", num-1) // Нормализуем ключ
+
+		default:
+			// Кастомное имя (уже переименованный спикер)
+			// Пытаемся определить localID по позиции
+			localID = len(speakerMap) // Присваиваем следующий ID
+			displayName = speaker
+			// normalizedKey остаётся равным speaker
+		}
+
 		if _, ok := speakerMap[normalizedKey]; !ok {
-			localID := 0
-			isMic := false
-			displayName := speaker
-
-			// Определяем тип спикера и формируем displayName
-			switch {
-			case speaker == "mic" || speaker == "Вы":
-				isMic = true
-				localID = -1
-				displayName = "Вы"
-
-			case speaker == "sys" || speaker == "Собеседник":
-				localID = 0
-				displayName = "Собеседник 1"
-
-			case strings.HasPrefix(speaker, "Speaker "):
-				// "Speaker 0" -> localID = 0, displayName = "Собеседник 1"
-				var num int
-				fmt.Sscanf(speaker, "Speaker %d", &num)
-				localID = num
-				displayName = fmt.Sprintf("Собеседник %d", num+1)
-
-			case strings.HasPrefix(speaker, "Собеседник "):
-				// "Собеседник 1" -> localID = 0
-				var num int
-				fmt.Sscanf(speaker, "Собеседник %d", &num)
-				localID = num - 1
-				displayName = speaker // Уже в нужном формате
-
-			default:
-				// Кастомное имя (уже переименованный спикер)
-				// Пытаемся определить localID по позиции
-				localID = len(speakerMap) // Присваиваем следующий ID
-				displayName = speaker
-			}
-
 			speakerMap[normalizedKey] = &voiceprint.SessionSpeaker{
 				LocalID:      localID,
 				DisplayName:  displayName,
@@ -1784,15 +1800,21 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 		sp.TotalDuration += float32(duration) / 1000.0 // мс -> сек
 	}
 
-	for _, chunk := range sess.Chunks {
+	for i, chunk := range sess.Chunks {
 		// 1. Сначала проверяем Dialogue (объединённый диалог)
 		if len(chunk.Dialogue) > 0 {
-			for _, seg := range chunk.Dialogue {
+			log.Printf("getSessionSpeakers: chunk[%d] has %d dialogue segments", i, len(chunk.Dialogue))
+			for j, seg := range chunk.Dialogue {
+				if j < 3 { // Логируем первые 3 сегмента каждого чанка
+					log.Printf("  chunk[%d].dialogue[%d]: speaker='%s'", i, j, seg.Speaker)
+				}
 				processSpeaker(seg.Speaker, seg.End-seg.Start)
 			}
 		} else {
 			// 2. Если Dialogue пустой, проверяем MicSegments и SysSegments
 			// Это важно для сессий без диаризации, где есть только раздельные каналы
+			log.Printf("getSessionSpeakers: chunk[%d] has no dialogue, mic=%d sys=%d segments",
+				i, len(chunk.MicSegments), len(chunk.SysSegments))
 			for _, seg := range chunk.MicSegments {
 				speaker := seg.Speaker
 				if speaker == "" {

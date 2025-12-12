@@ -48,10 +48,11 @@ func DefaultPipelineConfig() PipelineConfig {
 
 // PipelineResult результат обработки аудио пайплайном
 type PipelineResult struct {
-	Segments        []TranscriptSegment // Сегменты с текстом и таймстемпами
-	SpeakerSegments []SpeakerSegment    // Сегменты смены спикеров (если диаризация включена)
-	NumSpeakers     int                 // Количество обнаруженных спикеров
-	FullText        string              // Полный текст транскрипции
+	Segments          []TranscriptSegment // Сегменты с текстом и таймстемпами
+	SpeakerSegments   []SpeakerSegment    // Сегменты смены спикеров (если диаризация включена)
+	SpeakerEmbeddings []SpeakerEmbedding  // Embeddings спикеров (для сопоставления между чанками)
+	NumSpeakers       int                 // Количество обнаруженных спикеров
+	FullText          string              // Полный текст транскрипции
 }
 
 // AudioPipeline оркестрирует транскрипцию и диаризацию
@@ -457,7 +458,27 @@ func (p *AudioPipeline) DiarizeOnly(samples []float32) (*PipelineResult, error) 
 		return result, fmt.Errorf("diarization not enabled")
 	}
 
-	// Выполняем только диаризацию
+	// Пробуем использовать FluidDiarizer с embeddings
+	if fluidDiarizer, ok := p.diarizer.(*FluidDiarizer); ok {
+		diarResult, err := p.diarizeWithEmbeddingsTimeout(fluidDiarizer, samples, 20*time.Second)
+		if err != nil {
+			return result, fmt.Errorf("diarization failed: %w", err)
+		}
+
+		// Глобальное сопоставление спикеров
+		globalSegments := p.mapToGlobalSpeakers(samples, diarResult.Segments)
+
+		result.SpeakerSegments = globalSegments
+		result.SpeakerEmbeddings = diarResult.SpeakerEmbeddings
+		result.NumSpeakers = p.countUniqueSpeakers(globalSegments)
+
+		log.Printf("DiarizeOnly (FluidAudio): found %d speaker segments, %d unique speakers, %d embeddings",
+			len(globalSegments), result.NumSpeakers, len(result.SpeakerEmbeddings))
+
+		return result, nil
+	}
+
+	// Fallback для других диаризаторов (без embeddings)
 	localSegments, err := p.diarizeWithTimeout(samples, 20*time.Second)
 	if err != nil {
 		return result, fmt.Errorf("diarization failed: %w", err)
@@ -473,6 +494,28 @@ func (p *AudioPipeline) DiarizeOnly(samples []float32) (*PipelineResult, error) 
 		len(globalSegments), result.NumSpeakers)
 
 	return result, nil
+}
+
+// diarizeWithEmbeddingsTimeout выполняет диаризацию с embeddings и таймаутом
+func (p *AudioPipeline) diarizeWithEmbeddingsTimeout(diarizer *FluidDiarizer, samples []float32, timeout time.Duration) (*DiarizationResult, error) {
+	type result struct {
+		diarResult *DiarizationResult
+		err        error
+	}
+
+	ch := make(chan result, 1)
+
+	go func() {
+		r, err := diarizer.DiarizeWithEmbeddings(samples)
+		ch <- result{r, err}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.diarResult, r.err
+	case <-time.After(timeout):
+		return nil, fmt.Errorf("diarization timeout after %v", timeout)
+	}
 }
 
 // ProcessHighQuality выполняет высококачественную обработку (для финальной транскрипции)

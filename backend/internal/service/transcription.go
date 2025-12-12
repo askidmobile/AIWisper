@@ -15,6 +15,13 @@ import (
 	"time"
 )
 
+// SessionSpeakerProfile хранит embedding спикера для сессии
+type SessionSpeakerProfile struct {
+	SpeakerID int       // ID спикера в сессии (1, 2, 3...)
+	Embedding []float32 // 256-мерный вектор
+	Duration  float32   // Общая длительность речи
+}
+
 // TranscriptionService handles the core transcription logic
 type TranscriptionService struct {
 	SessionMgr *session.Manager
@@ -36,18 +43,23 @@ type TranscriptionService struct {
 	hybridTranscriber *ai.HybridTranscriber         // Экземпляр гибридного транскрибера
 	secondaryEngine   ai.TranscriptionEngine        // Вторичный движок для гибридной транскрипции
 
+	// Сопоставление спикеров между чанками (embeddings)
+	// Ключ: sessionID, значение: map[localSpeakerID]embedding
+	sessionSpeakerProfiles map[string][]SessionSpeakerProfile
+
 	// Callbacks for UI updates
 	OnChunkTranscribed func(chunk *session.Chunk)
 }
 
 func NewTranscriptionService(sessionMgr *session.Manager, engineMgr *ai.EngineManager) *TranscriptionService {
 	return &TranscriptionService{
-		SessionMgr:  sessionMgr,
-		EngineMgr:   engineMgr,
-		VADMode:     session.VADModeAuto,   // По умолчанию автовыбор режима
-		VADMethod:   session.VADMethodAuto, // По умолчанию автовыбор метода
-		OllamaURL:   "http://localhost:11434",
-		OllamaModel: "llama3.2",
+		SessionMgr:             sessionMgr,
+		EngineMgr:              engineMgr,
+		VADMode:                session.VADModeAuto,   // По умолчанию автовыбор режима
+		VADMethod:              session.VADMethodAuto, // По умолчанию автовыбор метода
+		OllamaURL:              "http://localhost:11434",
+		OllamaModel:            "llama3.2",
+		sessionSpeakerProfiles: make(map[string][]SessionSpeakerProfile),
 	}
 }
 
@@ -657,8 +669,18 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk, useDia
 				if diarErr != nil {
 					log.Printf("Diarization error: %v, keeping transcription without speakers", diarErr)
 				} else if len(diarResult.SpeakerSegments) > 0 {
-					log.Printf("Diarization found %d speaker segments, %d unique speakers",
-						len(diarResult.SpeakerSegments), diarResult.NumSpeakers)
+					log.Printf("Diarization found %d speaker segments, %d unique speakers, %d embeddings",
+						len(diarResult.SpeakerSegments), diarResult.NumSpeakers, len(diarResult.SpeakerEmbeddings))
+
+					// 2.5. Сопоставляем спикеров с предыдущими чанками по embeddings
+					if len(diarResult.SpeakerEmbeddings) > 0 {
+						speakerMapping := s.matchSpeakersWithSession(chunk.SessionID, diarResult.SpeakerEmbeddings)
+						if len(speakerMapping) > 0 {
+							// Применяем маппинг к сегментам
+							diarResult.SpeakerSegments = s.remapSpeakerSegments(diarResult.SpeakerSegments, speakerMapping)
+							log.Printf("Speaker mapping applied: %v", speakerMapping)
+						}
+					}
 
 					// 3. Применяем спикеров к сегментам транскрипции
 					sysSegments = applySpeakersToTranscriptSegments(sysSegments, diarResult.SpeakerSegments)
@@ -1169,11 +1191,10 @@ func applySpeakersToTranscriptSegments(segments []ai.TranscriptSegment, speakerS
 	log.Printf("applySpeakersToTranscriptSegments: %d transcript segments, %d speaker segments, %d unique speakers",
 		len(segments), len(speakerSegs), len(speakerSet))
 
-	// Логируем первые несколько speaker segments для отладки
+	// Логируем ВСЕ speaker segments для отладки
 	for i, ss := range speakerSegs {
-		if i < 5 {
-			log.Printf("  SpeakerSeg[%d]: speaker=%d, start=%.2f, end=%.2f", i, ss.Speaker, ss.Start, ss.End)
-		}
+		log.Printf("  SpeakerSeg[%d]: speaker=%d, start=%.2f, end=%.2f (dur=%.2fs)",
+			i, ss.Speaker, ss.Start, ss.End, ss.End-ss.Start)
 	}
 
 	// Проверяем, есть ли word-level timestamps
@@ -1264,12 +1285,105 @@ func mergeShortDiarizationSegments(speakerSegs []ai.SpeakerSegment, minDurationS
 	return result
 }
 
+// consolidateMinorSpeakers объединяет спикеров с малой долей говорения с доминирующими спикерами
+// Если спикер говорит менее minSpeakerRatio от общего времени, его сегменты присваиваются ближайшим соседям
+// minSpeakerRatio - минимальная доля времени говорения (0.0-1.0), рекомендуется 0.10 (10%)
+func consolidateMinorSpeakers(speakerSegs []ai.SpeakerSegment, minSpeakerRatio float32) []ai.SpeakerSegment {
+	if len(speakerSegs) <= 1 {
+		return speakerSegs
+	}
+
+	// Считаем общую длительность для каждого спикера
+	speakerDurations := make(map[int]float32)
+	var totalDuration float32
+
+	for _, seg := range speakerSegs {
+		duration := seg.End - seg.Start
+		speakerDurations[seg.Speaker] += duration
+		totalDuration += duration
+	}
+
+	if totalDuration == 0 {
+		return speakerSegs
+	}
+
+	// Находим "минорных" спикеров (с малой долей говорения)
+	minorSpeakers := make(map[int]bool)
+	for speaker, duration := range speakerDurations {
+		ratio := duration / totalDuration
+		if ratio < minSpeakerRatio {
+			minorSpeakers[speaker] = true
+			log.Printf("consolidateMinorSpeakers: speaker %d is minor (%.1f%% of total, %.2fs)",
+				speaker, ratio*100, duration)
+		}
+	}
+
+	if len(minorSpeakers) == 0 {
+		log.Printf("consolidateMinorSpeakers: no minor speakers found (all speakers have >= %.0f%% of total time)",
+			minSpeakerRatio*100)
+		return speakerSegs
+	}
+
+	// Заменяем минорных спикеров на ближайших мажорных соседей
+	result := make([]ai.SpeakerSegment, len(speakerSegs))
+	copy(result, speakerSegs)
+
+	for i := range result {
+		if !minorSpeakers[result[i].Speaker] {
+			continue
+		}
+
+		// Ищем ближайшего мажорного соседа
+		var newSpeaker int = -1
+
+		// Сначала смотрим на предыдущий сегмент
+		if i > 0 && !minorSpeakers[result[i-1].Speaker] {
+			newSpeaker = result[i-1].Speaker
+		} else if i+1 < len(result) && !minorSpeakers[speakerSegs[i+1].Speaker] {
+			// Затем на следующий (используем оригинальный массив для следующего)
+			newSpeaker = speakerSegs[i+1].Speaker
+		}
+
+		if newSpeaker >= 0 {
+			log.Printf("consolidateMinorSpeakers: reassigning segment [%.2f-%.2f] from minor speaker %d to speaker %d",
+				result[i].Start, result[i].End, result[i].Speaker, newSpeaker)
+			result[i].Speaker = newSpeaker
+		}
+	}
+
+	// Объединяем соседние сегменты одного спикера
+	var merged []ai.SpeakerSegment
+	for _, seg := range result {
+		if len(merged) > 0 && merged[len(merged)-1].Speaker == seg.Speaker {
+			// Расширяем предыдущий сегмент
+			merged[len(merged)-1].End = seg.End
+		} else {
+			merged = append(merged, seg)
+		}
+	}
+
+	log.Printf("consolidateMinorSpeakers: consolidated %d minor speakers, %d -> %d segments",
+		len(minorSpeakers), len(speakerSegs), len(merged))
+
+	return merged
+}
+
 // splitSegmentsBySpeakers разбивает сегменты транскрипции по границам диаризации
 // используя word-level timestamps для точного разделения
 func splitSegmentsBySpeakers(segments []ai.TranscriptSegment, speakerSegs []ai.SpeakerSegment) []ai.TranscriptSegment {
-	// Сначала объединяем короткие сегменты диаризации (< 1 сек)
+	// Шаг 1: Консолидируем минорных спикеров (< 10% от общего времени)
+	speakerSegs = consolidateMinorSpeakers(speakerSegs, 0.10)
+
+	// Шаг 2: Объединяем короткие сегменты диаризации (< 1 сек)
 	// Это помогает избежать ошибок, когда короткое слово ошибочно отнесено к другому спикеру
 	speakerSegs = mergeShortDiarizationSegments(speakerSegs, 1.0)
+
+	// Логируем финальные сегменты после всех преобразований
+	log.Printf("splitSegmentsBySpeakers: after consolidation and merge, %d speaker segments:", len(speakerSegs))
+	for i, ss := range speakerSegs {
+		log.Printf("  FinalSpeakerSeg[%d]: speaker=%d, start=%.2f, end=%.2f (dur=%.2fs)",
+			i, ss.Speaker, ss.Start, ss.End, ss.End-ss.Start)
+	}
 
 	var result []ai.TranscriptSegment
 
@@ -1282,10 +1396,11 @@ func splitSegmentsBySpeakers(segments []ai.TranscriptSegment, speakerSegs []ai.S
 			continue
 		}
 
-		// Группируем слова по спикерам
+		// Группируем слова по спикерам с учётом границ предложений
 		var currentWords []ai.TranscriptWord
 		var currentSpeaker string
 		var segStart, segEnd int64
+		var pendingSpeakerChange string // Отложенная смена спикера (до конца предложения)
 
 		for i, word := range seg.Words {
 			wordStartSec := float32(word.Start) / 1000.0
@@ -1301,22 +1416,73 @@ func splitSegmentsBySpeakers(segments []ai.TranscriptSegment, speakerSegs []ai.S
 				continue
 			}
 
-			if wordSpeaker == currentSpeaker {
-				// Тот же спикер - добавляем слово
-				currentWords = append(currentWords, word)
-				segEnd = word.End
-			} else {
-				// Смена спикера - сохраняем текущий сегмент и начинаем новый
+			// Проверяем, заканчивается ли предыдущее слово на знак конца предложения
+			prevWord := seg.Words[i-1]
+			prevEndsWithSentence := endsWithSentenceBoundary(prevWord.Text)
+
+			// Если есть отложенная смена спикера и предыдущее слово закончило предложение
+			if pendingSpeakerChange != "" && prevEndsWithSentence {
+				// Применяем отложенную смену спикера
 				if len(currentWords) > 0 {
 					newSeg := createSegmentFromWords(currentWords, currentSpeaker, segStart, segEnd)
 					result = append(result, newSeg)
 				}
-
-				// Начинаем новый сегмент
-				currentSpeaker = wordSpeaker
+				currentSpeaker = pendingSpeakerChange
 				currentWords = []ai.TranscriptWord{word}
 				segStart = word.Start
 				segEnd = word.End
+				pendingSpeakerChange = ""
+				continue
+			}
+
+			if wordSpeaker == currentSpeaker {
+				// Тот же спикер - добавляем слово
+				currentWords = append(currentWords, word)
+				segEnd = word.End
+				// Сбрасываем отложенную смену, если спикер вернулся
+				if pendingSpeakerChange == wordSpeaker {
+					pendingSpeakerChange = ""
+				}
+			} else if pendingSpeakerChange == "" {
+				// Новая смена спикера
+				// Проверяем: если текущее слово заканчивается на знак конца предложения,
+				// оставляем его с текущим спикером и откладываем смену
+				if endsWithSentenceBoundary(word.Text) {
+					// Слово заканчивает предложение - оставляем с текущим спикером
+					currentWords = append(currentWords, word)
+					segEnd = word.End
+					pendingSpeakerChange = wordSpeaker
+					log.Printf("splitSegmentsBySpeakers: word '%s' ends sentence, deferring speaker change to %s",
+						word.Text, wordSpeaker)
+				} else {
+					// Слово не заканчивает предложение - откладываем смену до конца предложения
+					currentWords = append(currentWords, word)
+					segEnd = word.End
+					pendingSpeakerChange = wordSpeaker
+					log.Printf("splitSegmentsBySpeakers: deferring speaker change at word '%s' (%.2fs) until sentence end",
+						word.Text, wordStartSec)
+				}
+			} else {
+				// Уже есть отложенная смена, но предложение не закончилось
+				// Продолжаем добавлять слова к текущему спикеру
+				currentWords = append(currentWords, word)
+				segEnd = word.End
+				// Обновляем целевого спикера если он изменился
+				if wordSpeaker != pendingSpeakerChange && wordSpeaker != currentSpeaker {
+					pendingSpeakerChange = wordSpeaker
+				}
+			}
+		}
+
+		// Обрабатываем отложенную смену в конце сегмента
+		if pendingSpeakerChange != "" && len(currentWords) > 0 {
+			// Проверяем, заканчивается ли последнее слово на знак конца предложения
+			lastWord := currentWords[len(currentWords)-1]
+			if endsWithSentenceBoundary(lastWord.Text) {
+				// Последнее слово заканчивает предложение - сохраняем всё с текущим спикером
+				newSeg := createSegmentFromWords(currentWords, currentSpeaker, segStart, segEnd)
+				result = append(result, newSeg)
+				currentWords = nil
 			}
 		}
 
@@ -1334,6 +1500,18 @@ func splitSegmentsBySpeakers(segments []ai.TranscriptSegment, speakerSegs []ai.S
 }
 
 // createSegmentFromWords создаёт сегмент транскрипции из списка слов
+// endsWithSentenceBoundary проверяет, заканчивается ли слово на знак конца предложения
+func endsWithSentenceBoundary(text string) bool {
+	text = strings.TrimSpace(text)
+	if len(text) == 0 {
+		return false
+	}
+	// Проверяем последний символ (rune для поддержки Unicode)
+	runes := []rune(text)
+	lastRune := runes[len(runes)-1]
+	return lastRune == '.' || lastRune == '!' || lastRune == '?' || lastRune == '…'
+}
+
 func createSegmentFromWords(words []ai.TranscriptWord, speaker string, start, end int64) ai.TranscriptSegment {
 	var texts []string
 	for _, w := range words {
@@ -1392,6 +1570,9 @@ func getSpeakerForTimeRange(startSec, endSec float32, speakerSegs []ai.SpeakerSe
 	}
 
 	if bestSpeaker >= 0 {
+		// Speaker ID из диаризации 1-based (1, 2, 3...), поэтому используем как есть
+		// Если ID 0-based, нужно +1
+		// FluidAudio возвращает 1-based IDs, поэтому оставляем как есть
 		return fmt.Sprintf("Собеседник %d", bestSpeaker)
 	}
 	return "Собеседник"
@@ -1552,4 +1733,110 @@ func restoreAISegmentTimestamps(segments []ai.TranscriptSegment, regions []sessi
 	}
 
 	return restored
+}
+
+// matchSpeakersWithSession сопоставляет спикеров текущего чанка с уже известными спикерами сессии
+// Возвращает map[localSpeakerID]globalSpeakerID для переназначения
+func (s *TranscriptionService) matchSpeakersWithSession(sessionID string, embeddings []ai.SpeakerEmbedding) map[int]int {
+	mapping := make(map[int]int)
+
+	// Получаем или создаём профили спикеров для сессии
+	if s.sessionSpeakerProfiles == nil {
+		s.sessionSpeakerProfiles = make(map[string][]SessionSpeakerProfile)
+	}
+
+	profiles := s.sessionSpeakerProfiles[sessionID]
+
+	// Если это первый чанк - просто сохраняем embeddings как эталонные
+	if len(profiles) == 0 {
+		for _, emb := range embeddings {
+			profiles = append(profiles, SessionSpeakerProfile{
+				SpeakerID: emb.Speaker,
+				Embedding: emb.Embedding,
+				Duration:  emb.Duration,
+			})
+		}
+		s.sessionSpeakerProfiles[sessionID] = profiles
+		log.Printf("matchSpeakersWithSession: first chunk, saved %d speaker profiles for session %s",
+			len(profiles), sessionID[:8])
+		return mapping // Пустой маппинг - используем оригинальные ID
+	}
+
+	// Сопоставляем каждый embedding с известными профилями
+	threshold := float32(0.65) // Порог косинусного сходства для совпадения
+
+	for _, emb := range embeddings {
+		bestMatch := -1
+		bestSimilarity := float32(0)
+
+		for _, profile := range profiles {
+			similarity := cosineSimilarity(emb.Embedding, profile.Embedding)
+			if similarity > bestSimilarity && similarity >= threshold {
+				bestSimilarity = similarity
+				bestMatch = profile.SpeakerID
+			}
+		}
+
+		if bestMatch >= 0 && bestMatch != emb.Speaker {
+			// Нашли совпадение с другим ID - нужно переназначить
+			mapping[emb.Speaker] = bestMatch
+			log.Printf("matchSpeakersWithSession: speaker %d matched to existing speaker %d (similarity=%.2f)",
+				emb.Speaker, bestMatch, bestSimilarity)
+		} else if bestMatch < 0 {
+			// Новый спикер - добавляем в профили
+			profiles = append(profiles, SessionSpeakerProfile{
+				SpeakerID: emb.Speaker,
+				Embedding: emb.Embedding,
+				Duration:  emb.Duration,
+			})
+			log.Printf("matchSpeakersWithSession: new speaker %d added to session profiles", emb.Speaker)
+		}
+	}
+
+	s.sessionSpeakerProfiles[sessionID] = profiles
+	return mapping
+}
+
+// remapSpeakerSegments применяет маппинг спикеров к сегментам
+func (s *TranscriptionService) remapSpeakerSegments(segments []ai.SpeakerSegment, mapping map[int]int) []ai.SpeakerSegment {
+	if len(mapping) == 0 {
+		return segments
+	}
+
+	result := make([]ai.SpeakerSegment, len(segments))
+	for i, seg := range segments {
+		result[i] = seg
+		if newID, ok := mapping[seg.Speaker]; ok {
+			result[i].Speaker = newID
+		}
+	}
+	return result
+}
+
+// cosineSimilarity вычисляет косинусное сходство между двумя векторами
+func cosineSimilarity(a, b []float32) float32 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+
+	var dotProduct, normA, normB float64
+	for i := range a {
+		dotProduct += float64(a[i]) * float64(b[i])
+		normA += float64(a[i]) * float64(a[i])
+		normB += float64(b[i]) * float64(b[i])
+	}
+
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+
+	return float32(dotProduct / (math.Sqrt(normA) * math.Sqrt(normB)))
+}
+
+// ClearSessionSpeakerProfiles очищает профили спикеров для сессии (при ретранскрипции)
+func (s *TranscriptionService) ClearSessionSpeakerProfiles(sessionID string) {
+	if s.sessionSpeakerProfiles != nil {
+		delete(s.sessionSpeakerProfiles, sessionID)
+		log.Printf("Cleared speaker profiles for session %s", sessionID[:8])
+	}
 }

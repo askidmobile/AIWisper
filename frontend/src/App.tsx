@@ -766,8 +766,9 @@ function App() {
                             setHighlightedChunkId(msg.chunk.id);
                             setTimeout(() => setHighlightedChunkId(null), 2000);
 
-                            // Обновляем список спикеров после транскрипции (если есть диаризация)
-                            if (msg.sessionId && msg.chunk.dialogue?.some((d: { speaker?: string }) => d.speaker && d.speaker.startsWith('Собеседник'))) {
+                            // Обновляем список спикеров после транскрипции
+                            // Запрашиваем всегда, т.к. диаризация может быть включена
+                            if (msg.sessionId) {
                                 wsRef.current?.send(JSON.stringify({ type: 'get_session_speakers', sessionId: msg.sessionId }));
                             }
                             break;
@@ -1053,11 +1054,15 @@ function App() {
                         case 'speaker_renamed':
                             // Обновляем имя спикера в локальном состоянии
                             setSessionSpeakers(prev => prev.map(s =>
-                                s.localId === msg.localId
-                                    ? { ...s, displayName: msg.newName, isRecognized: msg.savedAsVoiceprint || s.isRecognized }
+                                s.localId === msg.localSpeakerId
+                                    ? { ...s, displayName: msg.speakerName, isRecognized: msg.voiceprintId ? true : s.isRecognized }
                                     : s
                             ));
-                            addLog(`Speaker renamed: ${msg.newName}`);
+                            addLog(`Speaker renamed: ${msg.speakerName}`);
+                            // Запрашиваем обновлённый список спикеров
+                            if (msg.sessionId) {
+                                wsRef.current?.send(JSON.stringify({ type: 'get_session_speakers', sessionId: msg.sessionId }));
+                            }
                             break;
 
                         case 'session_renamed':
@@ -1451,8 +1456,8 @@ function App() {
         wsRef.current.send(JSON.stringify({
             type: 'rename_session_speaker',
             sessionId: selectedSession.id,
-            localId,
-            newName: name,
+            localSpeakerId: localId,
+            speakerName: name,
             saveAsVoiceprint
         }));
         addLog(`Renaming speaker ${localId} to "${name}"${saveAsVoiceprint ? ' (saving voiceprint)' : ''}`);
