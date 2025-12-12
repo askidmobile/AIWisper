@@ -311,7 +311,8 @@ func (e *GigaAMRNNTEngine) TranscribeWithSegments(samples []float32) ([]Transcri
 	defer lengthTensor.Destroy()
 
 	// Запускаем encoder
-	encoderOutputs := []ort.Value{nil}
+	// Encoder возвращает 2 выхода: encoded [B, 768, T'] и encoded_len [B]
+	encoderOutputs := []ort.Value{nil, nil}
 	err = e.encoderSession.Run([]ort.Value{inputTensor, lengthTensor}, encoderOutputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to run encoder: %w", err)
@@ -332,6 +333,9 @@ func (e *GigaAMRNNTEngine) TranscribeWithSegments(samples []float32) ([]Transcri
 	// encShape = [1, hidden_size, time_steps]
 	hiddenSize := int(encShape[1])
 	timeSteps := int(encShape[2])
+
+	// Логируем для отладки
+	log.Printf("RNNT encoder output shape: [%d, %d, %d]", encShape[0], hiddenSize, timeSteps)
 
 	// Декодируем с помощью RNNT
 	audioDuration := float64(len(samples)) / gigaamSampleRate
@@ -394,10 +398,11 @@ func (e *GigaAMRNNTEngine) decodeRNNT(encoderOut []float32, hiddenSize, timeStep
 
 			if maxIdx == e.blankID {
 				// Blank - переходим к следующему временному шагу
+				// НЕ обновляем состояние декодера при blank (стандартное поведение RNNT)
 				break
 			}
 
-			// Не blank - эмитируем токен
+			// Не blank - эмитируем токен и обновляем состояние
 			if maxIdx < len(e.vocab) {
 				token := e.vocab[maxIdx]
 
@@ -444,7 +449,7 @@ func (e *GigaAMRNNTEngine) decodeRNNT(encoderOut []float32, hiddenSize, timeStep
 				}
 			}
 
-			// Обновляем состояние
+			// Обновляем состояние декодера только при эмиссии не-blank токена
 			lastLabel = int64(maxIdx)
 			decoderH = newH
 			decoderC = newC
