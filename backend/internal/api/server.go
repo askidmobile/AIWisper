@@ -8,6 +8,8 @@ import (
 	"aiwisper/models"
 	"aiwisper/session"
 	"aiwisper/voiceprint"
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -127,6 +130,7 @@ func (s *Server) Start() {
 	http.HandleFunc("/ws", s.handleWebSocket)
 	http.HandleFunc("/api/sessions/", s.handleSessionsAPI)
 	http.HandleFunc("/api/import", s.handleImportAudio)
+	http.HandleFunc("/api/export/batch", s.handleBatchExport)
 
 	log.Printf("Backend listening on HTTP :%s and gRPC %s", s.Config.Port, s.Config.GRPCAddr)
 	if err := http.ListenAndServe(":"+s.Config.Port, nil); err != nil {
@@ -1708,4 +1712,277 @@ func (s *Server) updatePipelineTranscriber() {
 	}
 	s.TranscriptionService.Pipeline.SetTranscriber(newEngine)
 	log.Printf("Pipeline transcriber updated to new engine")
+}
+
+// handleBatchExport обрабатывает экспорт нескольких сессий в ZIP архив
+func (s *Server) handleBatchExport(w http.ResponseWriter, r *http.Request) {
+	// CORS headers
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Парсим JSON body
+	var req struct {
+		SessionIDs []string `json:"sessionIds"`
+		Format     string   `json:"format"` // txt, srt, vtt, json, md
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.SessionIDs) == 0 {
+		http.Error(w, "No sessions specified", http.StatusBadRequest)
+		return
+	}
+
+	if req.Format == "" {
+		req.Format = "txt"
+	}
+
+	log.Printf("Batch export: %d sessions, format=%s", len(req.SessionIDs), req.Format)
+
+	// Создаём ZIP архив в памяти
+	buf := new(bytes.Buffer)
+	zipWriter := zip.NewWriter(buf)
+
+	for _, sessionID := range req.SessionIDs {
+		sess, err := s.SessionMgr.GetSession(sessionID)
+		if err != nil {
+			log.Printf("Batch export: session %s not found", sessionID)
+			continue
+		}
+
+		// Генерируем контент в нужном формате
+		content, ext := s.generateExportContent(sess, req.Format)
+		if content == "" {
+			continue
+		}
+
+		// Формируем имя файла
+		filename := s.generateExportFilename(sess, ext)
+
+		// Добавляем файл в ZIP
+		fileWriter, err := zipWriter.Create(filename)
+		if err != nil {
+			log.Printf("Batch export: failed to create zip entry: %v", err)
+			continue
+		}
+		fileWriter.Write([]byte(content))
+	}
+
+	if err := zipWriter.Close(); err != nil {
+		http.Error(w, "Failed to create ZIP", http.StatusInternalServerError)
+		return
+	}
+
+	// Отправляем ZIP
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"aiwisper-export-%s.zip\"", time.Now().Format("2006-01-02")))
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", buf.Len()))
+	w.Write(buf.Bytes())
+}
+
+// generateExportFilename генерирует имя файла для экспорта
+func (s *Server) generateExportFilename(sess *session.Session, ext string) string {
+	title := sess.Title
+	if title == "" {
+		title = sess.StartTime.Format("2006-01-02_15-04")
+	}
+	// Очищаем имя от недопустимых символов
+	title = strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == ':' || r == '*' || r == '?' || r == '"' || r == '<' || r == '>' || r == '|' {
+			return '_'
+		}
+		return r
+	}, title)
+	return fmt.Sprintf("%s.%s", title, ext)
+}
+
+// generateExportContent генерирует контент для экспорта в указанном формате
+func (s *Server) generateExportContent(sess *session.Session, format string) (string, string) {
+	// Собираем диалог из всех чанков
+	var dialogue []session.TranscriptSegment
+	for _, chunk := range sess.Chunks {
+		if chunk.Status != session.ChunkStatusCompleted {
+			continue
+		}
+		if len(chunk.Dialogue) > 0 {
+			dialogue = append(dialogue, chunk.Dialogue...)
+		} else if len(chunk.MicSegments) > 0 || len(chunk.SysSegments) > 0 {
+			dialogue = append(dialogue, chunk.MicSegments...)
+			dialogue = append(dialogue, chunk.SysSegments...)
+		}
+	}
+
+	// Сортируем по времени
+	sort.Slice(dialogue, func(i, j int) bool {
+		return dialogue[i].Start < dialogue[j].Start
+	})
+
+	switch format {
+	case "txt":
+		return s.exportToTXT(sess, dialogue), "txt"
+	case "srt":
+		return s.exportToSRT(dialogue), "srt"
+	case "vtt":
+		return s.exportToVTT(dialogue), "vtt"
+	case "json":
+		return s.exportToJSON(sess, dialogue), "json"
+	case "md":
+		return s.exportToMarkdown(sess, dialogue), "md"
+	default:
+		return s.exportToTXT(sess, dialogue), "txt"
+	}
+}
+
+// exportToTXT экспортирует в текстовый формат
+func (s *Server) exportToTXT(sess *session.Session, dialogue []session.TranscriptSegment) string {
+	var sb strings.Builder
+
+	// Заголовок
+	title := sess.Title
+	if title == "" {
+		title = "Запись " + sess.StartTime.Format("02.01.2006 15:04")
+	}
+	sb.WriteString(title + "\n")
+	sb.WriteString(strings.Repeat("=", len(title)) + "\n\n")
+
+	// Диалог
+	for _, seg := range dialogue {
+		speaker := formatSpeakerName(seg.Speaker)
+		timeStr := formatTimestamp(seg.Start)
+		sb.WriteString(fmt.Sprintf("[%s] %s: %s\n", timeStr, speaker, seg.Text))
+	}
+
+	return sb.String()
+}
+
+// exportToSRT экспортирует в формат субтитров SRT
+func (s *Server) exportToSRT(dialogue []session.TranscriptSegment) string {
+	var sb strings.Builder
+
+	for i, seg := range dialogue {
+		sb.WriteString(fmt.Sprintf("%d\n", i+1))
+		sb.WriteString(fmt.Sprintf("%s --> %s\n", formatSRTTime(seg.Start), formatSRTTime(seg.End)))
+		speaker := formatSpeakerName(seg.Speaker)
+		sb.WriteString(fmt.Sprintf("%s: %s\n\n", speaker, seg.Text))
+	}
+
+	return sb.String()
+}
+
+// exportToVTT экспортирует в формат WebVTT
+func (s *Server) exportToVTT(dialogue []session.TranscriptSegment) string {
+	var sb strings.Builder
+
+	sb.WriteString("WEBVTT\n\n")
+
+	for i, seg := range dialogue {
+		sb.WriteString(fmt.Sprintf("%d\n", i+1))
+		sb.WriteString(fmt.Sprintf("%s --> %s\n", formatVTTTime(seg.Start), formatVTTTime(seg.End)))
+		speaker := formatSpeakerName(seg.Speaker)
+		sb.WriteString(fmt.Sprintf("<v %s>%s\n\n", speaker, seg.Text))
+	}
+
+	return sb.String()
+}
+
+// exportToJSON экспортирует в формат JSON
+func (s *Server) exportToJSON(sess *session.Session, dialogue []session.TranscriptSegment) string {
+	export := map[string]interface{}{
+		"id":        sess.ID,
+		"title":     sess.Title,
+		"startTime": sess.StartTime,
+		"duration":  sess.TotalDuration / time.Millisecond,
+		"dialogue":  dialogue,
+	}
+
+	data, err := json.MarshalIndent(export, "", "  ")
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+// exportToMarkdown экспортирует в формат Markdown
+func (s *Server) exportToMarkdown(sess *session.Session, dialogue []session.TranscriptSegment) string {
+	var sb strings.Builder
+
+	// Заголовок
+	title := sess.Title
+	if title == "" {
+		title = "Запись " + sess.StartTime.Format("02.01.2006 15:04")
+	}
+	sb.WriteString(fmt.Sprintf("# %s\n\n", title))
+	sb.WriteString(fmt.Sprintf("**Дата:** %s\n\n", sess.StartTime.Format("02.01.2006 15:04")))
+	sb.WriteString("---\n\n")
+
+	// Диалог
+	var currentSpeaker string
+	for _, seg := range dialogue {
+		speaker := formatSpeakerName(seg.Speaker)
+		if speaker != currentSpeaker {
+			if currentSpeaker != "" {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(fmt.Sprintf("**%s:**\n", speaker))
+			currentSpeaker = speaker
+		}
+		sb.WriteString(fmt.Sprintf("> %s\n", seg.Text))
+	}
+
+	return sb.String()
+}
+
+// formatSpeakerName форматирует имя спикера
+func formatSpeakerName(speaker string) string {
+	switch speaker {
+	case "mic":
+		return "Вы"
+	case "sys":
+		return "Собеседник"
+	default:
+		if strings.HasPrefix(speaker, "Speaker ") {
+			num := strings.TrimPrefix(speaker, "Speaker ")
+			return "Собеседник " + num
+		}
+		return speaker
+	}
+}
+
+// formatTimestamp форматирует timestamp в MM:SS
+func formatTimestamp(ms int64) string {
+	totalSec := ms / 1000
+	min := totalSec / 60
+	sec := totalSec % 60
+	return fmt.Sprintf("%02d:%02d", min, sec)
+}
+
+// formatSRTTime форматирует время для SRT (HH:MM:SS,mmm)
+func formatSRTTime(ms int64) string {
+	h := ms / 3600000
+	m := (ms % 3600000) / 60000
+	s := (ms % 60000) / 1000
+	msec := ms % 1000
+	return fmt.Sprintf("%02d:%02d:%02d,%03d", h, m, s, msec)
+}
+
+// formatVTTTime форматирует время для VTT (HH:MM:SS.mmm)
+func formatVTTTime(ms int64) string {
+	h := ms / 3600000
+	m := (ms % 3600000) / 60000
+	s := (ms % 60000) / 1000
+	msec := ms % 1000
+	return fmt.Sprintf("%02d:%02d:%02d.%03d", h, m, s, msec)
 }

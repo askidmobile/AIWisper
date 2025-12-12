@@ -237,6 +237,8 @@ function App() {
     // Sessions list
     const [sessions, setSessions] = useState<SessionInfo[]>([]);
     const [selectedSession, setSelectedSession] = useState<Session | null>(null);
+    const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set()); // Мультиселект для batch export
+    const [showBatchExportModal, setShowBatchExportModal] = useState(false);
 
     // Session Speakers (for VoicePrint integration)
     const [sessionSpeakers, setSessionSpeakers] = useState<SessionSpeaker[]>([]);
@@ -2575,6 +2577,59 @@ function App() {
                     </div>
                 )}
 
+                {/* Batch Export Panel - показывается когда выбрано несколько сессий */}
+                {selectedSessionIds.size > 0 && (
+                    <div
+                        style={{
+                            padding: '0.75rem 1rem',
+                            borderBottom: '1px solid var(--glass-border-subtle)',
+                            background: 'rgba(139, 92, 246, 0.1)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: '0.5rem',
+                        }}
+                    >
+                        <div style={{ fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                            <span style={{ fontWeight: 600 }}>{selectedSessionIds.size}</span>
+                            <span style={{ color: 'var(--text-muted)', marginLeft: '4px' }}>
+                                {selectedSessionIds.size === 1 ? 'запись' : selectedSessionIds.size < 5 ? 'записи' : 'записей'}
+                            </span>
+                        </div>
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                            <button
+                                onClick={() => setShowBatchExportModal(true)}
+                                style={{
+                                    padding: '4px 10px',
+                                    fontSize: '0.75rem',
+                                    background: 'var(--primary)',
+                                    color: 'white',
+                                    border: 'none',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    fontWeight: 500,
+                                }}
+                            >
+                                📦 Экспорт
+                            </button>
+                            <button
+                                onClick={() => setSelectedSessionIds(new Set())}
+                                style={{
+                                    padding: '4px 8px',
+                                    fontSize: '0.75rem',
+                                    background: 'transparent',
+                                    color: 'var(--text-muted)',
+                                    border: '1px solid var(--border)',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                ✕
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 {/* Sessions List with Grouping */}
                 <div
                     className="scroll-soft-edges"
@@ -2600,11 +2655,32 @@ function App() {
                                     const isSelected = selectedSession?.id === s.id;
                                     const durationSec = s.totalDuration / 1000;
 
+                                    const isMultiSelected = selectedSessionIds.has(s.id);
+
                                     return (
                                         <div
                                             key={s.id}
-                                            className={`session-item ${isSelected ? 'selected' : ''}`}
-                                            onClick={() => handleViewSession(s.id)}
+                                            className={`session-item ${isSelected ? 'selected' : ''} ${isMultiSelected ? 'multi-selected' : ''}`}
+                                            onClick={(e) => {
+                                                if (e.metaKey || e.ctrlKey) {
+                                                    // Мультиселект: ⌘+click или Ctrl+click
+                                                    e.preventDefault();
+                                                    setSelectedSessionIds(prev => {
+                                                        const newSet = new Set(prev);
+                                                        if (newSet.has(s.id)) {
+                                                            newSet.delete(s.id);
+                                                        } else {
+                                                            newSet.add(s.id);
+                                                        }
+                                                        return newSet;
+                                                    });
+                                                } else {
+                                                    // Обычный клик: выбор сессии
+                                                    handleViewSession(s.id);
+                                                    // Сбрасываем мультиселект при обычном клике
+                                                    setSelectedSessionIds(new Set());
+                                                }
+                                            }}
                                         >
                                             {/* Title */}
                                             <div style={{
@@ -4175,6 +4251,18 @@ function App() {
                 />
             )}
 
+            {/* Batch Export Modal */}
+            {showBatchExportModal && (
+                <BatchExportModal
+                    sessionIds={Array.from(selectedSessionIds)}
+                    onClose={() => setShowBatchExportModal(false)}
+                    onExportComplete={() => {
+                        setShowBatchExportModal(false);
+                        setSelectedSessionIds(new Set());
+                    }}
+                />
+            )}
+
             {/* Keyboard Shortcuts Help Modal */}
             {showKeyboardHelp && (
                 <div
@@ -4330,5 +4418,186 @@ const KeyboardShortcut: React.FC<{ keys: string[]; description: string }> = ({ k
         </div>
     </div>
 );
+
+// Компонент модального окна batch export
+const BatchExportModal: React.FC<{
+    sessionIds: string[];
+    onClose: () => void;
+    onExportComplete: () => void;
+}> = ({ sessionIds, onClose, onExportComplete }) => {
+    const [format, setFormat] = useState<'txt' | 'srt' | 'vtt' | 'json' | 'md'>('txt');
+    const [isExporting, setIsExporting] = useState(false);
+
+    const handleExport = async () => {
+        setIsExporting(true);
+        try {
+            const response = await fetch(`http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}/api/export/batch`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionIds, format }),
+            });
+
+            if (!response.ok) {
+                throw new Error('Export failed');
+            }
+
+            // Скачиваем ZIP файл
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `aiwisper-export-${new Date().toISOString().split('T')[0]}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+
+            onExportComplete();
+        } catch (error) {
+            console.error('Batch export failed:', error);
+            alert('Ошибка экспорта. Попробуйте ещё раз.');
+        } finally {
+            setIsExporting(false);
+        }
+    };
+
+    const formats = [
+        { id: 'txt', label: 'Текст (.txt)', icon: '📝' },
+        { id: 'srt', label: 'Субтитры (.srt)', icon: '🎬' },
+        { id: 'vtt', label: 'WebVTT (.vtt)', icon: '🌐' },
+        { id: 'json', label: 'JSON (.json)', icon: '📊' },
+        { id: 'md', label: 'Markdown (.md)', icon: '📄' },
+    ] as const;
+
+    return (
+        <div
+            style={{
+                position: 'fixed',
+                inset: 0,
+                backgroundColor: 'rgba(0, 0, 0, 0.6)',
+                backdropFilter: 'blur(8px)',
+                WebkitBackdropFilter: 'blur(8px)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                zIndex: 10000,
+            }}
+            onClick={onClose}
+        >
+            <div
+                style={{
+                    background: 'var(--surface-strong)',
+                    borderRadius: '16px',
+                    border: '1px solid var(--border)',
+                    padding: '24px',
+                    maxWidth: '400px',
+                    width: '90%',
+                    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.4)',
+                }}
+                onClick={(e) => e.stopPropagation()}
+            >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                    <h2 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 600 }}>📦 Экспорт записей</h2>
+                    <button
+                        onClick={onClose}
+                        style={{
+                            background: 'transparent',
+                            border: 'none',
+                            color: 'var(--text-muted)',
+                            fontSize: '1.5rem',
+                            cursor: 'pointer',
+                            padding: '4px 8px',
+                            lineHeight: 1,
+                        }}
+                    >
+                        ×
+                    </button>
+                </div>
+
+                <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '16px' }}>
+                    Выбрано записей: <strong>{sessionIds.length}</strong>
+                </p>
+
+                <div style={{ marginBottom: '20px' }}>
+                    <label style={{ display: 'block', fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                        Формат экспорта:
+                    </label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {formats.map((f) => (
+                            <label
+                                key={f.id}
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '10px',
+                                    padding: '10px 12px',
+                                    background: format === f.id ? 'rgba(139, 92, 246, 0.15)' : 'var(--glass-bg)',
+                                    borderRadius: '8px',
+                                    border: format === f.id ? '1px solid var(--primary)' : '1px solid transparent',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.15s ease',
+                                }}
+                            >
+                                <input
+                                    type="radio"
+                                    name="format"
+                                    value={f.id}
+                                    checked={format === f.id}
+                                    onChange={() => setFormat(f.id)}
+                                    style={{ accentColor: 'var(--primary)' }}
+                                />
+                                <span style={{ fontSize: '1.1rem' }}>{f.icon}</span>
+                                <span style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>{f.label}</span>
+                            </label>
+                        ))}
+                    </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                    <button
+                        onClick={onClose}
+                        style={{
+                            padding: '10px 20px',
+                            background: 'transparent',
+                            border: '1px solid var(--border)',
+                            borderRadius: '8px',
+                            color: 'var(--text-secondary)',
+                            cursor: 'pointer',
+                            fontSize: '0.9rem',
+                        }}
+                    >
+                        Отмена
+                    </button>
+                    <button
+                        onClick={handleExport}
+                        disabled={isExporting}
+                        style={{
+                            padding: '10px 20px',
+                            background: 'var(--primary)',
+                            border: 'none',
+                            borderRadius: '8px',
+                            color: 'white',
+                            cursor: isExporting ? 'wait' : 'pointer',
+                            fontSize: '0.9rem',
+                            fontWeight: 500,
+                            opacity: isExporting ? 0.7 : 1,
+                        }}
+                    >
+                        {isExporting ? '⏳ Экспорт...' : '📥 Скачать ZIP'}
+                    </button>
+                </div>
+
+                <p style={{ 
+                    fontSize: '0.75rem', 
+                    color: 'var(--text-muted)', 
+                    marginTop: '16px',
+                    textAlign: 'center',
+                }}>
+                    💡 Совет: используйте ⌘+Click для выбора нескольких записей
+                </p>
+            </div>
+        </div>
+    );
+};
 
 export default App;
