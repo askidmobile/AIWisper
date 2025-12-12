@@ -124,6 +124,12 @@ func (s *TranscriptionService) DisableAutoImprove() {
 
 // SetHybridConfig устанавливает конфигурацию гибридной транскрипции
 func (s *TranscriptionService) SetHybridConfig(config *ai.HybridTranscriptionConfig) {
+	log.Printf("[SetHybridConfig] Called with config=%v", config != nil)
+	if config != nil {
+		log.Printf("[SetHybridConfig] Config details: Enabled=%v, SecondaryModelID=%s, Mode=%s, UseLLM=%v, OllamaModel=%s",
+			config.Enabled, config.SecondaryModelID, config.Mode, config.UseLLMForMerge, config.OllamaModel)
+	}
+
 	// Закрываем старый вторичный движок если был
 	if s.secondaryEngine != nil {
 		s.secondaryEngine.Close()
@@ -133,27 +139,57 @@ func (s *TranscriptionService) SetHybridConfig(config *ai.HybridTranscriptionCon
 	s.HybridConfig = config
 
 	if config == nil || !config.Enabled || config.SecondaryModelID == "" {
-		log.Println("Hybrid transcription disabled")
+		log.Println("[SetHybridConfig] Hybrid transcription disabled (config nil or not enabled)")
 		return
 	}
 
 	// Создаём вторичный движок
+	log.Printf("[SetHybridConfig] Creating secondary engine for model: %s", config.SecondaryModelID)
 	secondaryEngine, err := s.EngineMgr.CreateEngineForModel(config.SecondaryModelID)
 	if err != nil {
-		log.Printf("Failed to create secondary engine for hybrid transcription: %v", err)
+		log.Printf("[SetHybridConfig] FAILED to create secondary engine: %v", err)
 		s.HybridConfig = nil
 		return
 	}
+	log.Printf("[SetHybridConfig] Secondary engine created: %s", secondaryEngine.Name())
 	s.secondaryEngine = secondaryEngine
 
 	// Создаём LLM selector если нужен
 	var llmSelector ai.LLMTranscriptionSelector
 	if config.UseLLMForMerge && s.LLMService != nil {
+		// Используем модель из конфига гибридной транскрипции, если указана
+		ollamaModel := config.OllamaModel
+		ollamaURL := config.OllamaURL
+		if ollamaModel == "" {
+			ollamaModel = s.OllamaModel
+		}
+		if ollamaURL == "" {
+			ollamaURL = s.OllamaURL
+		}
+		// Дефолты если всё ещё пусто
+		if ollamaModel == "" {
+			ollamaModel = "llama3.2"
+		}
+		if ollamaURL == "" {
+			ollamaURL = "http://localhost:11434"
+		}
+
+		log.Printf("Hybrid LLM selector: model=%s, url=%s", ollamaModel, ollamaURL)
 		llmSelector = &llmSelectorAdapter{
 			llmService:  s.LLMService,
-			ollamaURL:   s.OllamaURL,
-			ollamaModel: s.OllamaModel,
+			ollamaURL:   ollamaURL,
+			ollamaModel: ollamaModel,
 		}
+	}
+
+	// Передаём hotwords в движки (для Whisper это initial prompt)
+	if len(config.Hotwords) > 0 {
+		log.Printf("[SetHybridConfig] Setting hotwords (%d words) on engines", len(config.Hotwords))
+		primaryEngine := s.EngineMgr.GetActiveEngine()
+		if primaryEngine != nil {
+			primaryEngine.SetHotwords(config.Hotwords)
+		}
+		secondaryEngine.SetHotwords(config.Hotwords)
 	}
 
 	// Создаём HybridTranscriber
@@ -164,8 +200,10 @@ func (s *TranscriptionService) SetHybridConfig(config *ai.HybridTranscriptionCon
 		llmSelector,
 	)
 
-	log.Printf("Hybrid transcription enabled: secondaryModel=%s, threshold=%.2f, useLLM=%v",
-		config.SecondaryModelID, config.ConfidenceThreshold, config.UseLLMForMerge)
+	log.Printf("[SetHybridConfig] SUCCESS: Hybrid transcription enabled: secondaryModel=%s, threshold=%.2f, useLLM=%v, mode=%s, hotwords=%d",
+		config.SecondaryModelID, config.ConfidenceThreshold, config.UseLLMForMerge, config.Mode, len(config.Hotwords))
+	log.Printf("[SetHybridConfig] State after setup: hybridTranscriber=%v, secondaryEngine=%v",
+		s.hybridTranscriber != nil, s.secondaryEngine != nil)
 }
 
 // IsHybridEnabled возвращает true если гибридная транскрипция включена
@@ -188,20 +226,157 @@ func (a *llmSelectorAdapter) SelectBestTranscription(original, alternative, cont
 // Если гибридная транскрипция включена - использует HybridTranscriber
 // Иначе - обычную транскрипцию через EngineMgr
 func (s *TranscriptionService) transcribeWithHybrid(samples []float32) ([]ai.TranscriptSegment, error) {
+	// Детальное логирование состояния гибридной транскрипции
+	log.Printf("[transcribeWithHybrid] Checking hybrid state: HybridConfig=%v, hybridTranscriber=%v",
+		s.HybridConfig != nil, s.hybridTranscriber != nil)
+	if s.HybridConfig != nil {
+		log.Printf("[transcribeWithHybrid] HybridConfig: enabled=%v, secondaryModel=%s, mode=%s, useLLM=%v",
+			s.HybridConfig.Enabled, s.HybridConfig.SecondaryModelID, s.HybridConfig.Mode, s.HybridConfig.UseLLMForMerge)
+	}
+
 	if s.IsHybridEnabled() && s.hybridTranscriber != nil {
-		log.Printf("Using hybrid transcription (primary + %s)", s.HybridConfig.SecondaryModelID)
+		log.Printf("[transcribeWithHybrid] Using hybrid transcription (primary + %s, mode=%s)",
+			s.HybridConfig.SecondaryModelID, s.HybridConfig.Mode)
 		result, err := s.hybridTranscriber.Transcribe(samples)
 		if err != nil {
-			log.Printf("Hybrid transcription failed: %v, falling back to primary engine", err)
+			log.Printf("[transcribeWithHybrid] Hybrid transcription failed: %v, falling back to primary engine", err)
 			return s.EngineMgr.TranscribeWithSegments(samples)
 		}
 		if result.RetranscribedCount > 0 {
-			log.Printf("Hybrid transcription: improved %d regions (low confidence: %d words)",
+			log.Printf("[transcribeWithHybrid] Hybrid transcription: improved %d regions (low confidence: %d words)",
 				result.RetranscribedCount, result.LowConfidenceCount)
+		} else {
+			log.Printf("[transcribeWithHybrid] Hybrid transcription completed, no improvements made")
 		}
 		return result.Segments, nil
 	}
+
+	log.Printf("[transcribeWithHybrid] Hybrid disabled, using standard transcription")
 	return s.EngineMgr.TranscribeWithSegments(samples)
+}
+
+// applyHybridToPipelineResult применяет гибридную транскрипцию к результату Pipeline
+// Транскрибирует аудио вторичной моделью и использует LLM для выбора лучшего варианта
+// Сохраняет информацию о спикерах из оригинального результата
+func (s *TranscriptionService) applyHybridToPipelineResult(samples []float32, pipelineResult *ai.PipelineResult) *ai.PipelineResult {
+	log.Printf("[applyHybridToPipelineResult] START: hybridTranscriber=%v, secondaryEngine=%v",
+		s.hybridTranscriber != nil, s.secondaryEngine != nil)
+
+	if s.hybridTranscriber == nil || s.secondaryEngine == nil {
+		log.Printf("[applyHybridToPipelineResult] ABORT: No hybrid transcriber or secondary engine")
+		return nil
+	}
+
+	// Транскрибируем вторичной моделью
+	log.Printf("[applyHybridToPipelineResult] Transcribing %d samples with secondary model: %s",
+		len(samples), s.secondaryEngine.Name())
+	secondarySegments, err := s.secondaryEngine.TranscribeWithSegments(samples)
+	if err != nil {
+		log.Printf("[applyHybridToPipelineResult] ABORT: Secondary transcription failed: %v", err)
+		return nil
+	}
+	log.Printf("[applyHybridToPipelineResult] Secondary transcription OK: %d segments", len(secondarySegments))
+
+	// Собираем тексты
+	primaryText := pipelineResult.FullText
+	var secondaryTextParts []string
+	for _, seg := range secondarySegments {
+		secondaryTextParts = append(secondaryTextParts, seg.Text)
+	}
+	secondaryText := strings.Join(secondaryTextParts, " ")
+
+	log.Printf("[applyHybridToPipelineResult] Primary: %q", primaryText)
+	log.Printf("[applyHybridToPipelineResult] Secondary: %q", secondaryText)
+
+	// Если тексты идентичны — нет смысла сравнивать
+	if primaryText == secondaryText {
+		log.Printf("[applyHybridToPipelineResult] Texts identical, keeping primary")
+		return nil
+	}
+
+	// Используем LLM для выбора лучшего варианта
+	if s.HybridConfig.UseLLMForMerge && s.LLMService != nil {
+		ollamaModel := s.HybridConfig.OllamaModel
+		ollamaURL := s.HybridConfig.OllamaURL
+		if ollamaModel == "" {
+			ollamaModel = s.OllamaModel
+		}
+		if ollamaURL == "" {
+			ollamaURL = s.OllamaURL
+		}
+		if ollamaModel == "" {
+			ollamaModel = "llama3.2"
+		}
+		if ollamaURL == "" {
+			ollamaURL = "http://localhost:11434"
+		}
+
+		log.Printf("[applyHybridToPipelineResult] Using LLM to select best: model=%s", ollamaModel)
+
+		selected, err := s.LLMService.SelectBestTranscription(primaryText, secondaryText, "", ollamaModel, ollamaURL)
+		if err != nil {
+			log.Printf("[applyHybridToPipelineResult] LLM selection failed: %v", err)
+			return nil
+		}
+
+		log.Printf("[applyHybridToPipelineResult] LLM selected: %q", selected)
+
+		// Если LLM выбрал вторичный вариант или модифицировал текст
+		if selected != primaryText {
+			// Создаём новый результат с улучшенным текстом
+			// Сохраняем структуру сегментов и спикеров из оригинала, но обновляем текст
+			improvedResult := &ai.PipelineResult{
+				FullText:    selected,
+				Segments:    pipelineResult.Segments, // Сохраняем спикеров и таймкоды
+				NumSpeakers: pipelineResult.NumSpeakers,
+			}
+
+			// Если текст сильно изменился, обновляем текст в сегментах
+			// Простая эвристика: если выбран вторичный текст, используем его сегменты
+			if selected == secondaryText && len(secondarySegments) > 0 {
+				// Переносим текст из вторичных сегментов, сохраняя спикеров из первичных
+				improvedResult.Segments = mergeSegmentsWithSpeakers(secondarySegments, pipelineResult.Segments)
+			}
+
+			return improvedResult
+		}
+	}
+
+	return nil
+}
+
+// mergeSegmentsWithSpeakers объединяет текст из новых сегментов с информацией о спикерах из старых
+func mergeSegmentsWithSpeakers(newSegs []ai.TranscriptSegment, oldSegs []ai.TranscriptSegment) []ai.TranscriptSegment {
+	if len(oldSegs) == 0 {
+		return newSegs
+	}
+
+	result := make([]ai.TranscriptSegment, len(newSegs))
+	for i, newSeg := range newSegs {
+		result[i] = newSeg
+
+		// Находим ближайший старый сегмент по времени для получения спикера
+		var bestMatch *ai.TranscriptSegment
+		var bestOverlap int64 = 0
+
+		for j := range oldSegs {
+			// Вычисляем пересечение временных интервалов
+			overlapStart := max(newSeg.Start, oldSegs[j].Start)
+			overlapEnd := min(newSeg.End, oldSegs[j].End)
+			overlap := overlapEnd - overlapStart
+
+			if overlap > bestOverlap {
+				bestOverlap = overlap
+				bestMatch = &oldSegs[j]
+			}
+		}
+
+		if bestMatch != nil && bestMatch.Speaker != "" {
+			result[i].Speaker = bestMatch.Speaker
+		}
+	}
+
+	return result
 }
 
 // SetPipeline устанавливает AudioPipeline для расширенной обработки (диаризация)
@@ -849,6 +1024,32 @@ func (s *TranscriptionService) processMonoFromMP3Impl(chunk *session.Chunk, useD
 
 		log.Printf("Pipeline complete for chunk %d: %d chars, %d speakers",
 			chunk.Index, len(result.FullText), result.NumSpeakers)
+
+		// Применяем гибридную транскрипцию если включена (режим full_compare)
+		log.Printf("[Hybrid+Diarization] Checking: IsHybridEnabled=%v, HybridConfig=%v",
+			s.IsHybridEnabled(), s.HybridConfig != nil)
+		if s.HybridConfig != nil {
+			log.Printf("[Hybrid+Diarization] Config: Mode=%s, SecondaryModel=%s, UseLLM=%v, OllamaModel=%s",
+				s.HybridConfig.Mode, s.HybridConfig.SecondaryModelID, s.HybridConfig.UseLLMForMerge, s.HybridConfig.OllamaModel)
+		}
+
+		if s.IsHybridEnabled() && s.HybridConfig.Mode == ai.HybridModeFullCompare {
+			log.Printf("[Hybrid+Diarization] Applying hybrid transcription to pipeline result")
+			improvedResult := s.applyHybridToPipelineResult(samples, result)
+			if improvedResult != nil {
+				result = improvedResult
+				log.Printf("[Hybrid+Diarization] Hybrid applied: %d chars", len(result.FullText))
+			} else {
+				log.Printf("[Hybrid+Diarization] No improvement from hybrid (nil result)")
+			}
+		} else {
+			mode := "nil"
+			if s.HybridConfig != nil {
+				mode = string(s.HybridConfig.Mode)
+			}
+			log.Printf("[Hybrid+Diarization] Hybrid NOT applied: IsHybridEnabled=%v, Mode=%s",
+				s.IsHybridEnabled(), mode)
+		}
 
 		// Конвертируем сегменты с информацией о спикерах
 		sessionSegs := convertPipelineSegments(result.Segments, chunk.StartMs)

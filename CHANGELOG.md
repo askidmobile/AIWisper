@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.35.0] - 2025-12-12
+
+### Added
+- **Voting System for Hybrid Transcription**: Intelligent word selection using 4-criteria voting
+  - **Problem**: GigaAM model inflates confidence scores (~25% higher), causing wrong word selection (e.g., "джинезис" instead of "Genesis")
+  - **Solution**: 4-criteria voting system where model with 2+ votes wins:
+    - **A. Calibrated Confidence**: GigaAM × 0.75, Whisper/Parakeet × 1.0 (based on NVIDIA research)
+    - **B. Latin Detection**: Prefer model that recognized Latin characters for foreign terms
+    - **C. Hotwords**: Match against user's terminology dictionary with fuzzy matching (Levenshtein distance ≤2)
+    - **D. Grammar Check**: Validate against embedded dictionaries (~2600 words)
+  - Tie-breaker: primary model wins
+  - Integrated into `mergeWordsByTime()` function in parallel mode
+
+- **Grammar Checker**: Embedded dictionary-based word validation
+  - `SimpleGrammarChecker` with Russian (~1100 words) and English (~1500 words) dictionaries
+  - Auto-detection of language based on character set (Cyrillic vs Latin)
+  - Runtime word addition via `AddWord()` / `AddWords()`
+  - Embedded using Go's `embed.FS` for zero external dependencies
+
+- **Hotwords Support**: User-defined terminology for better recognition
+  - Fuzzy matching with Levenshtein distance threshold
+  - Case-insensitive comparison
+  - Configurable via `HybridTranscriptionConfig.Hotwords`
+
+- **Confidence Calibration**: Model-specific confidence scaling
+  - `DefaultCalibrations` with regex patterns for model identification
+  - GigaAM: 0.75 factor (compensates for CTC loss overconfidence)
+  - Whisper/Parakeet/Fluid: 1.0 factor (well-calibrated)
+
+### Technical
+- `backend/ai/hybrid_transcription.go`:
+  - Added `VotingConfig`, `VoteResult`, `VoteDetails` types
+  - Added `voteForBestWord()`, `calibrateConfidence()`, `containsLatin()`, `matchesHotword()` functions
+  - Integrated voting into `mergeWordsByTime()` for parallel mode
+- `backend/ai/grammar_checker.go`: New file with `SimpleGrammarChecker` implementation
+- `backend/ai/voting_test.go`: Unit tests for voting system (all passing)
+- `backend/ai/dictionaries/english_words.txt`: ~1500 common English words
+- `backend/ai/dictionaries/russian_words.txt`: ~1100 common Russian words
+- `docs/plan_voting_hybrid_merge_2025-12-12.md`: Implementation plan
+
 ## [1.32.0] - 2025-12-12
 
 ### Added

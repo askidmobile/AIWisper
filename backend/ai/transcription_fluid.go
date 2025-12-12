@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -263,32 +264,61 @@ func (e *FluidASREngine) TranscribeWithSegments(samples []float32) ([]Transcript
 	}
 
 	// Конвертируем в наш формат
-	segments := make([]TranscriptSegment, len(result.Segments))
-	for i, seg := range result.Segments {
+	segments := make([]TranscriptSegment, 0, len(result.Segments))
+	unkCount := 0
+	for _, seg := range result.Segments {
 		// Конвертируем word-level timestamps если есть
+		// Фильтруем <unk> токены (unknown tokens от Parakeet)
 		var words []TranscriptWord
+		var filteredText []string
 		if len(seg.Words) > 0 {
-			words = make([]TranscriptWord, len(seg.Words))
-			for j, w := range seg.Words {
+			words = make([]TranscriptWord, 0, len(seg.Words))
+			for _, w := range seg.Words {
+				// Пропускаем <unk> токены
+				if w.Text == "<unk>" || w.Text == "[unk]" {
+					unkCount++
+					continue
+				}
 				var confidence float32
 				if w.Confidence != nil {
 					confidence = *w.Confidence
 				}
-				words[j] = TranscriptWord{
+				words = append(words, TranscriptWord{
 					Start: int64(w.Start * 1000), // секунды -> миллисекунды
 					End:   int64(w.End * 1000),
 					Text:  w.Text,
 					P:     confidence,
-				}
+				})
+				filteredText = append(filteredText, w.Text)
 			}
 		}
 
-		segments[i] = TranscriptSegment{
+		// Фильтруем <unk> из текста сегмента
+		segText := seg.Text
+		if strings.Contains(segText, "<unk>") {
+			if len(filteredText) > 0 {
+				segText = strings.Join(filteredText, " ")
+			} else {
+				segText = strings.ReplaceAll(segText, "<unk>", "")
+				segText = strings.TrimSpace(segText)
+			}
+		}
+
+		// Пропускаем пустые сегменты
+		if segText == "" && len(words) == 0 {
+			continue
+		}
+
+		segments = append(segments, TranscriptSegment{
 			Start: int64(seg.Start * 1000), // секунды -> миллисекунды
 			End:   int64(seg.End * 1000),
-			Text:  seg.Text,
+			Text:  segText,
 			Words: words, // Word-level timestamps для dialogue merge
-		}
+		})
+	}
+
+	if unkCount > 0 {
+		log.Printf("FluidASREngine: filtered %d <unk> tokens", unkCount)
 	}
 
 	elapsed := time.Since(startTime)
@@ -313,6 +343,16 @@ func (e *FluidASREngine) SetLanguage(lang string) {
 	defer e.mu.Unlock()
 	e.language = lang
 	log.Printf("FluidASREngine: language set to %s (note: Parakeet v3 auto-detects language)", lang)
+}
+
+// SetHotwords устанавливает словарь подсказок
+// Parakeet TDT не поддерживает hotwords на уровне модели, но они используются для пост-обработки
+func (e *FluidASREngine) SetHotwords(words []string) {
+	// Parakeet TDT (CTC/TDT модель) не поддерживает промпты
+	// Hotwords применяются на уровне гибридной транскрипции как пост-обработка
+	if len(words) > 0 {
+		log.Printf("FluidASREngine: hotwords will be applied as post-processing: %v", words)
+	}
 }
 
 // SetModel переключает модель

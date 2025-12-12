@@ -18,16 +18,22 @@ type SileroVADConfig struct {
 	MinSilenceDurationMs int     // Минимальная длительность тишины для разделения (мс)
 	SpeechPadMs          int     // Padding вокруг речи (мс)
 	MinSpeechDurationMs  int     // Минимальная длительность речи (мс)
+	MaxRegionDurationMs  int     // Максимальная длительность региона (мс), 0 = без ограничения
 }
 
 // DefaultSileroVADConfig возвращает конфигурацию по умолчанию
+// ВАЖНО: Параметры подобраны для создания регионов оптимального размера для Whisper:
+// - MinSilenceDurationMs: 700ms - разделяет фразы, но не слова внутри фразы
+// - SpeechPadMs: 250ms - захватывает глухие согласные в начале/конце слов
+// - MaxRegionDurationMs: 25000ms - принудительное разбиение длинных регионов
 func DefaultSileroVADConfig() SileroVADConfig {
 	return SileroVADConfig{
 		SampleRate:           16000,
-		Threshold:            0.5,
-		MinSilenceDurationMs: 100,
-		SpeechPadMs:          30,
+		Threshold:            0.45, // Немного снижен для лучшего детектирования тихой речи
+		MinSilenceDurationMs: 700,  // Увеличено: разделять только реальные паузы между фразами
+		SpeechPadMs:          250,  // Увеличено: захватывать начало/конец слов (глухие согласные)
 		MinSpeechDurationMs:  250,
+		MaxRegionDurationMs:  25000, // Максимум 25 секунд на регион (Whisper оптимально работает с 20-30с)
 	}
 }
 
@@ -78,6 +84,16 @@ func NewSileroVAD(config SileroVADConfig) (*SileroVAD, error) {
 	}
 	defer options.Destroy()
 
+	// Пробуем включить CoreML для GPU ускорения на macOS
+	coreMLEnabled := false
+	if err := options.AppendExecutionProviderCoreML(0); err != nil {
+		// CoreML не доступен - это нормально, продолжаем с CPU
+		log.Printf("Silero VAD: CoreML not available, using CPU: %v", err)
+	} else {
+		coreMLEnabled = true
+		log.Println("✓ Silero VAD: CoreML enabled (GPU acceleration)")
+	}
+
 	// Создаём сессию
 	// Silero VAD inputs: input, state, sr
 	// Silero VAD outputs: output, stateN
@@ -108,7 +124,11 @@ func NewSileroVAD(config SileroVADConfig) (*SileroVAD, error) {
 		initialized: true,
 	}
 
-	log.Printf("Silero VAD initialized: sample_rate=%d, threshold=%.2f", config.SampleRate, config.Threshold)
+	computeUnits := "CPU"
+	if coreMLEnabled {
+		computeUnits = "CoreML (GPU+ANE)"
+	}
+	log.Printf("Silero VAD initialized: sample_rate=%d, threshold=%.2f, compute=%s", config.SampleRate, config.Threshold, computeUnits)
 	return vad, nil
 }
 
@@ -334,6 +354,11 @@ func (v *SileroVAD) DetectSpeechRegions(samples []float32) ([]SileroVADSegment, 
 		}
 	}
 
+	// Разбиваем слишком длинные сегменты если задан MaxRegionDurationMs
+	if v.config.MaxRegionDurationMs > 0 {
+		segments = v.splitLongSegments(segments)
+	}
+
 	log.Printf("Silero VAD: detected %d speech segments", len(segments))
 	for i, seg := range segments {
 		log.Printf("  segment[%d]: %dms - %dms (duration: %dms, prob: %.2f)",
@@ -341,6 +366,53 @@ func (v *SileroVAD) DetectSpeechRegions(samples []float32) ([]SileroVADSegment, 
 	}
 
 	return segments, nil
+}
+
+// splitLongSegments разбивает сегменты, превышающие MaxRegionDurationMs
+// Разбиение происходит равномерно, чтобы каждый подсегмент был примерно одинаковой длины
+func (v *SileroVAD) splitLongSegments(segments []SileroVADSegment) []SileroVADSegment {
+	maxDuration := int64(v.config.MaxRegionDurationMs)
+	if maxDuration <= 0 {
+		return segments
+	}
+
+	var result []SileroVADSegment
+
+	for _, seg := range segments {
+		duration := seg.EndMs - seg.StartMs
+
+		if duration <= maxDuration {
+			// Сегмент достаточно короткий, оставляем как есть
+			result = append(result, seg)
+			continue
+		}
+
+		// Сегмент слишком длинный - разбиваем на части
+		// Вычисляем количество частей так, чтобы каждая была <= maxDuration
+		numParts := int((duration + maxDuration - 1) / maxDuration) // округление вверх
+		partDuration := duration / int64(numParts)
+
+		log.Printf("Silero VAD: splitting segment %dms-%dms (duration: %dms) into %d parts of ~%dms",
+			seg.StartMs, seg.EndMs, duration, numParts, partDuration)
+
+		for i := 0; i < numParts; i++ {
+			partStart := seg.StartMs + int64(i)*partDuration
+			partEnd := partStart + partDuration
+
+			// Последняя часть заканчивается точно в конце оригинального сегмента
+			if i == numParts-1 {
+				partEnd = seg.EndMs
+			}
+
+			result = append(result, SileroVADSegment{
+				StartMs: partStart,
+				EndMs:   partEnd,
+				AvgProb: seg.AvgProb,
+			})
+		}
+	}
+
+	return result
 }
 
 // Close освобождает ресурсы

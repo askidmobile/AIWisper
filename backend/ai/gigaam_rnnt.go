@@ -634,6 +634,16 @@ func (e *GigaAMRNNTEngine) SetLanguage(lang string) {
 	}
 }
 
+// SetHotwords устанавливает словарь подсказок
+// GigaAM RNNT не поддерживает hotwords на уровне модели, но они используются для пост-обработки
+func (e *GigaAMRNNTEngine) SetHotwords(words []string) {
+	// GigaAM RNNT модель не поддерживает промпты
+	// Hotwords применяются на уровне гибридной транскрипции как пост-обработка
+	if len(words) > 0 {
+		log.Printf("GigaAM RNNT: hotwords will be applied as post-processing: %v", words)
+	}
+}
+
 // SetModel переключает модель (не поддерживается для RNNT - нужно пересоздать движок)
 func (e *GigaAMRNNTEngine) SetModel(path string) error {
 	return fmt.Errorf("GigaAM RNNT: SetModel not supported, create new engine instead")

@@ -15,6 +15,7 @@ type WhisperEngine struct {
 	model     whisper.Model
 	modelPath string
 	language  string
+	hotwords  []string // Словарь подсказок для initial prompt
 	mu        sync.Mutex
 }
 
@@ -481,9 +482,15 @@ func (e *WhisperEngine) TranscribeHighQuality(samples []float32) ([]TranscriptSe
 	// Включаем таймстемпы токенов для точных временных меток
 	ctx.SetTokenTimestamps(true)
 
-	// Промпт с русским контекстом для улучшения распознавания
-	// Содержит типичные слова и помогает модели понять контекст
-	ctx.SetInitialPrompt("Привет. Разговор о работе, техкомитет, архитектура, разработка.")
+	// Промпт с контекстом для улучшения распознавания
+	// Включает hotwords если они заданы
+	prompt := "Привет. Разговор о работе."
+	if len(e.hotwords) > 0 {
+		// Добавляем hotwords в промпт для лучшего распознавания терминов
+		prompt = "Привет. Разговор о работе. Термины: " + strings.Join(e.hotwords, ", ") + "."
+		log.Printf("WhisperEngine: using prompt with hotwords: %s", prompt)
+	}
+	ctx.SetInitialPrompt(prompt)
 
 	log.Printf("TranscribeHighQuality: samples=%d duration=%.1fs lang=%s beam=5 temp=0.0",
 		len(samples), float64(len(samples))/16000, e.language)
@@ -560,6 +567,17 @@ func (e *WhisperEngine) SetLanguage(lang string) {
 		return
 	}
 	e.language = lang
+}
+
+// SetHotwords устанавливает словарь подсказок
+// Для Whisper используется как часть initial prompt
+func (e *WhisperEngine) SetHotwords(words []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.hotwords = words
+	if len(words) > 0 {
+		log.Printf("WhisperEngine: set %d hotwords: %v", len(words), words)
+	}
 }
 
 // SetModel переключает модель

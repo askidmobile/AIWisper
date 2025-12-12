@@ -48,6 +48,10 @@ func (m *mockTranscriber) SupportedLanguages() []string {
 
 func (m *mockTranscriber) Close() {}
 
+func (m *mockTranscriber) SetHotwords(hotwords []string) {
+	// no-op for mock
+}
+
 func TestNewAudioPipeline(t *testing.T) {
 	mock := &mockTranscriber{name: "mock"}
 	config := DefaultPipelineConfig()
@@ -242,8 +246,8 @@ func TestFindBestSpeaker(t *testing.T) {
 		{"Full overlap Speaker 0", 0.0, 1.5, 0},
 		{"Full overlap Speaker 1", 2.5, 3.5, 1},
 		{"Full overlap Speaker 2", 4.5, 5.5, 2},
-		{"Mostly Speaker 0", 0.0, 2.2, 0},  // 2.0 vs 0.2
-		{"Mostly Speaker 1", 1.8, 3.8, 1},  // 0.2 vs 1.8
+		{"Mostly Speaker 0", 0.0, 2.2, 0}, // 2.0 vs 0.2
+		{"Mostly Speaker 1", 1.8, 3.8, 1}, // 0.2 vs 1.8
 		{"Edge at boundary", 2.0, 3.0, 1},
 	}
 

@@ -49,6 +49,16 @@ export const HybridTranscriptionSettingsPanel: React.FC<HybridTranscriptionSetti
         onChange({ ...settings, mode });
     };
 
+    const handleHotwordsChange = (text: string) => {
+        // Парсим строку в массив, убираем пустые и дубликаты
+        const words = text
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean)
+            .filter((v, i, a) => a.indexOf(v) === i);
+        onChange({ ...settings, hotwords: words.length > 0 ? words : undefined });
+    };
+
     return (
         <div
             style={{
@@ -159,44 +169,65 @@ export const HybridTranscriptionSettingsPanel: React.FC<HybridTranscriptionSetti
                         >
                             Режим сравнения:
                         </label>
-                        <div style={{ display: 'flex', gap: '8px' }}>
+                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                            <button
+                                onClick={() => handleModeChange('parallel')}
+                                disabled={disabled}
+                                style={{
+                                    flex: 1,
+                                    minWidth: '100px',
+                                    padding: '8px 10px',
+                                    background: settings.mode === 'parallel' ? 'var(--primary)' : 'var(--glass-bg)',
+                                    border: `1px solid ${settings.mode === 'parallel' ? 'var(--primary)' : 'var(--glass-border)'}`,
+                                    borderRadius: '8px',
+                                    color: settings.mode === 'parallel' ? 'white' : 'var(--text-primary)',
+                                    fontSize: '0.75rem',
+                                    cursor: disabled ? 'not-allowed' : 'pointer',
+                                }}
+                            >
+                                ⚡ Параллельный
+                            </button>
                             <button
                                 onClick={() => handleModeChange('full_compare')}
                                 disabled={disabled}
                                 style={{
                                     flex: 1,
-                                    padding: '8px 12px',
+                                    minWidth: '100px',
+                                    padding: '8px 10px',
                                     background: settings.mode === 'full_compare' ? 'var(--primary)' : 'var(--glass-bg)',
                                     border: `1px solid ${settings.mode === 'full_compare' ? 'var(--primary)' : 'var(--glass-border)'}`,
                                     borderRadius: '8px',
                                     color: settings.mode === 'full_compare' ? 'white' : 'var(--text-primary)',
-                                    fontSize: '0.8rem',
+                                    fontSize: '0.75rem',
                                     cursor: disabled ? 'not-allowed' : 'pointer',
                                 }}
                             >
-                                🔄 Полное сравнение
+                                🔄 Полное + LLM
                             </button>
                             <button
                                 onClick={() => handleModeChange('confidence')}
                                 disabled={disabled}
                                 style={{
                                     flex: 1,
-                                    padding: '8px 12px',
+                                    minWidth: '100px',
+                                    padding: '8px 10px',
                                     background: settings.mode === 'confidence' ? 'var(--primary)' : 'var(--glass-bg)',
                                     border: `1px solid ${settings.mode === 'confidence' ? 'var(--primary)' : 'var(--glass-border)'}`,
                                     borderRadius: '8px',
                                     color: settings.mode === 'confidence' ? 'white' : 'var(--text-primary)',
-                                    fontSize: '0.8rem',
+                                    fontSize: '0.75rem',
                                     cursor: disabled ? 'not-allowed' : 'pointer',
                                 }}
                             >
-                                📊 По уверенности
+                                📊 По порогу
                             </button>
                         </div>
                         <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                            {settings.mode === 'full_compare' 
-                                ? '🔄 Обе модели транскрибируют весь текст, LLM выбирает лучший вариант'
-                                : '📊 Вторая модель перетранскрибирует только слова с низкой уверенностью'}
+                            {settings.mode === 'parallel' 
+                                ? '⚡ Обе модели работают параллельно, анализатор выбирает лучшие слова по confidence (быстро)'
+                                : settings.mode === 'full_compare' 
+                                    ? '🔄 Обе модели транскрибируют весь текст, LLM выбирает лучший вариант'
+                                    : '📊 Вторая модель перетранскрибирует только слова с низкой уверенностью'}
                         </p>
                     </div>
 
@@ -285,6 +316,54 @@ export const HybridTranscriptionSettingsPanel: React.FC<HybridTranscriptionSetti
                             </p>
                         </HelpTooltip>
                     </label>
+
+                    {/* Словарь подсказок (Hotwords) */}
+                    <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+                            <label
+                                style={{
+                                    fontSize: '0.8rem',
+                                    color: 'var(--text-muted)',
+                                }}
+                            >
+                                📝 Словарь подсказок:
+                            </label>
+                            <HelpTooltip title="Словарь подсказок (Hotwords)" position="left" maxWidth={400}>
+                                <p>
+                                    Введите термины, имена и аббревиатуры, которые модели часто распознают неправильно.
+                                </p>
+                                <p style={{ marginTop: '8px' }}>
+                                    <strong>Примеры:</strong> Notifier, API, B2C, Люха, техкомитет
+                                </p>
+                                <p style={{ marginTop: '8px' }}>
+                                    Система найдёт похожие слова в транскрипции (по расстоянию Левенштейна) 
+                                    и заменит их на правильное написание из словаря.
+                                </p>
+                            </HelpTooltip>
+                        </div>
+                        <textarea
+                            placeholder="Notifier, API, B2C, Люха, техкомитет..."
+                            value={settings.hotwords?.join(', ') || ''}
+                            onChange={(e) => handleHotwordsChange(e.target.value)}
+                            disabled={disabled}
+                            rows={2}
+                            style={{
+                                width: '100%',
+                                padding: '8px 12px',
+                                background: 'var(--glass-bg)',
+                                border: '1px solid var(--glass-border)',
+                                borderRadius: '8px',
+                                color: 'var(--text-primary)',
+                                fontSize: '0.85rem',
+                                resize: 'vertical',
+                                minHeight: '50px',
+                                fontFamily: 'inherit',
+                            }}
+                        />
+                        <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                            Через запятую. Слова с похожим звучанием будут заменены на указанные.
+                        </p>
+                    </div>
                 </div>
             )}
         </div>

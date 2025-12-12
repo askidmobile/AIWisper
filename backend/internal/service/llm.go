@@ -714,6 +714,7 @@ func sortSegmentsByTime(segments []session.TranscriptSegment) {
 
 // SelectBestTranscription выбирает лучший вариант транскрипции с помощью LLM
 // Используется для гибридной транскрипции
+// LLM может выбрать один из вариантов или создать комбинированный вариант
 func (s *LLMService) SelectBestTranscription(original, alternative, context, ollamaModel, ollamaUrl string) (string, error) {
 	resp, err := http.Get(ollamaUrl + "/api/tags")
 	if err != nil {
@@ -721,32 +722,42 @@ func (s *LLMService) SelectBestTranscription(original, alternative, context, oll
 	}
 	resp.Body.Close()
 
-	systemPrompt := `Ты — эксперт по выбору лучшей транскрипции речи.
+	systemPrompt := `Ты — эксперт по улучшению транскрипций русской речи.
 
 ТВОЯ ЗАДАЧА:
-Выбрать наиболее правильный вариант транскрипции из двух предложенных.
+Создать наилучшую транскрипцию на основе двух вариантов от разных моделей распознавания речи.
 
-КРИТЕРИИ ВЫБОРА (в порядке приоритета):
-1. Грамматическая корректность
-2. Соответствие контексту разговора
-3. Правильность технических терминов (API, B2C, UMS и т.д.)
-4. Естественность речи
+ВАЖНО: Модели часто ошибаются по-разному:
+- Одна модель может лучше распознать имена и термины
+- Другая может лучше расставить пунктуацию
+- Обе могут пропустить или исказить разные слова
+
+КРИТЕРИИ (в порядке приоритета):
+1. ПРАВИЛЬНОСТЬ СЛОВ — выбирай слова, которые имеют смысл в контексте
+2. ПОЛНОТА — не теряй слова, которые есть в одном варианте
+3. Имена собственные — "Люха", "Лёша" лучше чем "Ильюха" если контекст неформальный
+4. Технические термины — "notify", "API", "B2C" должны быть корректны
+5. Пунктуация — добавь точки, запятые, вопросительные знаки
+
+ЧТО МОЖНО ДЕЛАТЬ:
+- Выбрать один из вариантов целиком
+- Взять слова из разных вариантов и объединить
+- Исправить очевидные ошибки (например "протиФ" → "про notify")
+- Добавить пунктуацию
 
 ФОРМАТ ОТВЕТА:
-Верни ТОЛЬКО выбранный текст, без объяснений и комментариев.
-Если оба варианта одинаково хороши — верни первый.
-Если оба варианта плохие — верни первый.`
+Верни ТОЛЬКО итоговый текст транскрипции, без объяснений.`
 
-	userPrompt := fmt.Sprintf(`Контекст разговора:
+	userPrompt := fmt.Sprintf(`Контекст (предыдущие реплики):
 %s
 
-Вариант 1 (основная модель):
+Вариант 1:
 %s
 
-Вариант 2 (дополнительная модель):
+Вариант 2:
 %s
 
-Выбери лучший вариант:`, context, original, alternative)
+Создай лучшую транскрипцию:`, context, original, alternative)
 
 	reqBody := map[string]interface{}{
 		"model": ollamaModel,
@@ -766,11 +777,17 @@ func (s *LLMService) SelectBestTranscription(original, alternative, context, oll
 		return "", err
 	}
 
-	// Проверяем что ответ похож на один из вариантов
 	response = strings.TrimSpace(response)
 
-	// Если LLM вернул что-то совсем другое — возвращаем оригинал
+	// Если LLM вернул пустой ответ — возвращаем оригинал
 	if len(response) == 0 {
+		return original, nil
+	}
+
+	// Проверяем что ответ не слишком короткий (защита от галлюцинаций)
+	// Ответ должен быть хотя бы 30% длины оригинала
+	if len(response) < len(original)/3 {
+		log.Printf("[SelectBestTranscription] Response too short (%d vs %d), keeping original", len(response), len(original))
 		return original, nil
 	}
 
@@ -778,13 +795,16 @@ func (s *LLMService) SelectBestTranscription(original, alternative, context, oll
 	origSim := textSimilarity(strings.ToLower(response), strings.ToLower(original))
 	altSim := textSimilarity(strings.ToLower(response), strings.ToLower(alternative))
 
-	// Если ответ больше похож на альтернативу — возвращаем её
-	if altSim > origSim && altSim > 0.5 {
-		return alternative, nil
+	log.Printf("[SelectBestTranscription] Similarity: orig=%.2f, alt=%.2f", origSim, altSim)
+
+	// Если ответ совсем не похож ни на один вариант (< 30% схожести) — это галлюцинация
+	if origSim < 0.3 && altSim < 0.3 {
+		log.Printf("[SelectBestTranscription] Response not similar to either variant, keeping original")
+		return original, nil
 	}
 
-	// Иначе возвращаем оригинал
-	return original, nil
+	// Возвращаем ответ LLM (может быть комбинированным)
+	return response, nil
 }
 
 // GetOllamaModels gets models list from Ollama

@@ -426,6 +426,16 @@ func (e *GigaAMEngine) SetLanguage(lang string) {
 	}
 }
 
+// SetHotwords устанавливает словарь подсказок
+// GigaAM не поддерживает hotwords на уровне модели, но они используются для пост-обработки
+func (e *GigaAMEngine) SetHotwords(words []string) {
+	// GigaAM CTC модель не поддерживает промпты
+	// Hotwords применяются на уровне гибридной транскрипции как пост-обработка
+	if len(words) > 0 {
+		log.Printf("GigaAM: hotwords will be applied as post-processing: %v", words)
+	}
+}
+
 // SetModel переключает модель
 func (e *GigaAMEngine) SetModel(path string) error {
 	e.mu.Lock()

@@ -508,6 +508,9 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 					ContextWords:        msg.HybridContextWords,
 					UseLLMForMerge:      msg.HybridUseLLMForMerge,
 					Mode:                ai.HybridMode(msg.HybridMode),
+					OllamaModel:         msg.HybridOllamaModel,
+					OllamaURL:           msg.HybridOllamaURL,
+					Hotwords:            msg.HybridHotwords,
 				}
 				// Устанавливаем дефолты если не указаны
 				if hybridConfig.ConfidenceThreshold <= 0 {
@@ -518,6 +521,13 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 				}
 				if hybridConfig.Mode == "" {
 					hybridConfig.Mode = ai.HybridModeFullCompare // По умолчанию - полное сравнение
+				}
+				// Дефолты для Ollama
+				if hybridConfig.OllamaModel == "" {
+					hybridConfig.OllamaModel = msg.OllamaModel // Берём из общих настроек
+				}
+				if hybridConfig.OllamaURL == "" {
+					hybridConfig.OllamaURL = msg.OllamaUrl
 				}
 				s.TranscriptionService.SetHybridConfig(hybridConfig)
 			} else {
@@ -617,6 +627,9 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 				ContextWords:        msg.HybridContextWords,
 				UseLLMForMerge:      msg.HybridUseLLMForMerge,
 				Mode:                ai.HybridMode(msg.HybridMode),
+				OllamaModel:         msg.HybridOllamaModel,
+				OllamaURL:           msg.HybridOllamaURL,
+				Hotwords:            msg.HybridHotwords,
 			}
 			if hybridConfig.ConfidenceThreshold <= 0 {
 				hybridConfig.ConfidenceThreshold = 0.7 // Повышен с 0.5 до 0.7
@@ -626,6 +639,13 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			}
 			if hybridConfig.Mode == "" {
 				hybridConfig.Mode = ai.HybridModeFullCompare // По умолчанию - полное сравнение
+			}
+			// Дефолты для Ollama
+			if hybridConfig.OllamaModel == "" {
+				hybridConfig.OllamaModel = msg.OllamaModel
+			}
+			if hybridConfig.OllamaURL == "" {
+				hybridConfig.OllamaURL = msg.OllamaUrl
 			}
 			s.TranscriptionService.SetHybridConfig(hybridConfig)
 			send(Message{
@@ -641,8 +661,8 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			s.TranscriptionService.SetHybridConfig(nil)
 			send(Message{Type: "hybrid_transcription_status", HybridEnabled: false})
 		}
-		log.Printf("Hybrid transcription: enabled=%v, secondaryModel=%s, threshold=%.2f, mode=%s",
-			msg.HybridEnabled, msg.HybridSecondaryModelID, msg.HybridConfidenceThreshold, msg.HybridMode)
+		log.Printf("Hybrid transcription: enabled=%v, secondaryModel=%s, threshold=%.2f, mode=%s, ollamaModel=%s, hotwords=%d",
+			msg.HybridEnabled, msg.HybridSecondaryModelID, msg.HybridConfidenceThreshold, msg.HybridMode, msg.HybridOllamaModel, len(msg.HybridHotwords))
 
 	case "get_hybrid_transcription_status":
 		// Получить текущий статус гибридной транскрипции
@@ -751,8 +771,8 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 		}()
 
 	case "retranscribe_chunk":
-		log.Printf("Received retranscribe_chunk: sessionId=%s, chunkId=%s, model=%s, language=%s",
-			msg.SessionID, msg.Data, msg.Model, msg.Language)
+		log.Printf("Received retranscribe_chunk: sessionId=%s, chunkId=%s, model=%s, language=%s, hybrid=%v",
+			msg.SessionID, msg.Data, msg.Model, msg.Language, msg.HybridEnabled)
 
 		if msg.SessionID == "" || msg.Data == "" {
 			send(Message{Type: "error", Data: "sessionId and chunkId (data) are required"})
@@ -772,6 +792,42 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 					s.updatePipelineTranscriber()
 				}
 			}
+		}
+
+		// Настраиваем гибридную транскрипцию если включена
+		if msg.HybridEnabled && msg.HybridSecondaryModelID != "" {
+			hybridConfig := &ai.HybridTranscriptionConfig{
+				Enabled:             true,
+				SecondaryModelID:    msg.HybridSecondaryModelID,
+				ConfidenceThreshold: float32(msg.HybridConfidenceThreshold),
+				ContextWords:        msg.HybridContextWords,
+				UseLLMForMerge:      msg.HybridUseLLMForMerge,
+				Mode:                ai.HybridMode(msg.HybridMode),
+				OllamaModel:         msg.HybridOllamaModel,
+				OllamaURL:           msg.HybridOllamaURL,
+				Hotwords:            msg.HybridHotwords,
+			}
+			if hybridConfig.ConfidenceThreshold <= 0 {
+				hybridConfig.ConfidenceThreshold = 0.7
+			}
+			if hybridConfig.ContextWords <= 0 {
+				hybridConfig.ContextWords = 3
+			}
+			if hybridConfig.Mode == "" {
+				hybridConfig.Mode = ai.HybridModeFullCompare
+			}
+			// Дефолты для Ollama
+			if hybridConfig.OllamaModel == "" {
+				hybridConfig.OllamaModel = msg.OllamaModel
+			}
+			if hybridConfig.OllamaURL == "" {
+				hybridConfig.OllamaURL = msg.OllamaUrl
+			}
+			s.TranscriptionService.SetHybridConfig(hybridConfig)
+			log.Printf("Hybrid transcription configured for retranscribe: mode=%s, secondary=%s, ollamaModel=%s, hotwords=%d",
+				hybridConfig.Mode, hybridConfig.SecondaryModelID, hybridConfig.OllamaModel, len(hybridConfig.Hotwords))
+		} else {
+			s.TranscriptionService.SetHybridConfig(nil)
 		}
 
 		go func() {

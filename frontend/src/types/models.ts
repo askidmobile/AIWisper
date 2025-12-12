@@ -78,7 +78,7 @@ export interface AppSettings {
 }
 
 // Режим гибридной транскрипции
-export type HybridMode = 'confidence' | 'full_compare';
+export type HybridMode = 'confidence' | 'full_compare' | 'parallel';
 
 // Настройки гибридной транскрипции
 export interface HybridTranscriptionSettings {
@@ -87,7 +87,8 @@ export interface HybridTranscriptionSettings {
     confidenceThreshold: number;         // Порог уверенности (0.0 - 1.0), ниже которого слово перетранскрибируется
     contextWords: number;                // Количество слов контекста вокруг проблемного слова (1-5)
     useLLMForMerge: boolean;             // Использовать LLM для выбора лучшего варианта
-    mode: HybridMode;                    // Режим: confidence (по порогу) или full_compare (полное сравнение)
+    mode: HybridMode;                    // Режим: parallel (параллельный), confidence (по порогу) или full_compare (полное сравнение + LLM)
+    hotwords?: string[];                 // Словарь подсказок (термины, имена собственные)
 }
 
 // Модель Ollama для summary

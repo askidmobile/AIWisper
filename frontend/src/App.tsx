@@ -1165,7 +1165,17 @@ function App() {
                 vadMethod,
                 useNativeCapture: screenCaptureKitAvailable && captureSystem,
                 useVoiceIsolation: screenCaptureKitAvailable && captureSystem && useVoiceIsolation,
-                echoCancel: captureSystem && !useVoiceIsolation ? echoCancel : 0
+                echoCancel: captureSystem && !useVoiceIsolation ? echoCancel : 0,
+                // Настройки гибридной транскрипции
+                hybridEnabled: hybridTranscription.enabled,
+                hybridSecondaryModelId: hybridTranscription.secondaryModelId,
+                hybridConfidenceThreshold: hybridTranscription.confidenceThreshold,
+                hybridContextWords: hybridTranscription.contextWords,
+                hybridUseLLMForMerge: hybridTranscription.useLLMForMerge,
+                hybridMode: hybridTranscription.mode,
+                hybridHotwords: hybridTranscription.hotwords,
+                hybridOllamaModel: ollamaModel,
+                hybridOllamaUrl: ollamaUrl,
             }));
             addLog('start_session sent to backend');
         }
@@ -1227,9 +1237,20 @@ function App() {
             sessionId: selectedSession.id,
             data: chunkId,
             model: modelId,
-            language: language
+            language: language,
+            // Передаём настройки гибридной транскрипции
+            hybridEnabled: hybridTranscription.enabled,
+            hybridSecondaryModelId: hybridTranscription.secondaryModelId,
+            hybridConfidenceThreshold: hybridTranscription.confidenceThreshold,
+            hybridContextWords: hybridTranscription.contextWords,
+            hybridUseLLMForMerge: hybridTranscription.useLLMForMerge,
+            hybridMode: hybridTranscription.mode,
+            hybridHotwords: hybridTranscription.hotwords,
+            // Передаём модель Ollama для LLM
+            hybridOllamaModel: ollamaModel,
+            hybridOllamaUrl: ollamaUrl,
         }));
-        addLog(`Retranscribing chunk with model: ${activeModel?.name || 'default'}, language: ${language}`);
+        addLog(`Retranscribing chunk with model: ${activeModel?.name || 'default'}, language: ${language}, hybrid: ${hybridTranscription.enabled ? `${hybridTranscription.mode} (LLM: ${ollamaModel})` : 'disabled'}`);
     };
 
     // Улучшение транскрипции с помощью AI

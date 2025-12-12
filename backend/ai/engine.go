@@ -41,6 +41,11 @@ type TranscriptionEngine interface {
 	// path - путь к файлу модели
 	SetModel(path string) error
 
+	// SetHotwords устанавливает словарь подсказок (термины, имена)
+	// Для Whisper - используется как initial prompt
+	// Для других движков - может игнорироваться или использоваться для пост-обработки
+	SetHotwords(words []string)
+
 	// Close освобождает ресурсы движка
 	Close()
 

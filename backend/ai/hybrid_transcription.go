@@ -4,7 +4,9 @@ package ai
 import (
 	"fmt"
 	"log"
+	"regexp"
 	"sort"
+	"strings"
 )
 
 // HybridMode режим гибридной транскрипции
@@ -18,16 +20,85 @@ const (
 	// HybridModeFullCompare - транскрибировать обеими моделями и сравнивать
 	// LLM выбирает лучший вариант для каждого сегмента
 	HybridModeFullCompare HybridMode = "full_compare"
+
+	// HybridModeParallel - параллельная транскрипция обеими моделями
+	// Собственный анализатор выбирает лучшие слова на основе confidence
+	// Быстрее чем full_compare, не требует LLM
+	HybridModeParallel HybridMode = "parallel"
 )
 
 // HybridTranscriptionConfig конфигурация гибридной транскрипции
 type HybridTranscriptionConfig struct {
-	Enabled             bool       // Включена ли гибридная транскрипция
-	SecondaryModelID    string     // ID дополнительной модели
-	ConfidenceThreshold float32    // Порог уверенности (0.0 - 1.0)
-	ContextWords        int        // Количество слов контекста вокруг проблемного слова
-	UseLLMForMerge      bool       // Использовать LLM для выбора лучшего варианта
-	Mode                HybridMode // Режим работы: confidence или full_compare
+	Enabled             bool         // Включена ли гибридная транскрипция
+	SecondaryModelID    string       // ID дополнительной модели
+	ConfidenceThreshold float32      // Порог уверенности (0.0 - 1.0)
+	ContextWords        int          // Количество слов контекста вокруг проблемного слова
+	UseLLMForMerge      bool         // Использовать LLM для выбора лучшего варианта
+	Mode                HybridMode   // Режим работы: confidence, full_compare или parallel
+	OllamaModel         string       // Модель Ollama для LLM
+	OllamaURL           string       // URL Ollama API
+	Hotwords            []string     // Словарь подсказок для моделей (термины, имена)
+	Voting              VotingConfig // Конфигурация voting-системы
+}
+
+// VotingConfig конфигурация системы голосования для выбора лучшего слова
+type VotingConfig struct {
+	Enabled           bool                    `json:"enabled"`             // Включена ли voting-система
+	UseCalibration    bool                    `json:"use_calibration"`     // Критерий A: калиброванный confidence
+	UseLatinDetection bool                    `json:"use_latin_detection"` // Критерий B: предпочитать латиницу
+	UseHotwords       bool                    `json:"use_hotwords"`        // Критерий C: совпадение с hotwords
+	UseGrammarCheck   bool                    `json:"use_grammar_check"`   // Критерий D: грамматическая проверка
+	Calibrations      []ConfidenceCalibration `json:"calibrations"`        // Коэффициенты калибровки по моделям
+	GrammarDictPath   string                  `json:"grammar_dict_path"`   // Путь к словарю для грамматики
+}
+
+// ConfidenceCalibration калибровка confidence для конкретной модели
+// CTC/RNN-T модели (GigaAM) систематически завышают confidence
+// Источник: https://developer.nvidia.com/blog/entropy-based-methods-for-word-level-asr-confidence-estimation/
+type ConfidenceCalibration struct {
+	ModelPattern string  `json:"model_pattern"` // Regexp паттерн имени модели
+	ScaleFactor  float32 `json:"scale_factor"`  // Множитель (GigaAM: 0.75, Whisper/Parakeet: 1.0)
+	Bias         float32 `json:"bias"`          // Сдвиг (обычно 0)
+}
+
+// DefaultCalibrations дефолтные калибровки для известных моделей
+// GigaAM завышает confidence на ~25% из-за особенностей CTC loss
+var DefaultCalibrations = []ConfidenceCalibration{
+	{ModelPattern: "(?i)gigaam", ScaleFactor: 0.75, Bias: 0},
+	{ModelPattern: "(?i)whisper", ScaleFactor: 1.0, Bias: 0},
+	{ModelPattern: "(?i)parakeet", ScaleFactor: 1.0, Bias: 0},
+	{ModelPattern: "(?i)fluid", ScaleFactor: 1.0, Bias: 0},
+}
+
+// DefaultVotingConfig возвращает дефолтную конфигурацию voting-системы
+func DefaultVotingConfig() VotingConfig {
+	return VotingConfig{
+		Enabled:           true,
+		UseCalibration:    true,
+		UseLatinDetection: true,
+		UseHotwords:       true,
+		UseGrammarCheck:   true,
+		Calibrations:      DefaultCalibrations,
+	}
+}
+
+// VoteResult результат голосования для одного слова
+type VoteResult struct {
+	PrimaryWord   TranscriptWord // Слово от первичной модели
+	SecondaryWord TranscriptWord // Слово от вторичной модели
+	Winner        string         // "primary" | "secondary"
+	Votes         VoteDetails    // Детали голосования
+	Reason        string         // Человекочитаемое объяснение
+}
+
+// VoteDetails детали голосования по каждому критерию
+type VoteDetails struct {
+	CalibrationVote string // "primary" | "secondary" | "tie" | "abstain"
+	LatinVote       string // "primary" | "secondary" | "abstain"
+	HotwordVote     string // "primary" | "secondary" | "abstain"
+	GrammarVote     string // "primary" | "secondary" | "abstain"
+	PrimaryVotes    int    // Общее количество голосов за primary
+	SecondaryVotes  int    // Общее количество голосов за secondary
 }
 
 // LowConfidenceRegion участок с низкой уверенностью
@@ -58,12 +129,19 @@ type TranscriptionImprovement struct {
 	Source       string  // Источник улучшения: "secondary_model" или "llm"
 }
 
+// GrammarChecker интерфейс для проверки грамматической корректности слов
+type GrammarChecker interface {
+	IsValidWord(word string, lang string) bool
+	Close() error
+}
+
 // HybridTranscriber выполняет гибридную транскрипцию
 type HybridTranscriber struct {
 	primaryEngine   TranscriptionEngine
 	secondaryEngine TranscriptionEngine
 	config          HybridTranscriptionConfig
 	llmSelector     LLMTranscriptionSelector
+	grammarChecker  GrammarChecker // Опциональный grammar checker
 }
 
 // LLMTranscriptionSelector интерфейс для LLM выбора лучшей транскрипции
@@ -86,21 +164,497 @@ func NewHybridTranscriber(
 	}
 }
 
+// SetGrammarChecker устанавливает grammar checker для voting-системы
+func (h *HybridTranscriber) SetGrammarChecker(checker GrammarChecker) {
+	h.grammarChecker = checker
+}
+
 // Transcribe выполняет гибридную транскрипцию
 func (h *HybridTranscriber) Transcribe(samples []float32) (*HybridTranscriptionResult, error) {
 	// Выбираем режим работы
 	mode := h.config.Mode
 	if mode == "" {
-		mode = HybridModeConfidence // По умолчанию - режим confidence
+		mode = HybridModeParallel // По умолчанию - параллельный режим (быстрый)
 	}
 
-	// Режим полного сравнения
-	if mode == HybridModeFullCompare {
+	switch mode {
+	case HybridModeFullCompare:
 		return h.transcribeFullCompare(samples)
+	case HybridModeParallel:
+		return h.transcribeParallel(samples)
+	default:
+		// Режим confidence (оригинальный)
+		return h.transcribeConfidenceBased(samples)
+	}
+}
+
+// transcribeParallel выполняет параллельную транскрипцию обеими моделями
+// и использует собственный анализатор для выбора лучших слов на основе confidence
+func (h *HybridTranscriber) transcribeParallel(samples []float32) (*HybridTranscriptionResult, error) {
+	if h.secondaryEngine == nil {
+		// Нет вторичной модели - просто транскрибируем первичной
+		segments, err := h.primaryEngine.TranscribeWithSegments(samples)
+		if err != nil {
+			return nil, err
+		}
+		return &HybridTranscriptionResult{Segments: segments}, nil
 	}
 
-	// Режим confidence (оригинальный)
-	return h.transcribeConfidenceBased(samples)
+	// Запускаем обе модели параллельно
+	type transcriptionResult struct {
+		segments []TranscriptSegment
+		err      error
+		name     string
+	}
+
+	primaryChan := make(chan transcriptionResult, 1)
+	secondaryChan := make(chan transcriptionResult, 1)
+
+	// Первичная модель
+	go func() {
+		log.Printf("[HybridTranscriber] Parallel: Starting primary transcription with %s", h.primaryEngine.Name())
+		segments, err := h.primaryEngine.TranscribeWithSegments(samples)
+		primaryChan <- transcriptionResult{segments: segments, err: err, name: h.primaryEngine.Name()}
+	}()
+
+	// Вторичная модель
+	go func() {
+		log.Printf("[HybridTranscriber] Parallel: Starting secondary transcription with %s", h.secondaryEngine.Name())
+		segments, err := h.secondaryEngine.TranscribeWithSegments(samples)
+		secondaryChan <- transcriptionResult{segments: segments, err: err, name: h.secondaryEngine.Name()}
+	}()
+
+	// Ждём результаты
+	primaryResult := <-primaryChan
+	secondaryResult := <-secondaryChan
+
+	log.Printf("[HybridTranscriber] Parallel: Primary (%s) done, err=%v", primaryResult.name, primaryResult.err)
+	log.Printf("[HybridTranscriber] Parallel: Secondary (%s) done, err=%v", secondaryResult.name, secondaryResult.err)
+
+	// Если первичная модель упала - пробуем вторичную
+	if primaryResult.err != nil {
+		if secondaryResult.err != nil {
+			return nil, fmt.Errorf("both models failed: primary: %v, secondary: %v", primaryResult.err, secondaryResult.err)
+		}
+		return &HybridTranscriptionResult{Segments: secondaryResult.segments}, nil
+	}
+
+	// Если вторичная модель упала - используем первичную
+	if secondaryResult.err != nil {
+		return &HybridTranscriptionResult{Segments: primaryResult.segments}, nil
+	}
+
+	// Обе модели отработали - анализируем и объединяем результаты
+	primaryText := segmentsToFullText(primaryResult.segments)
+	secondaryText := segmentsToFullText(secondaryResult.segments)
+
+	log.Printf("[HybridTranscriber] Parallel: Primary text: %q", primaryText)
+	log.Printf("[HybridTranscriber] Parallel: Secondary text: %q", secondaryText)
+
+	// Если тексты идентичны - возвращаем первичный
+	if primaryText == secondaryText {
+		log.Printf("[HybridTranscriber] Parallel: Texts identical, using primary")
+		return &HybridTranscriptionResult{Segments: primaryResult.segments}, nil
+	}
+
+	// Анализируем и объединяем на основе confidence
+	mergedSegments, improvements := h.mergeByConfidence(primaryResult.segments, secondaryResult.segments)
+
+	// Применяем hotwords для исправления известных терминов
+	if len(h.config.Hotwords) > 0 {
+		mergedSegments = h.applyHotwords(mergedSegments, primaryResult.segments, secondaryResult.segments)
+	}
+
+	// Если есть LLM и он включён - дополнительно проверяем через LLM
+	if h.config.UseLLMForMerge && h.llmSelector != nil && len(improvements) > 0 {
+		mergedText := segmentsToFullText(mergedSegments)
+		log.Printf("[HybridTranscriber] Parallel: Merged text: %q", mergedText)
+		log.Printf("[HybridTranscriber] Parallel: Verifying with LLM...")
+
+		// LLM проверяет объединённый результат
+		selected, err := h.llmSelector.SelectBestTranscription(primaryText, mergedText, "")
+		if err == nil && selected != primaryText && selected != mergedText {
+			// LLM предложил свой вариант
+			log.Printf("[HybridTranscriber] Parallel: LLM suggested: %q", selected)
+			mergedSegments = []TranscriptSegment{{
+				Start: 0,
+				End:   int64(len(samples) * 1000 / 16000),
+				Text:  selected,
+			}}
+		}
+	}
+
+	return &HybridTranscriptionResult{
+		Segments:           mergedSegments,
+		RetranscribedCount: len(improvements),
+		Improvements:       improvements,
+	}, nil
+}
+
+// mergeByConfidence объединяет результаты двух моделей на основе confidence слов
+func (h *HybridTranscriber) mergeByConfidence(primary, secondary []TranscriptSegment) ([]TranscriptSegment, []TranscriptionImprovement) {
+	var improvements []TranscriptionImprovement
+
+	// Извлекаем слова с confidence из обеих моделей
+	primaryWords := extractWordsWithConfidence(primary)
+	secondaryWords := extractWordsWithConfidence(secondary)
+
+	log.Printf("[HybridTranscriber] MergeByConfidence: primary=%d words, secondary=%d words",
+		len(primaryWords), len(secondaryWords))
+
+	// Если у одной из моделей нет слов с confidence - возвращаем ту что есть
+	if len(primaryWords) == 0 {
+		return secondary, nil
+	}
+	if len(secondaryWords) == 0 {
+		return primary, nil
+	}
+
+	// Вычисляем средний confidence для каждой модели
+	primaryAvgConf := calcAverageConfidence(primaryWords)
+	secondaryAvgConf := calcAverageConfidence(secondaryWords)
+
+	log.Printf("[HybridTranscriber] MergeByConfidence: primaryAvgConf=%.4f, secondaryAvgConf=%.4f",
+		primaryAvgConf, secondaryAvgConf)
+
+	// Стратегия выбора:
+	// 1. Если разница в confidence > 10% - берём модель с большим confidence
+	// 2. Иначе - пытаемся объединить по словам
+
+	confDiff := primaryAvgConf - secondaryAvgConf
+	if confDiff < -0.1 {
+		// Вторичная модель значительно лучше
+		log.Printf("[HybridTranscriber] MergeByConfidence: Secondary model significantly better (diff=%.2f)", confDiff)
+		improvements = append(improvements, TranscriptionImprovement{
+			OriginalText: segmentsToFullText(primary),
+			ImprovedText: segmentsToFullText(secondary),
+			OriginalConf: primaryAvgConf,
+			ImprovedConf: secondaryAvgConf,
+			Source:       "parallel_confidence",
+		})
+		return secondary, improvements
+	} else if confDiff > 0.1 {
+		// Первичная модель значительно лучше
+		log.Printf("[HybridTranscriber] MergeByConfidence: Primary model significantly better (diff=%.2f)", confDiff)
+		return primary, nil
+	}
+
+	// Разница небольшая - пытаемся объединить по словам
+	// Выравниваем слова по времени и выбираем лучшие
+	mergedSegments := h.mergeWordsByTime(primary, secondary, primaryWords, secondaryWords)
+
+	// Проверяем были ли улучшения
+	mergedText := segmentsToFullText(mergedSegments)
+	primaryText := segmentsToFullText(primary)
+	if mergedText != primaryText {
+		improvements = append(improvements, TranscriptionImprovement{
+			OriginalText: primaryText,
+			ImprovedText: mergedText,
+			OriginalConf: primaryAvgConf,
+			ImprovedConf: secondaryAvgConf,
+			Source:       "parallel_word_merge",
+		})
+	}
+
+	return mergedSegments, improvements
+}
+
+// extractWordsWithConfidence извлекает все слова с confidence из сегментов
+func extractWordsWithConfidence(segments []TranscriptSegment) []TranscriptWord {
+	var words []TranscriptWord
+	for _, seg := range segments {
+		words = append(words, seg.Words...)
+	}
+	return words
+}
+
+// calcAverageConfidence вычисляет средний confidence для слов
+func calcAverageConfidence(words []TranscriptWord) float32 {
+	if len(words) == 0 {
+		return 0
+	}
+	var sum float32
+	var count int
+	for _, w := range words {
+		if w.P > 0 {
+			sum += w.P
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return sum / float32(count)
+}
+
+// mergeWordsByTime объединяет слова из двух моделей по времени
+// Для каждого слова первичной модели ищет соответствующее во вторичной
+// и выбирает лучшее по confidence. Использованные слова вторичной модели помечаются.
+func (h *HybridTranscriber) mergeWordsByTime(
+	primarySegs, secondarySegs []TranscriptSegment,
+	primaryWords, secondaryWords []TranscriptWord,
+) []TranscriptSegment {
+	// Если у вторичной модели нет слов с таймингами - возвращаем первичную
+	hasSecondaryTimings := false
+	for _, w := range secondaryWords {
+		if w.Start > 0 || w.End > 0 {
+			hasSecondaryTimings = true
+			break
+		}
+	}
+	if !hasSecondaryTimings {
+		log.Printf("[HybridTranscriber] MergeWordsByTime: Secondary has no word timings, using primary")
+		return primarySegs
+	}
+
+	// Создаём список слов вторичной модели с флагом использования
+	type wordEntry struct {
+		word TranscriptWord
+		mid  int64
+		used bool
+	}
+	secondaryByTime := make([]*wordEntry, 0, len(secondaryWords))
+	for _, w := range secondaryWords {
+		if w.Start > 0 || w.End > 0 {
+			mid := (w.Start + w.End) / 2
+			secondaryByTime = append(secondaryByTime, &wordEntry{word: w, mid: mid, used: false})
+		}
+	}
+
+	// Для каждого слова первичной модели ищем соответствующее во вторичной
+	// и выбираем лучшее по confidence
+	result := make([]TranscriptSegment, len(primarySegs))
+	for i, seg := range primarySegs {
+		result[i] = TranscriptSegment{
+			Start:   seg.Start,
+			End:     seg.End,
+			Speaker: seg.Speaker,
+		}
+
+		var newWords []TranscriptWord
+		var newTextParts []string
+
+		for _, pw := range seg.Words {
+			bestWord := pw // По умолчанию - слово из первичной модели
+
+			// Ищем соответствующее слово во вторичной модели
+			if pw.Start > 0 || pw.End > 0 {
+				pwMid := (pw.Start + pw.End) / 2
+				tolerance := int64(300) // 300ms tolerance
+
+				var bestMatch *wordEntry
+				var bestDist int64 = tolerance + 1
+
+				for _, sw := range secondaryByTime {
+					if sw.used {
+						continue // Пропускаем уже использованные слова
+					}
+
+					dist := abs64(sw.mid - pwMid)
+					if dist <= tolerance && dist < bestDist {
+						bestDist = dist
+						bestMatch = sw
+					}
+				}
+
+				// Если нашли кандидата - используем voting-систему для выбора
+				if bestMatch != nil {
+					// Помечаем слово как использованное
+					bestMatch.used = true
+
+					// Используем voting-систему если включена
+					if h.config.Voting.Enabled {
+						voteResult := h.selectBestWordByVoting(pw, bestMatch.word)
+						if voteResult.Winner == "secondary" {
+							bestWord = bestMatch.word
+							log.Printf("[HybridTranscriber] MergeWordsByTime: Voting selected '%s' over '%s' - %s",
+								bestMatch.word.Text, pw.Text, voteResult.Reason)
+						}
+					} else {
+						// Fallback на старую логику (простое сравнение confidence)
+						if bestMatch.word.P > pw.P && bestMatch.word.P > 0 {
+							bestWord = bestMatch.word
+							log.Printf("[HybridTranscriber] MergeWordsByTime: Replaced '%s' (%.2f) with '%s' (%.2f)",
+								pw.Text, pw.P, bestMatch.word.Text, bestMatch.word.P)
+						}
+					}
+				}
+			}
+
+			newWords = append(newWords, bestWord)
+			newTextParts = append(newTextParts, bestWord.Text)
+		}
+
+		result[i].Words = newWords
+		result[i].Text = joinWords(newTextParts)
+	}
+
+	return result
+}
+
+// joinWords объединяет слова в текст с правильными пробелами
+func joinWords(words []string) string {
+	if len(words) == 0 {
+		return ""
+	}
+	result := words[0]
+	for i := 1; i < len(words); i++ {
+		// Не добавляем пробел перед пунктуацией
+		w := words[i]
+		if len(w) > 0 && (w[0] == '.' || w[0] == ',' || w[0] == '!' || w[0] == '?' || w[0] == ':' || w[0] == ';') {
+			result += w
+		} else {
+			result += " " + w
+		}
+	}
+	return result
+}
+
+// maxInt64 возвращает максимум из двух int64
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// minInt64 возвращает минимум из двух int64
+func minInt64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// applyHotwords применяет словарь подсказок для исправления слов
+// Ищет в результатах обеих моделей слова похожие на hotwords и заменяет
+func (h *HybridTranscriber) applyHotwords(merged, primary, secondary []TranscriptSegment) []TranscriptSegment {
+	if len(h.config.Hotwords) == 0 {
+		return merged
+	}
+
+	// Собираем все слова из обеих моделей для поиска лучших вариантов
+	allWords := make(map[string]bool)
+	for _, seg := range primary {
+		for _, w := range seg.Words {
+			allWords[strings.ToLower(w.Text)] = true
+		}
+		// Также разбиваем текст на слова
+		for _, word := range strings.Fields(seg.Text) {
+			allWords[strings.ToLower(word)] = true
+		}
+	}
+	for _, seg := range secondary {
+		for _, w := range seg.Words {
+			allWords[strings.ToLower(w.Text)] = true
+		}
+		for _, word := range strings.Fields(seg.Text) {
+			allWords[strings.ToLower(word)] = true
+		}
+	}
+
+	// Для каждого hotword ищем похожие слова в результатах
+	replacements := make(map[string]string) // lowercase -> правильное написание
+
+	for _, hotword := range h.config.Hotwords {
+		hotwordLower := strings.ToLower(hotword)
+
+		for word := range allWords {
+			// Проверяем похожесть (расстояние Левенштейна <= 30% длины)
+			dist := levenshteinDistance(word, hotwordLower)
+			maxDist := len(hotwordLower) * 3 / 10 // 30%
+			if maxDist < 2 {
+				maxDist = 2
+			}
+
+			if dist <= maxDist && dist > 0 {
+				// Слово похоже на hotword - запоминаем замену
+				replacements[word] = hotword
+				log.Printf("[HybridTranscriber] Hotword match: '%s' -> '%s' (dist=%d)", word, hotword, dist)
+			}
+		}
+	}
+
+	if len(replacements) == 0 {
+		return merged
+	}
+
+	// Применяем замены к результату
+	result := make([]TranscriptSegment, len(merged))
+	for i, seg := range merged {
+		result[i] = seg
+
+		// Заменяем в тексте сегмента
+		newText := seg.Text
+		for from, to := range replacements {
+			// Заменяем с учётом регистра
+			newText = replaceWordIgnoreCase(newText, from, to)
+		}
+
+		if newText != seg.Text {
+			log.Printf("[HybridTranscriber] Hotword applied: '%s' -> '%s'", seg.Text, newText)
+			result[i].Text = newText
+		}
+
+		// Заменяем в словах
+		newWords := make([]TranscriptWord, len(seg.Words))
+		for j, w := range seg.Words {
+			newWords[j] = w
+			wordLower := strings.ToLower(w.Text)
+			if replacement, ok := replacements[wordLower]; ok {
+				newWords[j].Text = replacement
+			}
+		}
+		result[i].Words = newWords
+	}
+
+	return result
+}
+
+// replaceWordIgnoreCase заменяет слово в тексте без учёта регистра
+func replaceWordIgnoreCase(text, from, to string) string {
+	// Простая замена - ищем слово как подстроку
+	textLower := strings.ToLower(text)
+	fromLower := strings.ToLower(from)
+
+	result := text
+	idx := 0
+	for {
+		pos := strings.Index(textLower[idx:], fromLower)
+		if pos < 0 {
+			break
+		}
+		pos += idx
+
+		// Проверяем что это целое слово (не часть другого слова)
+		isWordStart := pos == 0 || !isLetter(rune(text[pos-1]))
+		isWordEnd := pos+len(from) >= len(text) || !isLetter(rune(text[pos+len(from)]))
+
+		if isWordStart && isWordEnd {
+			result = result[:pos] + to + result[pos+len(from):]
+			textLower = strings.ToLower(result)
+			idx = pos + len(to)
+		} else {
+			idx = pos + 1
+		}
+	}
+
+	return result
+}
+
+// isLetter проверяет является ли символ буквой
+func isLetter(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+		(r >= 'а' && r <= 'я') || (r >= 'А' && r <= 'Я') ||
+		r == 'ё' || r == 'Ё'
+}
+
+// abs64 возвращает абсолютное значение int64
+func abs64(x int64) int64 {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
 
 // transcribeFullCompare транскрибирует обеими моделями и сравнивает результаты через LLM
@@ -677,4 +1231,284 @@ func levenshteinDistance(s1, s2 string) int {
 	}
 
 	return matrix[len(r1)][len(r2)]
+}
+
+// ============================================================================
+// Voting-система для выбора лучшего слова между двумя моделями
+// Использует 4 критерия: калибровка confidence, латиница, hotwords, грамматика
+// ============================================================================
+
+// getCalibrationFactor возвращает коэффициент калибровки для модели
+// GigaAM завышает confidence на ~25% из-за CTC loss
+func getCalibrationFactor(modelName string, calibrations []ConfidenceCalibration) float32 {
+	for _, cal := range calibrations {
+		matched, err := regexp.MatchString(cal.ModelPattern, modelName)
+		if err == nil && matched {
+			return cal.ScaleFactor
+		}
+	}
+	return 1.0 // По умолчанию без калибровки
+}
+
+// voteByCalibration голосование по калиброванному confidence (Критерий A)
+// Применяет коэффициенты калибровки к raw confidence и сравнивает
+func voteByCalibration(
+	primary, secondary TranscriptWord,
+	primaryModel, secondaryModel string,
+	calibrations []ConfidenceCalibration,
+) string {
+	primaryFactor := getCalibrationFactor(primaryModel, calibrations)
+	secondaryFactor := getCalibrationFactor(secondaryModel, calibrations)
+
+	primaryCalibrated := primary.P * primaryFactor
+	secondaryCalibrated := secondary.P * secondaryFactor
+
+	// Логируем для отладки
+	log.Printf("[Voting] Calibration: primary '%s' %.3f*%.2f=%.3f vs secondary '%s' %.3f*%.2f=%.3f",
+		primary.Text, primary.P, primaryFactor, primaryCalibrated,
+		secondary.Text, secondary.P, secondaryFactor, secondaryCalibrated)
+
+	if primaryCalibrated > secondaryCalibrated+0.01 { // небольшой порог для избежания шума
+		return "primary"
+	} else if secondaryCalibrated > primaryCalibrated+0.01 {
+		return "secondary"
+	}
+	return "tie"
+}
+
+// containsLatin проверяет наличие латинских букв в слове
+func containsLatin(word string) bool {
+	for _, r := range word {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
+// containsCyrillic проверяет наличие кириллицы в слове
+func containsCyrillic(word string) bool {
+	for _, r := range word {
+		if (r >= 'а' && r <= 'я') || (r >= 'А' && r <= 'Я') || r == 'ё' || r == 'Ё' {
+			return true
+		}
+	}
+	return false
+}
+
+// voteByLatin голосование по наличию латиницы (Критерий B)
+// Предпочитаем модель, которая распознала латинские буквы (иностранные термины)
+func voteByLatin(primary, secondary TranscriptWord) string {
+	primaryHasLatin := containsLatin(primary.Text)
+	secondaryHasLatin := containsLatin(secondary.Text)
+
+	// Если одна модель распознала латиницу, а другая нет — голосуем за латиницу
+	if secondaryHasLatin && !primaryHasLatin {
+		log.Printf("[Voting] Latin: secondary '%s' has latin, primary '%s' doesn't -> secondary",
+			secondary.Text, primary.Text)
+		return "secondary"
+	} else if primaryHasLatin && !secondaryHasLatin {
+		log.Printf("[Voting] Latin: primary '%s' has latin, secondary '%s' doesn't -> primary",
+			primary.Text, secondary.Text)
+		return "primary"
+	}
+
+	// Оба или ни один — воздерживаемся
+	return "abstain"
+}
+
+// normalizeWordForComparison нормализует слово для сравнения
+func normalizeWordForComparison(word string) string {
+	word = strings.TrimSpace(word)
+	word = strings.ToLower(word)
+	word = strings.Trim(word, ".,!?;:\"'()-–—")
+	return word
+}
+
+// matchesHotword проверяет совпадение слова с hotword (fuzzy matching)
+func matchesHotword(word string, hotwords []string) (bool, string) {
+	wordNorm := normalizeWordForComparison(word)
+	if wordNorm == "" {
+		return false, ""
+	}
+
+	for _, hw := range hotwords {
+		hwNorm := normalizeWordForComparison(hw)
+		if hwNorm == "" {
+			continue
+		}
+
+		// Точное совпадение
+		if wordNorm == hwNorm {
+			return true, hw
+		}
+
+		// Fuzzy matching (расстояние Левенштейна ≤ 20% длины hotword)
+		dist := levenshteinDistance(wordNorm, hwNorm)
+		maxDist := len(hwNorm) / 5
+		if maxDist < 1 {
+			maxDist = 1
+		}
+		if dist <= maxDist && dist > 0 {
+			return true, hw
+		}
+	}
+	return false, ""
+}
+
+// voteByHotwords голосование по совпадению с hotwords (Критерий C)
+func voteByHotwords(primary, secondary TranscriptWord, hotwords []string) string {
+	if len(hotwords) == 0 {
+		return "abstain"
+	}
+
+	primaryMatches, primaryHW := matchesHotword(primary.Text, hotwords)
+	secondaryMatches, secondaryHW := matchesHotword(secondary.Text, hotwords)
+
+	if secondaryMatches && !primaryMatches {
+		log.Printf("[Voting] Hotwords: secondary '%s' matches '%s', primary '%s' doesn't -> secondary",
+			secondary.Text, secondaryHW, primary.Text)
+		return "secondary"
+	} else if primaryMatches && !secondaryMatches {
+		log.Printf("[Voting] Hotwords: primary '%s' matches '%s', secondary '%s' doesn't -> primary",
+			primary.Text, primaryHW, secondary.Text)
+		return "primary"
+	}
+	return "abstain"
+}
+
+// detectWordLanguage определяет язык слова по содержимому
+func detectWordLanguage(word string) string {
+	if containsCyrillic(word) {
+		return "ru"
+	}
+	return "en"
+}
+
+// voteByGrammar голосование по грамматической корректности (Критерий D)
+func voteByGrammar(primary, secondary TranscriptWord, checker GrammarChecker) string {
+	if checker == nil {
+		return "abstain"
+	}
+
+	// Определяем язык по содержимому
+	primaryLang := detectWordLanguage(primary.Text)
+	secondaryLang := detectWordLanguage(secondary.Text)
+
+	primaryValid := checker.IsValidWord(primary.Text, primaryLang)
+	secondaryValid := checker.IsValidWord(secondary.Text, secondaryLang)
+
+	if secondaryValid && !primaryValid {
+		log.Printf("[Voting] Grammar: secondary '%s' valid, primary '%s' invalid -> secondary",
+			secondary.Text, primary.Text)
+		return "secondary"
+	} else if primaryValid && !secondaryValid {
+		log.Printf("[Voting] Grammar: primary '%s' valid, secondary '%s' invalid -> primary",
+			primary.Text, secondary.Text)
+		return "primary"
+	}
+	return "abstain"
+}
+
+// selectBestWordByVoting выбирает лучшее слово через систему голосования
+// Использует до 4 критериев, побеждает модель с большинством голосов
+// При ничьей выбирается первичная модель
+func (h *HybridTranscriber) selectBestWordByVoting(
+	primary, secondary TranscriptWord,
+) VoteResult {
+	result := VoteResult{
+		PrimaryWord:   primary,
+		SecondaryWord: secondary,
+	}
+
+	votes := VoteDetails{}
+	votingConfig := h.config.Voting
+
+	// Если voting отключён — используем простое сравнение confidence
+	if !votingConfig.Enabled {
+		if secondary.P > primary.P {
+			result.Winner = "secondary"
+			result.Reason = "Voting disabled, secondary has higher confidence"
+		} else {
+			result.Winner = "primary"
+			result.Reason = "Voting disabled, primary wins by default"
+		}
+		result.Votes = votes
+		return result
+	}
+
+	// Критерий A: Калиброванный confidence
+	if votingConfig.UseCalibration {
+		calibrations := votingConfig.Calibrations
+		if len(calibrations) == 0 {
+			calibrations = DefaultCalibrations
+		}
+		votes.CalibrationVote = voteByCalibration(
+			primary, secondary,
+			h.primaryEngine.Name(), h.secondaryEngine.Name(),
+			calibrations,
+		)
+		if votes.CalibrationVote == "primary" {
+			votes.PrimaryVotes++
+		} else if votes.CalibrationVote == "secondary" {
+			votes.SecondaryVotes++
+		}
+	}
+
+	// Критерий B: Латиница
+	if votingConfig.UseLatinDetection {
+		votes.LatinVote = voteByLatin(primary, secondary)
+		if votes.LatinVote == "primary" {
+			votes.PrimaryVotes++
+		} else if votes.LatinVote == "secondary" {
+			votes.SecondaryVotes++
+		}
+	}
+
+	// Критерий C: Hotwords
+	if votingConfig.UseHotwords && len(h.config.Hotwords) > 0 {
+		votes.HotwordVote = voteByHotwords(primary, secondary, h.config.Hotwords)
+		if votes.HotwordVote == "primary" {
+			votes.PrimaryVotes++
+		} else if votes.HotwordVote == "secondary" {
+			votes.SecondaryVotes++
+		}
+	}
+
+	// Критерий D: Грамматика
+	if votingConfig.UseGrammarCheck && h.grammarChecker != nil {
+		votes.GrammarVote = voteByGrammar(primary, secondary, h.grammarChecker)
+		if votes.GrammarVote == "primary" {
+			votes.PrimaryVotes++
+		} else if votes.GrammarVote == "secondary" {
+			votes.SecondaryVotes++
+		}
+	}
+
+	result.Votes = votes
+
+	// Определяем победителя
+	if votes.SecondaryVotes > votes.PrimaryVotes {
+		result.Winner = "secondary"
+		result.Reason = fmt.Sprintf("Secondary wins %d:%d (cal=%s lat=%s hw=%s gram=%s)",
+			votes.SecondaryVotes, votes.PrimaryVotes,
+			votes.CalibrationVote, votes.LatinVote, votes.HotwordVote, votes.GrammarVote)
+	} else {
+		// При ничьей или преимуществе primary — выбираем primary
+		result.Winner = "primary"
+		if votes.PrimaryVotes == votes.SecondaryVotes {
+			result.Reason = fmt.Sprintf("Tie %d:%d, primary wins by default (cal=%s lat=%s hw=%s gram=%s)",
+				votes.PrimaryVotes, votes.SecondaryVotes,
+				votes.CalibrationVote, votes.LatinVote, votes.HotwordVote, votes.GrammarVote)
+		} else {
+			result.Reason = fmt.Sprintf("Primary wins %d:%d (cal=%s lat=%s hw=%s gram=%s)",
+				votes.PrimaryVotes, votes.SecondaryVotes,
+				votes.CalibrationVote, votes.LatinVote, votes.HotwordVote, votes.GrammarVote)
+		}
+	}
+
+	log.Printf("[Voting] Result for '%s' vs '%s': %s - %s",
+		primary.Text, secondary.Text, result.Winner, result.Reason)
+
+	return result
 }

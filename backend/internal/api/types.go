@@ -84,12 +84,15 @@ type Message struct {
 	StreamingConfirmationThreshold float64 `json:"streamingConfirmationThreshold,omitempty"` // Порог подтверждения (0.5-1.0)
 
 	// Hybrid Transcription (двухпроходное распознавание)
-	HybridEnabled             bool    `json:"hybridEnabled,omitempty"`             // Включена ли гибридная транскрипция
-	HybridSecondaryModelID    string  `json:"hybridSecondaryModelId,omitempty"`    // ID дополнительной модели
-	HybridConfidenceThreshold float64 `json:"hybridConfidenceThreshold,omitempty"` // Порог уверенности (0.0-1.0)
-	HybridContextWords        int     `json:"hybridContextWords,omitempty"`        // Количество слов контекста
-	HybridUseLLMForMerge      bool    `json:"hybridUseLLMForMerge,omitempty"`      // Использовать LLM для слияния
-	HybridMode                string  `json:"hybridMode,omitempty"`                // Режим: "confidence" или "full_compare"
+	HybridEnabled             bool     `json:"hybridEnabled,omitempty"`             // Включена ли гибридная транскрипция
+	HybridSecondaryModelID    string   `json:"hybridSecondaryModelId,omitempty"`    // ID дополнительной модели
+	HybridConfidenceThreshold float64  `json:"hybridConfidenceThreshold,omitempty"` // Порог уверенности (0.0-1.0)
+	HybridContextWords        int      `json:"hybridContextWords,omitempty"`        // Количество слов контекста
+	HybridUseLLMForMerge      bool     `json:"hybridUseLLMForMerge,omitempty"`      // Использовать LLM для слияния
+	HybridMode                string   `json:"hybridMode,omitempty"`                // Режим: "confidence", "full_compare" или "parallel"
+	HybridOllamaModel         string   `json:"hybridOllamaModel,omitempty"`         // Модель Ollama для LLM
+	HybridOllamaURL           string   `json:"hybridOllamaUrl,omitempty"`           // URL Ollama API
+	HybridHotwords            []string `json:"hybridHotwords,omitempty"`            // Словарь подсказок (термины, имена)
 }
 
 type OllamaModel struct {
