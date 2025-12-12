@@ -663,3 +663,59 @@ func findBestSpeaker(start, end float32, speakerSegments []SpeakerSegment) int {
 
 	return bestSpeaker
 }
+
+// GetSpeakerEmbedding возвращает embedding спикера по его глобальному ID
+// globalSpeakerID: 1-based ID спикера (как в speakerProfiles)
+// Возвращает embedding или nil если спикер не найден
+func (p *AudioPipeline) GetSpeakerEmbedding(globalSpeakerID int) []float32 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if profile, ok := p.speakerProfiles[globalSpeakerID]; ok {
+		// Возвращаем копию embedding
+		embCopy := make([]float32, len(profile.Embedding))
+		copy(embCopy, profile.Embedding)
+		return embCopy
+	}
+
+	return nil
+}
+
+// GetAllSpeakerProfiles возвращает копию всех профилей спикеров
+func (p *AudioPipeline) GetAllSpeakerProfiles() map[int]*SpeakerProfile {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	result := make(map[int]*SpeakerProfile, len(p.speakerProfiles))
+	for id, profile := range p.speakerProfiles {
+		// Глубокая копия
+		profileCopy := &SpeakerProfile{
+			ID:    profile.ID,
+			Count: profile.Count,
+		}
+		if profile.Embedding != nil {
+			profileCopy.Embedding = make([]float32, len(profile.Embedding))
+			copy(profileCopy.Embedding, profile.Embedding)
+		}
+		result[id] = profileCopy
+	}
+
+	return result
+}
+
+// GetSpeakerCount возвращает количество зарегистрированных спикеров
+func (p *AudioPipeline) GetSpeakerCount() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.speakerProfiles)
+}
+
+// ResetSpeakerProfiles сбрасывает все профили спикеров
+// Используется при начале новой сессии записи
+func (p *AudioPipeline) ResetSpeakerProfiles() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.speakerProfiles = make(map[int]*SpeakerProfile)
+	p.nextSpeakerID = 1
+	log.Printf("Speaker profiles reset")
+}

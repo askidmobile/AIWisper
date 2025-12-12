@@ -1534,6 +1534,7 @@ func (s *Server) getSpeakerEmbedding(sessionID string, localSpeakerID int) ([]fl
 	if err != nil {
 		return nil, "", err
 	}
+	_ = sess // Используется для валидации существования сессии
 
 	// MIC канал (localID = -1 для "Вы") - всегда "mic"
 	// SYS канал (localID >= 0) - всегда "sys"
@@ -1542,12 +1543,25 @@ func (s *Server) getSpeakerEmbedding(sessionID string, localSpeakerID int) ([]fl
 		source = "mic"
 	}
 
-	// TODO: Получить embedding из Pipeline.speakerProfiles
-	// Сейчас Pipeline хранит speakerProfiles приватно, нужно добавить метод GetSpeakerEmbedding
-	// Временное решение: вернём ошибку
-	_ = sess
+	// Преобразуем localSpeakerID в globalSpeakerID
+	// localSpeakerID: -1 для mic, 0+ для sys спикеров
+	// globalSpeakerID в Pipeline: 1-based (1, 2, 3...)
+	// UI показывает: "Собеседник 1" = localID 0 = globalID 1
+	globalSpeakerID := localSpeakerID + 1
 
-	return nil, source, fmt.Errorf("speaker embedding retrieval not implemented yet")
+	// Для микрофона (localID = -1) нет embedding в Pipeline
+	// Микрофон обрабатывается отдельно и не проходит через диаризацию
+	if localSpeakerID < 0 {
+		return nil, source, fmt.Errorf("microphone speaker does not have embedding in diarization pipeline")
+	}
+
+	// Получаем embedding из Pipeline
+	embedding := s.TranscriptionService.Pipeline.GetSpeakerEmbedding(globalSpeakerID)
+	if embedding == nil {
+		return nil, source, fmt.Errorf("speaker %d not found in pipeline profiles", localSpeakerID)
+	}
+
+	return embedding, source, nil
 }
 
 // getSessionSpeakers возвращает список спикеров в сессии

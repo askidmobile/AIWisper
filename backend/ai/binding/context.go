@@ -129,23 +129,28 @@ func (context *context) Segments() []Segment {
 	n := context.model.ctx.Whisper_full_n_segments()
 	segments := make([]Segment, n)
 	for i := 0; i < n; i++ {
-		segments[i] = Segment{
-			Num:    i,
-			Text:   context.model.ctx.Whisper_full_get_segment_text(i),
-			Start:  time.Duration(context.model.ctx.Whisper_full_get_segment_t0(i)) * 10 * time.Millisecond,
-			End:    time.Duration(context.model.ctx.Whisper_full_get_segment_t1(i)) * 10 * time.Millisecond,
-			Tokens: nil, // TODO
-		}
+		segments[i] = toSegment(context.model.ctx, i)
 	}
 
 	// Return segments
 	return segments
 }
 
-// Return the tokens of the processed audio.
+// Return all tokens from all segments of the processed audio.
 // Process() must be called first.
 func (context *context) Tokens() []Token {
-	return nil // TODO
+	if context.model.ctx == nil {
+		return nil
+	}
+
+	var allTokens []Token
+	n := context.model.ctx.Whisper_full_n_segments()
+	for i := 0; i < n; i++ {
+		tokens := toTokens(context.model.ctx, i)
+		allTokens = append(allTokens, tokens...)
+	}
+
+	return allTokens
 }
 
 ///////////////////////////////////////////////////////////////////////////////

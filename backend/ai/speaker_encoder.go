@@ -97,8 +97,9 @@ func (e *SpeakerEncoder) loadModel() error {
 	}
 	defer options.Destroy()
 
-	// Используем CPU для начала, так как модель легкая
-	// TODO: Добавить поддержку CoreML если нужно
+	// Используем CPU - модель WeSpeaker ResNet34 (~7MB) достаточно лёгкая
+	// CoreML ускорение возможно через AppendExecutionProviderCoreML,
+	// но требует тестирования совместимости модели с CoreML backend
 
 	session, err := ort.NewDynamicAdvancedSession(
 		e.config.ModelPath,

@@ -1494,8 +1494,9 @@ func (m *Manager) UpdateFullTranscriptionMono(sessionID string, text string) err
 		data, _ := json.MarshalIndent(chunk, "", "  ")
 		os.WriteFile(chunkMetaPath, data, 0644)
 	} else {
-		// Для моно режима пока просто обновляем все чанки с полным текстом
-		// TODO: В будущем можно разбить текст по чанкам на основе timestamps
+		// Для моно режима обновляем все чанки с полным текстом
+		// Примечание: Для разбивки по timestamps используйте UpdateFullTranscriptionMonoWithSegments
+		// которая принимает []TranscriptSegment вместо простого текста
 		for _, chunk := range session.Chunks {
 			now := time.Now()
 			chunk.TranscribedAt = &now
@@ -1516,6 +1517,138 @@ func (m *Manager) UpdateFullTranscriptionMono(sessionID string, text string) err
 	}
 
 	log.Printf("UpdateFullTranscriptionMono: session %s updated", sessionID)
+
+	// Сохраняем метаданные сессии
+	metaPath := filepath.Join(session.DataDir, "meta.json")
+	meta := struct {
+		ID            string        `json:"id"`
+		StartTime     time.Time     `json:"startTime"`
+		EndTime       *time.Time    `json:"endTime,omitempty"`
+		Status        SessionStatus `json:"status"`
+		Language      string        `json:"language"`
+		Model         string        `json:"model"`
+		TotalDuration int64         `json:"totalDuration"`
+		SampleCount   int64         `json:"sampleCount"`
+		ChunksCount   int           `json:"chunksCount"`
+	}{
+		ID:            session.ID,
+		StartTime:     session.StartTime,
+		EndTime:       session.EndTime,
+		Status:        session.Status,
+		Language:      session.Language,
+		Model:         session.Model,
+		TotalDuration: int64(session.TotalDuration / time.Millisecond),
+		SampleCount:   session.SampleCount,
+		ChunksCount:   len(session.Chunks),
+	}
+	metaData, _ := json.MarshalIndent(meta, "", "  ")
+	os.WriteFile(metaPath, metaData, 0644)
+
+	return nil
+}
+
+// UpdateFullTranscriptionMonoWithSegments обновляет сессию с полной транскрипцией (моно режим)
+// Принимает сегменты с timestamps для правильного распределения по чанкам
+func (m *Manager) UpdateFullTranscriptionMonoWithSegments(sessionID string, segments []TranscriptSegment) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	log.Printf("UpdateFullTranscriptionMonoWithSegments: session %s has %d chunks, %d segments",
+		sessionID, len(session.Chunks), len(segments))
+
+	// Собираем полный текст
+	var fullTextParts []string
+	for _, seg := range segments {
+		fullTextParts = append(fullTextParts, seg.Text)
+	}
+	fullText := strings.Join(fullTextParts, " ")
+
+	// Если нет существующих чанков, создаём один с полной транскрипцией
+	if len(session.Chunks) == 0 {
+		now := time.Now()
+
+		// Конвертируем сегменты в диалог (для моно все сегменты от одного спикера)
+		dialogue := make([]TranscriptSegment, len(segments))
+		for i, seg := range segments {
+			dialogue[i] = TranscriptSegment{
+				Start:   seg.Start,
+				End:     seg.End,
+				Text:    seg.Text,
+				Speaker: "Speaker 0", // Моно - один спикер
+			}
+		}
+
+		chunk := &Chunk{
+			ID:            uuid.New().String(),
+			SessionID:     sessionID,
+			Index:         0,
+			StartMs:       0,
+			EndMs:         session.TotalDuration.Milliseconds(),
+			Duration:      session.TotalDuration,
+			IsStereo:      false,
+			Status:        ChunkStatusCompleted,
+			CreatedAt:     now,
+			TranscribedAt: &now,
+			Transcription: fullText,
+			Dialogue:      dialogue,
+		}
+		session.Chunks = []*Chunk{chunk}
+
+		// Сохраняем метаданные чанка
+		chunksDir := filepath.Join(session.DataDir, "chunks")
+		os.MkdirAll(chunksDir, 0755)
+		chunkMetaPath := filepath.Join(chunksDir, "000.json")
+		data, _ := json.MarshalIndent(chunk, "", "  ")
+		os.WriteFile(chunkMetaPath, data, 0644)
+	} else {
+		// Распределяем сегменты по существующим чанкам на основе timestamps
+		for _, chunk := range session.Chunks {
+			now := time.Now()
+			chunk.TranscribedAt = &now
+			chunk.Status = ChunkStatusCompleted
+			chunk.Error = ""
+
+			// Фильтруем сегменты, которые попадают в этот чанк
+			var chunkSegments []TranscriptSegment
+			var chunkTextParts []string
+
+			for _, seg := range segments {
+				// Сегмент попадает в чанк если его середина внутри границ чанка
+				segMid := (seg.Start + seg.End) / 2
+				if segMid >= chunk.StartMs && segMid < chunk.EndMs {
+					chunkSegments = append(chunkSegments, TranscriptSegment{
+						Start:   seg.Start,
+						End:     seg.End,
+						Text:    seg.Text,
+						Speaker: "Speaker 0",
+					})
+					chunkTextParts = append(chunkTextParts, seg.Text)
+				}
+			}
+
+			chunk.Transcription = strings.Join(chunkTextParts, " ")
+			chunk.Dialogue = chunkSegments
+			chunk.MicText = ""
+			chunk.SysText = ""
+			chunk.MicSegments = nil
+			chunk.SysSegments = nil
+
+			// Сохраняем метаданные чанка
+			chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
+			data, _ := json.MarshalIndent(chunk, "", "  ")
+			os.WriteFile(chunkMetaPath, data, 0644)
+		}
+	}
+
+	log.Printf("UpdateFullTranscriptionMonoWithSegments: session %s updated", sessionID)
 
 	// Сохраняем метаданные сессии
 	metaPath := filepath.Join(session.DataDir, "meta.json")
