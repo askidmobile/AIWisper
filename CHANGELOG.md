@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.0] - 2025-12-12
+
+### Added
+- **Session Statistics**: Detailed metrics for each recording session
+  - Total words, segments, speakers count
+  - Words per minute, average segment length
+  - Speaker activity breakdown with visual progress bars
+  - Recognition quality metrics (average confidence, low confidence word count)
+  - Compact stats in dialogue header, full stats in dedicated tab
+
+- **Extended Keyboard Shortcuts**: Enhanced navigation and productivity
+  - `↑`/`↓`: Navigate between sessions
+  - `⌘+1-9`: Quick access to session by number
+  - `⌘+F`: Focus on search input
+  - `?`: Show keyboard shortcuts help modal
+  - Help modal with categorized shortcuts and visual key representation
+
+### Technical
+- `frontend/src/components/modules/SessionStats.tsx`: New statistics component
+- `frontend/src/components/SessionTabs.tsx`: Added 'stats' tab type
+- `frontend/src/App.tsx`: Extended keyboard handler with navigation and help modal
+
 ## [1.28.0] - 2025-12-12
 
 ### Added
