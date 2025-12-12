@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.0] - 2025-12-12
+
+### Added
+- **Silero VAD Integration**: Neural network-based Voice Activity Detection
+  - Silero VAD v5 model (~2MB) with 97% ROC-AUC accuracy
+  - Significantly better than energy-based VAD in noisy environments
+  - Auto-download model on first use from GitHub
+  - Global cached instance for efficient reuse
+
+- **VAD Method Selector in Settings**: Choose voice detection algorithm
+  - **Auto** (default): Uses Silero if available, falls back to Energy
+  - **Silero VAD**: Neural network detector (more accurate, requires model)
+  - **Energy-based**: Fast traditional detector (less accurate in noise)
+  - Setting persists across app restarts
+
+### Technical
+- `backend/ai/silero_vad.go`: Silero VAD v5 engine with ONNX Runtime
+- `backend/ai/silero_vad_test.go`: Unit tests with synthetic and real audio
+- `backend/session/silero_vad_wrapper.go`: Session integration with caching
+- `backend/session/types.go`: Added `VADMethod` type (energy/silero/auto)
+- `backend/internal/api/types.go`: Added `vadMethod` to Message
+- `backend/internal/service/transcription.go`: `SetVADMethod()`, `getEffectiveVADMethod()`
+- `backend/models/registry.go`: Registered `silero-vad-v5` model
+- `frontend/src/types/models.ts`: Added `VADMethod` type to AppSettings
+- `frontend/src/components/SettingsModal.tsx`: VAD method dropdown
+- `frontend/src/App.tsx`: `vadMethod` state with persistence
+
+### Fixed
+- Silero VAD context handling: Added 64-sample context buffer for correct model input
+- VAD probabilities now correctly range 0.0-1.0 (was 0.001-0.003 due to missing context)
+
 ## [1.30.0] - 2025-12-12
 
 ### Added
