@@ -483,6 +483,7 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			CaptureSystem: msg.CaptureSystem,
 			UseNative:     msg.UseNative,
 			VADMode:       session.VADMode(msg.VADMode),
+			VADMethod:     session.VADMethod(msg.VADMethod),
 		}
 
 		// Echo Cancel default 0.4
@@ -494,8 +495,9 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 		// Сбрасываем состояние диаризации (спикеров) перед новой сессией
 		if s.TranscriptionService != nil {
 			s.TranscriptionService.ResetDiarizationState()
-			// Устанавливаем режим VAD
+			// Устанавливаем режим VAD и метод детекции
 			s.TranscriptionService.SetVADMode(config.VADMode)
+			s.TranscriptionService.SetVADMethod(config.VADMethod)
 
 			// Настраиваем гибридную транскрипцию если включена
 			if msg.HybridEnabled && msg.HybridSecondaryModelID != "" {

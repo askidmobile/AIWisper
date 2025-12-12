@@ -12,6 +12,8 @@ interface SettingsModalProps {
     setCaptureSystem: (v: boolean) => void;
     vadMode: 'auto' | 'compression' | 'per-region' | 'off';
     setVADMode: (v: 'auto' | 'compression' | 'per-region' | 'off') => void;
+    vadMethod: 'auto' | 'energy' | 'silero';
+    setVADMethod: (v: 'auto' | 'energy' | 'silero') => void;
     screenCaptureKitAvailable: boolean;
     useVoiceIsolation: boolean;
     setUseVoiceIsolation: (v: boolean) => void;
@@ -53,6 +55,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setCaptureSystem,
     vadMode,
     setVADMode,
+    vadMethod,
+    setVADMethod,
     screenCaptureKitAvailable,
     useVoiceIsolation,
     setUseVoiceIsolation,
@@ -399,6 +403,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </select>
                             <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', lineHeight: '1.3', marginTop: '4px', display: 'block' }}>
                                 Per-region: каждый фрагмент речи отдельно. Compression: склеивание фрагментов.
+                            </span>
+                        </div>
+
+                        <div style={{ marginTop: '0.75rem' }}>
+                            <label
+                                style={{
+                                    fontSize: '0.8rem',
+                                    color: 'var(--text-secondary)',
+                                    marginBottom: '0.35rem',
+                                    display: 'block',
+                                }}
+                            >
+                                Метод детекции речи
+                            </label>
+                            <select
+                                value={vadMethod}
+                                onChange={(e) => setVADMethod(e.target.value as any)}
+                                style={selectStyle}
+                            >
+                                <option value="auto">Авто (Silero если доступен)</option>
+                                <option value="silero">Silero VAD (точный, ~2MB модель)</option>
+                                <option value="energy">Energy-based (быстрый)</option>
+                            </select>
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem', lineHeight: '1.3', marginTop: '4px', display: 'block' }}>
+                                Silero VAD: нейросетевой детектор, точнее в шумных условиях.
                             </span>
                         </div>
                     </div>

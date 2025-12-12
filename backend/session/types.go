@@ -110,6 +110,15 @@ const (
 	VADModeOff         VADMode = "off"         // Отключить VAD (фиксированные 30с чанки)
 )
 
+// VADMethod метод детекции голосовой активности
+type VADMethod string
+
+const (
+	VADMethodEnergy VADMethod = "energy" // Энергетический VAD (быстрый, менее точный)
+	VADMethodSilero VADMethod = "silero" // Silero VAD (точный, требует модель, ~2MB)
+	VADMethodAuto   VADMethod = "auto"   // Автовыбор: Silero если доступен, иначе Energy
+)
+
 // SessionConfig конфигурация для создания сессии
 type SessionConfig struct {
 	Language      string
@@ -118,7 +127,8 @@ type SessionConfig struct {
 	SystemDevice  string
 	CaptureSystem bool
 	UseNative     bool
-	VADMode       VADMode // Режим VAD (auto, compression, per-region, off)
+	VADMode       VADMode   // Режим VAD (auto, compression, per-region, off)
+	VADMethod     VADMethod // Метод детекции речи (energy, silero, auto)
 }
 
 // VADConfig конфигурация Voice Activity Detection
@@ -130,6 +140,7 @@ type VADConfig struct {
 	PreRollDuration    time.Duration // Буфер до начала речи (default: 500ms)
 	ChunkingStartDelay time.Duration // Задержка перед началом нарезки (default: 60s)
 	VADMode            VADMode       // Режим VAD (auto, compression, per-region, off)
+	VADMethod          VADMethod     // Метод детекции речи (energy, silero, auto)
 	FixedChunkDuration time.Duration // Фиксированная длина чанка (когда VADMode=off, default: 30s)
 }
 
@@ -143,6 +154,7 @@ func DefaultVADConfig() VADConfig {
 		PreRollDuration:    500 * time.Millisecond,
 		ChunkingStartDelay: 60 * time.Second, // Начинаем нарезку после 1 минуты
 		VADMode:            VADModeAuto,
+		VADMethod:          VADMethodAuto,    // Автовыбор метода детекции
 		FixedChunkDuration: 30 * time.Second, // Фиксированный интервал по умолчанию
 	}
 }

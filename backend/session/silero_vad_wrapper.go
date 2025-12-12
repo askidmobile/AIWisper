@@ -103,14 +103,6 @@ func DetectSpeechRegionsSilero(samples []float32, sampleRate int) ([]SpeechRegio
 	return wrapper.DetectSpeechRegions(samples, sampleRate), nil
 }
 
-// VADMethod тип метода VAD
-type VADMethod string
-
-const (
-	VADMethodEnergy VADMethod = "energy" // Энергетический VAD (быстрый, менее точный)
-	VADMethodSilero VADMethod = "silero" // Silero VAD (точный, требует модель)
-)
-
 // DetectSpeechRegionsWithMethod определяет участки речи указанным методом
 func DetectSpeechRegionsWithMethod(samples []float32, sampleRate int, method VADMethod) []SpeechRegion {
 	switch method {

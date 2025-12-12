@@ -248,6 +248,7 @@ function App() {
     const [micDevice, setMicDevice] = useState<string>('');
     const [captureSystem, setCaptureSystem] = useState(true);
     const [vadMode, setVADMode] = useState<'auto' | 'compression' | 'per-region' | 'off'>('auto');
+    const [vadMethod, setVADMethod] = useState<'auto' | 'energy' | 'silero'>('auto');
     const [screenCaptureKitAvailable, setScreenCaptureKitAvailable] = useState(false);
     const [showSettings, setShowSettings] = useState(false);
     const [echoCancel, setEchoCancel] = useState(0.4); // Эхоподавление 0-1
@@ -388,6 +389,7 @@ function App() {
                     setEchoCancel(settings.echoCancel ?? 0.4);
                     setUseVoiceIsolation(settings.useVoiceIsolation ?? false);
                     setVADMode(settings.vadMode || 'auto');
+                    setVADMethod(settings.vadMethod || 'auto');
                     setCaptureSystem(settings.captureSystem ?? true);
                     setOllamaModel(settings.ollamaModel || 'llama3.2');
                     setOllamaUrl(settings.ollamaUrl || 'http://localhost:11434');
@@ -438,6 +440,7 @@ function App() {
                     echoCancel,
                     useVoiceIsolation,
                     vadMode,
+                    vadMethod,
                     captureSystem,
                     ollamaModel,
                     ollamaUrl,
@@ -457,7 +460,7 @@ function App() {
             }
         };
         saveSettings();
-    }, [language, activeModelId, echoCancel, useVoiceIsolation, vadMode, captureSystem, ollamaModel, ollamaUrl, theme, settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider, showSessionStats, hybridTranscription]);
+    }, [language, activeModelId, echoCancel, useVoiceIsolation, vadMode, vadMethod, captureSystem, ollamaModel, ollamaUrl, theme, settingsLoaded, savedDiarizationEnabled, savedDiarizationSegModelId, savedDiarizationEmbModelId, savedDiarizationProvider, showSessionStats, hybridTranscription]);
 
     // Применяем тему к корню документа
     useEffect(() => {
@@ -1158,6 +1161,7 @@ function App() {
                 micDevice,
                 captureSystem,
                 vadMode,
+                vadMethod,
                 useNativeCapture: screenCaptureKitAvailable && captureSystem,
                 useVoiceIsolation: screenCaptureKitAvailable && captureSystem && useVoiceIsolation,
                 echoCancel: captureSystem && !useVoiceIsolation ? echoCancel : 0
@@ -3044,6 +3048,8 @@ function App() {
                     setCaptureSystem={setCaptureSystem}
                     vadMode={vadMode}
                     setVADMode={setVADMode}
+                    vadMethod={vadMethod}
+                    setVADMethod={setVADMethod}
                     screenCaptureKitAvailable={screenCaptureKitAvailable}
                     useVoiceIsolation={useVoiceIsolation}
                     setUseVoiceIsolation={setUseVoiceIsolation}

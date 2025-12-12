@@ -22,7 +22,8 @@ type TranscriptionService struct {
 	Pipeline   *ai.AudioPipeline // Опционально: пайплайн с диаризацией
 
 	// VAD режим транскрипции
-	VADMode session.VADMode // auto, compression, per-region, off
+	VADMode   session.VADMode   // auto, compression, per-region, off
+	VADMethod session.VADMethod // energy, silero, auto
 
 	// LLM для автоматического улучшения транскрипции
 	LLMService         *LLMService
@@ -43,7 +44,8 @@ func NewTranscriptionService(sessionMgr *session.Manager, engineMgr *ai.EngineMa
 	return &TranscriptionService{
 		SessionMgr:  sessionMgr,
 		EngineMgr:   engineMgr,
-		VADMode:     session.VADModeAuto, // По умолчанию автовыбор
+		VADMode:     session.VADModeAuto,   // По умолчанию автовыбор режима
+		VADMethod:   session.VADMethodAuto, // По умолчанию автовыбор метода
 		OllamaURL:   "http://localhost:11434",
 		OllamaModel: "llama3.2",
 	}
@@ -53,6 +55,29 @@ func NewTranscriptionService(sessionMgr *session.Manager, engineMgr *ai.EngineMa
 func (s *TranscriptionService) SetVADMode(mode session.VADMode) {
 	s.VADMode = mode
 	log.Printf("VAD mode set to: %s", mode)
+}
+
+// SetVADMethod устанавливает метод детекции речи
+func (s *TranscriptionService) SetVADMethod(method session.VADMethod) {
+	s.VADMethod = method
+	log.Printf("VAD method set to: %s", method)
+}
+
+// getEffectiveVADMethod возвращает эффективный метод VAD
+// При auto пытается использовать Silero если модель доступна
+func (s *TranscriptionService) getEffectiveVADMethod() session.VADMethod {
+	switch s.VADMethod {
+	case session.VADMethodSilero:
+		return session.VADMethodSilero
+	case session.VADMethodEnergy:
+		return session.VADMethodEnergy
+	case session.VADMethodAuto, "":
+		// Автовыбор: пробуем Silero, если недоступен - Energy
+		// Silero VAD требует модель, проверяем её наличие
+		return session.VADMethodSilero // Пробуем Silero, fallback на Energy внутри DetectSpeechRegionsWithMethod
+	default:
+		return session.VADMethodEnergy
+	}
 }
 
 // shouldUsePerRegion определяет нужно ли использовать per-region транскрипцию
@@ -367,10 +392,12 @@ func (s *TranscriptionService) processStereoFromMP3(chunk *session.Chunk, useDia
 	var micErr, sysErr error
 
 	// 1. VAD preprocessing: определяем регионы речи
-	micRegions := session.DetectSpeechRegions(micSamples, 16000)
-	sysRegions := session.DetectSpeechRegions(sysSamples, 16000)
+	// Используем выбранный метод детекции (energy, silero, auto)
+	vadMethod := s.getEffectiveVADMethod()
+	micRegions := session.DetectSpeechRegionsWithMethod(micSamples, 16000, vadMethod)
+	sysRegions := session.DetectSpeechRegionsWithMethod(sysSamples, 16000, vadMethod)
 
-	log.Printf("VAD: mic %d regions, sys %d regions", len(micRegions), len(sysRegions))
+	log.Printf("VAD: mic %d regions, sys %d regions (method: %s)", len(micRegions), len(sysRegions), vadMethod)
 
 	// Определяем использовать ли per-region транскрипцию
 	usePerRegion := s.shouldUsePerRegion()

@@ -52,6 +52,7 @@ export interface DiarizationStatus {
 }
 
 export type VADMode = 'auto' | 'compression' | 'per-region' | 'off';
+export type VADMethod = 'auto' | 'energy' | 'silero';
 
 export interface AppSettings {
     language: 'ru' | 'en' | 'auto';
@@ -60,6 +61,7 @@ export interface AppSettings {
     useVoiceIsolation: boolean;
     captureSystem: boolean;
     vadMode?: VADMode; // Режим VAD: auto, compression, per-region, off
+    vadMethod?: VADMethod; // Метод детекции речи: auto, energy, silero
     theme?: 'light' | 'dark';
     // Ollama settings for summary
     ollamaModel: string;  // e.g., 'llama3.2', 'qwen2.5', 'mistral'
