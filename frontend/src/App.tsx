@@ -2189,17 +2189,30 @@ function App() {
         return () => document.removeEventListener('click', handleClickOutside);
     }, [showShareMenu]);
 
+    // Состояние для модального окна справки по горячим клавишам
+    const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
+
     // Горячие клавиши
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             // Игнорируем если фокус в текстовом поле
             const target = e.target as HTMLElement;
             if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
-                return;
+                // Но разрешаем Escape для закрытия модалок
+                if (e.code !== 'Escape') {
+                    return;
+                }
             }
 
             // Cmd/Ctrl + модификаторы
             const isMod = e.metaKey || e.ctrlKey;
+
+            // ? или Shift+/ - Показать справку по горячим клавишам
+            if ((e.key === '?' || (e.shiftKey && e.code === 'Slash')) && !isMod) {
+                e.preventDefault();
+                setShowKeyboardHelp(prev => !prev);
+                return;
+            }
 
             // Space - Play/Pause (только если не записываем)
             if (e.code === 'Space' && !isRecording && selectedSession) {
@@ -2218,6 +2231,49 @@ function App() {
                 e.preventDefault();
                 handleStartStop();
                 return;
+            }
+
+            // Cmd/Ctrl + F - Focus on search
+            if (isMod && e.code === 'KeyF') {
+                e.preventDefault();
+                const searchInput = document.querySelector('input[placeholder*="Поиск"]') as HTMLInputElement;
+                if (searchInput) {
+                    searchInput.focus();
+                    searchInput.select();
+                }
+                return;
+            }
+
+            // Cmd/Ctrl + 1-9 - Quick access to sessions
+            if (isMod && e.code.match(/^Digit[1-9]$/)) {
+                e.preventDefault();
+                const index = parseInt(e.code.replace('Digit', ''), 10) - 1;
+                if (sessions[index]) {
+                    handleViewSession(sessions[index].id);
+                }
+                return;
+            }
+
+            // Arrow Up/Down - Navigate sessions (when not playing)
+            if (!playingAudio && sessions.length > 0) {
+                if (e.code === 'ArrowUp' || e.code === 'ArrowDown') {
+                    e.preventDefault();
+                    const currentIndex = selectedSession 
+                        ? sessions.findIndex(s => s.id === selectedSession.id)
+                        : -1;
+                    
+                    let newIndex: number;
+                    if (e.code === 'ArrowUp') {
+                        newIndex = currentIndex <= 0 ? sessions.length - 1 : currentIndex - 1;
+                    } else {
+                        newIndex = currentIndex >= sessions.length - 1 ? 0 : currentIndex + 1;
+                    }
+                    
+                    if (sessions[newIndex]) {
+                        handleViewSession(sessions[newIndex].id);
+                    }
+                    return;
+                }
             }
 
             // Cmd/Ctrl + C - Copy transcription (когда нет выделения)
@@ -2242,6 +2298,10 @@ function App() {
 
             // Escape - Close menus/modals
             if (e.code === 'Escape') {
+                if (showKeyboardHelp) {
+                    setShowKeyboardHelp(false);
+                    return;
+                }
                 if (showShareMenu) {
                     setShowShareMenu(false);
                 }
@@ -2271,7 +2331,7 @@ function App() {
 
         document.addEventListener('keydown', handleKeyDown);
         return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [isRecording, selectedSession, playingAudio, showShareMenu, showModelManager, handleStartStop, handleDownloadFile]);
+    }, [isRecording, selectedSession, playingAudio, showShareMenu, showModelManager, showKeyboardHelp, sessions, handleStartStop, handleDownloadFile, handleViewSession]);
 
     const displaySession = selectedSession || currentSession;
     const chunks = displaySession?.chunks || [];
@@ -4114,8 +4174,161 @@ function App() {
                     onClose={() => setShowModelManager(false)}
                 />
             )}
+
+            {/* Keyboard Shortcuts Help Modal */}
+            {showKeyboardHelp && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        inset: 0,
+                        backgroundColor: 'rgba(0, 0, 0, 0.6)',
+                        backdropFilter: 'blur(8px)',
+                        WebkitBackdropFilter: 'blur(8px)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 10000,
+                    }}
+                    onClick={() => setShowKeyboardHelp(false)}
+                >
+                    <div
+                        style={{
+                            background: 'var(--surface-strong)',
+                            borderRadius: '16px',
+                            border: '1px solid var(--border)',
+                            padding: '24px',
+                            maxWidth: '500px',
+                            width: '90%',
+                            maxHeight: '80vh',
+                            overflowY: 'auto',
+                            boxShadow: '0 20px 60px rgba(0, 0, 0, 0.4)',
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                            <h2 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 600 }}>⌨️ Горячие клавиши</h2>
+                            <button
+                                onClick={() => setShowKeyboardHelp(false)}
+                                style={{
+                                    background: 'transparent',
+                                    border: 'none',
+                                    color: 'var(--text-muted)',
+                                    fontSize: '1.5rem',
+                                    cursor: 'pointer',
+                                    padding: '4px 8px',
+                                    lineHeight: 1,
+                                }}
+                            >
+                                ×
+                            </button>
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                            {/* Навигация */}
+                            <div>
+                                <h3 style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 500 }}>
+                                    Навигация
+                                </h3>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    <KeyboardShortcut keys={['↑', '↓']} description="Переключение между записями" />
+                                    <KeyboardShortcut keys={['⌘', '1-9']} description="Быстрый доступ к записи по номеру" />
+                                    <KeyboardShortcut keys={['⌘', 'F']} description="Фокус на поиске" />
+                                </div>
+                            </div>
+
+                            {/* Воспроизведение */}
+                            <div>
+                                <h3 style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 500 }}>
+                                    Воспроизведение
+                                </h3>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    <KeyboardShortcut keys={['Space']} description="Воспроизведение / Пауза" />
+                                    <KeyboardShortcut keys={['←']} description="Перемотка назад на 5 сек" />
+                                    <KeyboardShortcut keys={['→']} description="Перемотка вперёд на 5 сек" />
+                                </div>
+                            </div>
+
+                            {/* Запись */}
+                            <div>
+                                <h3 style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 500 }}>
+                                    Запись
+                                </h3>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    <KeyboardShortcut keys={['R']} description="Начать / Остановить запись" />
+                                </div>
+                            </div>
+
+                            {/* Экспорт */}
+                            <div>
+                                <h3 style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 500 }}>
+                                    Экспорт
+                                </h3>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    <KeyboardShortcut keys={['⌘', 'S']} description="Скачать как TXT" />
+                                    <KeyboardShortcut keys={['⌘', 'E']} description="Меню экспорта" />
+                                </div>
+                            </div>
+
+                            {/* Общие */}
+                            <div>
+                                <h3 style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 500 }}>
+                                    Общие
+                                </h3>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    <KeyboardShortcut keys={['?']} description="Показать эту справку" />
+                                    <KeyboardShortcut keys={['Esc']} description="Закрыть модальные окна" />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style={{ 
+                            marginTop: '20px', 
+                            paddingTop: '16px', 
+                            borderTop: '1px solid var(--border)',
+                            fontSize: '0.75rem',
+                            color: 'var(--text-muted)',
+                            textAlign: 'center',
+                        }}>
+                            Нажмите <kbd style={{ 
+                                padding: '2px 6px', 
+                                background: 'var(--glass-bg)', 
+                                borderRadius: '4px',
+                                border: '1px solid var(--border)',
+                            }}>Esc</kbd> или кликните вне окна для закрытия
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
+
+// Компонент для отображения горячей клавиши
+const KeyboardShortcut: React.FC<{ keys: string[]; description: string }> = ({ keys, description }) => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{description}</span>
+        <div style={{ display: 'flex', gap: '4px' }}>
+            {keys.map((key, idx) => (
+                <kbd
+                    key={idx}
+                    style={{
+                        padding: '3px 8px',
+                        background: 'var(--glass-bg)',
+                        borderRadius: '6px',
+                        border: '1px solid var(--border)',
+                        fontSize: '0.8rem',
+                        fontFamily: 'system-ui, -apple-system, sans-serif',
+                        fontWeight: 500,
+                        color: 'var(--text-primary)',
+                        minWidth: '24px',
+                        textAlign: 'center',
+                    }}
+                >
+                    {key}
+                </kbd>
+            ))}
+        </div>
+    </div>
+);
 
 export default App;
