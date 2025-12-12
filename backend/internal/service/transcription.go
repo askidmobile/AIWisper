@@ -3,6 +3,7 @@ package service
 import (
 	"aiwisper/ai"
 	"aiwisper/session"
+	"aiwisper/voiceprint"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -17,9 +18,11 @@ import (
 
 // SessionSpeakerProfile хранит embedding спикера для сессии
 type SessionSpeakerProfile struct {
-	SpeakerID int       // ID спикера в сессии (1, 2, 3...)
-	Embedding []float32 // 256-мерный вектор
-	Duration  float32   // Общая длительность речи
+	SpeakerID      int       // ID спикера в сессии (1, 2, 3...)
+	Embedding      []float32 // 256-мерный вектор
+	Duration       float32   // Общая длительность речи
+	RecognizedName string    // Имя из глобальной базы voiceprints (если распознан)
+	VoicePrintID   string    // ID voiceprint из глобальной базы (если распознан)
 }
 
 // TranscriptionService handles the core transcription logic
@@ -46,6 +49,9 @@ type TranscriptionService struct {
 	// Сопоставление спикеров между чанками (embeddings)
 	// Ключ: sessionID, значение: map[localSpeakerID]embedding
 	sessionSpeakerProfiles map[string][]SessionSpeakerProfile
+
+	// VoicePrint matcher для автоматического распознавания спикеров из глобальной базы
+	VoicePrintMatcher *voiceprint.Matcher
 
 	// Callbacks for UI updates
 	OnChunkTranscribed func(chunk *session.Chunk)
@@ -114,6 +120,14 @@ func (s *TranscriptionService) shouldUsePerRegion() bool {
 // SetLLMService устанавливает LLM сервис для автоулучшения
 func (s *TranscriptionService) SetLLMService(llm *LLMService) {
 	s.LLMService = llm
+}
+
+// SetVoicePrintMatcher устанавливает matcher для автоматического распознавания спикеров
+func (s *TranscriptionService) SetVoicePrintMatcher(matcher *voiceprint.Matcher) {
+	s.VoicePrintMatcher = matcher
+	if matcher != nil {
+		log.Printf("[TranscriptionService] VoicePrint matcher enabled (%d voiceprints)", matcher.GetStore().Count())
+	}
 }
 
 // EnableAutoImprove включает автоматическое улучшение транскрипции через LLM
@@ -1573,9 +1587,32 @@ func getSpeakerForTimeRange(startSec, endSec float32, speakerSegs []ai.SpeakerSe
 		// Speaker ID из диаризации 1-based (1, 2, 3...), поэтому используем как есть
 		// Если ID 0-based, нужно +1
 		// FluidAudio возвращает 1-based IDs, поэтому оставляем как есть
-		return fmt.Sprintf("Собеседник %d", bestSpeaker)
+		return fmt.Sprintf("Speaker %d", bestSpeaker)
 	}
-	return "Собеседник"
+	return "Speaker 0"
+}
+
+// GetRecognizedSpeakerName возвращает распознанное имя спикера из глобальной базы voiceprints
+// или пустую строку если спикер не распознан
+func (s *TranscriptionService) GetRecognizedSpeakerName(sessionID string, speakerID int) string {
+	if s.sessionSpeakerProfiles == nil {
+		return ""
+	}
+	profiles := s.sessionSpeakerProfiles[sessionID]
+	for _, p := range profiles {
+		if p.SpeakerID == speakerID && p.RecognizedName != "" {
+			return p.RecognizedName
+		}
+	}
+	return ""
+}
+
+// GetSessionSpeakerProfiles возвращает профили спикеров для сессии (для API)
+func (s *TranscriptionService) GetSessionSpeakerProfiles(sessionID string) []SessionSpeakerProfile {
+	if s.sessionSpeakerProfiles == nil {
+		return nil
+	}
+	return s.sessionSpeakerProfiles[sessionID]
 }
 
 // assignSpeakersToSegments присваивает спикеров сегментам без разбиения (fallback)
@@ -1736,6 +1773,7 @@ func restoreAISegmentTimestamps(segments []ai.TranscriptSegment, regions []sessi
 }
 
 // matchSpeakersWithSession сопоставляет спикеров текущего чанка с уже известными спикерами сессии
+// и с глобальной базой voiceprints для автоматического распознавания
 // Возвращает map[localSpeakerID]globalSpeakerID для переназначения
 func (s *TranscriptionService) matchSpeakersWithSession(sessionID string, embeddings []ai.SpeakerEmbedding) map[int]int {
 	mapping := make(map[int]int)
@@ -1747,14 +1785,32 @@ func (s *TranscriptionService) matchSpeakersWithSession(sessionID string, embedd
 
 	profiles := s.sessionSpeakerProfiles[sessionID]
 
-	// Если это первый чанк - просто сохраняем embeddings как эталонные
+	// Если это первый чанк - пробуем распознать из глобальной базы voiceprints
 	if len(profiles) == 0 {
 		for _, emb := range embeddings {
-			profiles = append(profiles, SessionSpeakerProfile{
+			profile := SessionSpeakerProfile{
 				SpeakerID: emb.Speaker,
 				Embedding: emb.Embedding,
 				Duration:  emb.Duration,
-			})
+			}
+
+			// Пробуем найти совпадение в глобальной базе voiceprints
+			if s.VoicePrintMatcher != nil {
+				match := s.VoicePrintMatcher.FindBestMatch(emb.Embedding)
+				if match != nil && match.Confidence != "none" {
+					profile.RecognizedName = match.VoicePrint.Name
+					profile.VoicePrintID = match.VoicePrint.ID
+					log.Printf("matchSpeakersWithSession: speaker %d recognized as '%s' from voiceprint (similarity=%.2f, confidence=%s)",
+						emb.Speaker, match.VoicePrint.Name, match.Similarity, match.Confidence)
+
+					// Обновляем voiceprint (усредняем embedding, увеличиваем счётчик)
+					if match.Confidence == "high" {
+						s.VoicePrintMatcher.MatchWithAutoUpdate(emb.Embedding)
+					}
+				}
+			}
+
+			profiles = append(profiles, profile)
 		}
 		s.sessionSpeakerProfiles[sessionID] = profiles
 		log.Printf("matchSpeakersWithSession: first chunk, saved %d speaker profiles for session %s",
@@ -1762,7 +1818,7 @@ func (s *TranscriptionService) matchSpeakersWithSession(sessionID string, embedd
 		return mapping // Пустой маппинг - используем оригинальные ID
 	}
 
-	// Сопоставляем каждый embedding с известными профилями
+	// Сопоставляем каждый embedding с известными профилями сессии
 	threshold := float32(0.65) // Порог косинусного сходства для совпадения
 
 	for _, emb := range embeddings {
@@ -1784,11 +1840,29 @@ func (s *TranscriptionService) matchSpeakersWithSession(sessionID string, embedd
 				emb.Speaker, bestMatch, bestSimilarity)
 		} else if bestMatch < 0 {
 			// Новый спикер - добавляем в профили
-			profiles = append(profiles, SessionSpeakerProfile{
+			newProfile := SessionSpeakerProfile{
 				SpeakerID: emb.Speaker,
 				Embedding: emb.Embedding,
 				Duration:  emb.Duration,
-			})
+			}
+
+			// Пробуем найти совпадение в глобальной базе voiceprints
+			if s.VoicePrintMatcher != nil {
+				match := s.VoicePrintMatcher.FindBestMatch(emb.Embedding)
+				if match != nil && match.Confidence != "none" {
+					newProfile.RecognizedName = match.VoicePrint.Name
+					newProfile.VoicePrintID = match.VoicePrint.ID
+					log.Printf("matchSpeakersWithSession: new speaker %d recognized as '%s' from voiceprint (similarity=%.2f)",
+						emb.Speaker, match.VoicePrint.Name, match.Similarity)
+
+					// Обновляем voiceprint при высокой уверенности
+					if match.Confidence == "high" {
+						s.VoicePrintMatcher.MatchWithAutoUpdate(emb.Embedding)
+					}
+				}
+			}
+
+			profiles = append(profiles, newProfile)
 			log.Printf("matchSpeakersWithSession: new speaker %d added to session profiles", emb.Speaker)
 		}
 	}

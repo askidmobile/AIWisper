@@ -1834,9 +1834,21 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 		}
 	}
 
+	// Проверяем распознанные имена из глобальной базы voiceprints
 	for _, sp := range speakerMap {
 		// Устанавливаем HasSample если есть достаточно аудио (минимум 2 секунды)
 		sp.HasSample = sp.TotalDuration >= 2.0
+
+		// Проверяем, распознан ли спикер из глобальной базы voiceprints
+		if !sp.IsMic && s.TranscriptionService != nil {
+			recognizedName := s.TranscriptionService.GetRecognizedSpeakerName(sessionID, sp.LocalID)
+			if recognizedName != "" {
+				sp.DisplayName = recognizedName
+				sp.IsRecognized = true
+				log.Printf("getSessionSpeakers: speaker %d recognized as '%s' from voiceprints", sp.LocalID, recognizedName)
+			}
+		}
+
 		speakers = append(speakers, *sp)
 	}
 

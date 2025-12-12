@@ -87,6 +87,8 @@ func main() {
 	var vpMatcher *voiceprint.Matcher
 	if vpStore != nil {
 		vpMatcher = voiceprint.NewMatcher(vpStore)
+		// Подключаем matcher к TranscriptionService для автоматического распознавания спикеров
+		transcriptionService.SetVoicePrintMatcher(vpMatcher)
 	}
 
 	// 5. Initialize API Server
