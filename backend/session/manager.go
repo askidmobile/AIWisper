@@ -708,6 +708,7 @@ type taggedSegment struct {
 
 // mergeSegmentsWithOverlapHandling объединяет сегменты с обработкой перекрытий
 // Работает на уровне сегментов, а не слов, сохраняя целостность фраз
+// ВАЖНО: сравнивает спикеров ТОЧНО, чтобы не объединять разных собеседников (Собеседник 1 != Собеседник 2)
 func mergeSegmentsWithOverlapHandling(micSegments, sysSegments []TranscriptSegment) []TranscriptSegment {
 	// 1. Помечаем источник каждого сегмента
 	var allSegments []taggedSegment
@@ -754,13 +755,15 @@ func mergeSegmentsWithOverlapHandling(micSegments, sysSegments []TranscriptSegme
 		}
 
 		prev := &result[len(result)-1]
-		prevIsMic := isMicSpeaker(prev.Speaker)
-		currIsMic := tagged.isMic
 
 		// Проверяем перекрытие
 		overlap := prev.End - seg.Start
 
-		if prevIsMic == currIsMic {
+		// ВАЖНО: сравниваем спикеров ТОЧНО, а не только mic/sys
+		// Это критично для диаризации: "Собеседник 1" != "Собеседник 2"
+		sameSpeaker := prev.Speaker == seg.Speaker
+
+		if sameSpeaker {
 			// Тот же спикер - проверяем нужно ли объединить
 			gap := seg.Start - prev.End
 			if gap < segmentMergeGapMs {

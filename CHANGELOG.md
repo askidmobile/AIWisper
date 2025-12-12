@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.3] - 2025-12-13
+
+### Fixed
+- **Speaker Diarization Segments Being Merged Back**: Fixed bug where correctly split speaker segments were merged back into one
+  - **Problem**: `splitSegmentsBySpeakers` correctly split 1 segment into 3 by speaker, but `mergeSegmentsWithOverlapHandling` merged them back into 1
+  - **Root Cause**: `mergeSegmentsWithOverlapHandling` compared speakers using `isMicSpeaker()` (mic vs non-mic), treating all "Собеседник N" as same speaker
+  - **Solution**: Changed to exact speaker comparison (`prev.Speaker == seg.Speaker`) in `mergeSegmentsWithOverlapHandling`
+  - **Result**: Diarization segments now remain separate in final output
+
+### Technical
+- `backend/session/manager.go`:
+  - Fixed `mergeSegmentsWithOverlapHandling()` to use exact speaker comparison instead of `isMicSpeaker()` check
+  - Added `sameSpeaker := prev.Speaker == seg.Speaker` for precise speaker matching
+
 ## [1.40.2] - 2025-12-13
 
 ### Fixed
