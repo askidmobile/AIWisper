@@ -132,6 +132,8 @@ func (s *Server) Start() {
 	http.HandleFunc("/api/waveform/", s.handleWaveformAPI)
 	http.HandleFunc("/api/import", s.handleImportAudio)
 	http.HandleFunc("/api/export/batch", s.handleBatchExport)
+	http.HandleFunc("/api/speaker-sample/", s.handleSpeakerSampleAPI)
+	http.HandleFunc("/api/speaker-sample/", s.handleSpeakerSampleAPI)
 
 	log.Printf("Backend listening on HTTP :%s and gRPC %s", s.Config.Port, s.Config.GRPCAddr)
 	if err := http.ListenAndServe(":"+s.Config.Port, nil); err != nil {
@@ -1833,6 +1835,8 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 	}
 
 	for _, sp := range speakerMap {
+		// Устанавливаем HasSample если есть достаточно аудио (минимум 2 секунды)
+		sp.HasSample = sp.TotalDuration >= 2.0
 		speakers = append(speakers, *sp)
 	}
 
@@ -2169,4 +2173,131 @@ func formatVTTTime(ms int64) string {
 	s := (ms % 60000) / 1000
 	msec := ms % 1000
 	return fmt.Sprintf("%02d:%02d:%02d.%03d", h, m, s, msec)
+}
+
+// handleSpeakerSampleAPI отдаёт аудио-сэмпл спикера для прослушивания
+// URL: /api/speaker-sample/{sessionID}/{localSpeakerID}
+// Возвращает MP3 файл с первыми 5-10 секундами речи спикера
+func (s *Server) handleSpeakerSampleAPI(w http.ResponseWriter, r *http.Request) {
+	// CORS headers
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Парсим URL: /api/speaker-sample/{sessionID}/{localSpeakerID}
+	path := strings.TrimPrefix(r.URL.Path, "/api/speaker-sample/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 {
+		http.Error(w, "Invalid path. Expected: /api/speaker-sample/{sessionID}/{localSpeakerID}", http.StatusBadRequest)
+		return
+	}
+
+	sessionID := parts[0]
+	var localSpeakerID int
+	if _, err := fmt.Sscanf(parts[1], "%d", &localSpeakerID); err != nil {
+		http.Error(w, "Invalid speaker ID", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Speaker sample request: session=%s, speaker=%d", sessionID, localSpeakerID)
+
+	// Получаем сессию
+	sess, err := s.SessionMgr.GetSession(sessionID)
+	if err != nil {
+		http.Error(w, "Session not found", http.StatusNotFound)
+		return
+	}
+
+	// Находим первый сегмент этого спикера для извлечения аудио
+	var targetSegment *session.TranscriptSegment
+	speakerNames := s.getSpeakerNamesForLocalID(localSpeakerID)
+
+	for _, chunk := range sess.Chunks {
+		for i := range chunk.Dialogue {
+			seg := &chunk.Dialogue[i]
+			for _, name := range speakerNames {
+				if seg.Speaker == name && (seg.End-seg.Start) >= 2000 { // Минимум 2 секунды
+					targetSegment = seg
+					break
+				}
+			}
+			if targetSegment != nil {
+				break
+			}
+		}
+		if targetSegment != nil {
+			break
+		}
+	}
+
+	if targetSegment == nil {
+		http.Error(w, "No audio sample found for this speaker", http.StatusNotFound)
+		return
+	}
+
+	// Извлекаем аудио сегмент из full.mp3
+	mp3Path := filepath.Join(sess.DataDir, "full.mp3")
+	if _, err := os.Stat(mp3Path); os.IsNotExist(err) {
+		http.Error(w, "Audio file not found", http.StatusNotFound)
+		return
+	}
+
+	// Ограничиваем длительность сэмпла до 10 секунд
+	startMs := targetSegment.Start
+	endMs := targetSegment.End
+	if endMs-startMs > 10000 {
+		endMs = startMs + 10000
+	}
+
+	startSec := float64(startMs) / 1000.0
+	duration := float64(endMs-startMs) / 1000.0
+
+	log.Printf("Extracting speaker sample: %.2fs - %.2fs (%.2fs duration)", startSec, startSec+duration, duration)
+
+	// Используем ffmpeg для извлечения сегмента
+	cmd := exec.Command(session.GetFFmpegPath(),
+		"-ss", fmt.Sprintf("%.3f", startSec),
+		"-i", mp3Path,
+		"-t", fmt.Sprintf("%.3f", duration),
+		"-c:a", "libmp3lame",
+		"-q:a", "4", // Качество VBR
+		"-f", "mp3",
+		"pipe:1",
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("FFmpeg error extracting speaker sample: %v", err)
+		http.Error(w, "Failed to extract audio sample", http.StatusInternalServerError)
+		return
+	}
+
+	// Отправляем MP3
+	w.Header().Set("Content-Type", "audio/mpeg")
+	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(output)))
+	w.Header().Set("Cache-Control", "public, max-age=3600") // Кэшируем на час
+	w.Write(output)
+}
+
+// getSpeakerNamesForLocalID возвращает все возможные имена спикера по localID
+func (s *Server) getSpeakerNamesForLocalID(localSpeakerID int) []string {
+	if localSpeakerID < 0 {
+		return []string{"Вы", "mic"}
+	}
+	return []string{
+		fmt.Sprintf("Speaker %d", localSpeakerID),
+		fmt.Sprintf("Собеседник %d", localSpeakerID+1),
+		"Собеседник", // Для случая единственного собеседника
+		"sys",
+	}
 }

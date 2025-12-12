@@ -1463,6 +1463,23 @@ function App() {
         addLog(`Renaming speaker ${localId} to "${name}"${saveAsVoiceprint ? ' (saving voiceprint)' : ''}`);
     }, [selectedSession, addLog]);
 
+    // Воспроизведение аудио-сэмпла спикера
+    const handlePlaySpeakerSample = useCallback((localId: number) => {
+        if (!selectedSession) return;
+        
+        // Формируем URL для аудио-сэмпла
+        const sampleUrl = `${API_BASE}/api/speaker-sample/${selectedSession.id}/${localId}`;
+        
+        // Создаём аудио элемент и воспроизводим
+        const audio = new Audio(sampleUrl);
+        audio.play().catch(err => {
+            console.error('Failed to play speaker sample:', err);
+            addLog(`Failed to play speaker sample: ${err.message}`);
+        });
+        
+        addLog(`Playing sample for speaker ${localId}`);
+    }, [selectedSession, addLog]);
+
     // Функция для получения отображаемого имени спикера с учётом кастомных имён
     // Приоритет: sessionSpeakers (кастомные имена) > дефолтные имена из getSpeakerInfo
     const getSpeakerDisplayName = useCallback((speaker?: string): { name: string; color: string } => {
@@ -4686,6 +4703,7 @@ function App() {
                                         sessionId={displaySession.id}
                                         speakers={sessionSpeakers}
                                         onRename={handleRenameSpeaker}
+                                        onPlaySample={handlePlaySpeakerSample}
                                     />
                                 )}
 
