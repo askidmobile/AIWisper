@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.15] - 2025-12-13
+
+### Added
+- **Automatic Speaker Recognition from Voiceprints**: Speakers are now automatically identified from saved voiceprints during transcription
+  - When a new recording starts, speaker embeddings are matched against the global voiceprints database
+  - Recognized speakers display their saved names instead of "Собеседник N"
+  - High-confidence matches (≥85% similarity) automatically update voiceprint embeddings (running average)
+  - Session speaker profiles track recognized names and voiceprint IDs
+  - `IsRecognized` flag in session speakers list indicates auto-recognized speakers
+
+### Technical
+- `backend/main.go`: Connected `VoicePrintMatcher` to `TranscriptionService` at startup
+- `backend/internal/service/transcription.go`:
+  - Added `VoicePrintMatcher` field and `SetVoicePrintMatcher()` method
+  - Extended `SessionSpeakerProfile` with `RecognizedName` and `VoicePrintID` fields
+  - Added `GetRecognizedSpeakerName()` and `GetSessionSpeakerProfiles()` methods
+  - Modified `matchSpeakersWithSession()` to check global voiceprints and auto-update on high confidence
+- `backend/internal/api/server.go`: `getSessionSpeakers()` now uses recognized names from TranscriptionService
+
+## [1.40.14] - 2025-12-13
+
+### Added
+- **Voiceprints Management UI in Settings**: New section to manage saved speaker voiceprints
+  - View list of all saved voiceprints with names and creation dates
+  - Rename voiceprints with inline edit dialog
+  - Delete voiceprints with confirmation dialog
+  - Real-time updates via WebSocket messages
+
+### Technical
+- `frontend/src/components/modules/VoiceprintsSettings.tsx`: New component for voiceprints list management
+- `frontend/src/components/SettingsModal.tsx`: Added VoiceprintsSettings section
+- `frontend/src/App.tsx`: Added voiceprints state, handlers, and WebSocket message handling
+
+## [1.40.13] - 2025-12-13
+
+### Added
+- **Speaker Audio Preview**: Play audio samples of speakers for voice identification
+  - Play button in Speakers tab to preview speaker's voice
+  - Backend extracts first speech segment for each speaker
+  - Helps identify speakers before renaming
+
+## [1.40.12] - 2025-12-13
+
+### Added
+- **Cross-Chunk Speaker Matching**: Consistent speaker identification across recording chunks
+  - Speaker embeddings are now tracked across all chunks in a session
+  - New speakers in subsequent chunks are matched against known profiles
+  - Cosine similarity threshold (0.65) for speaker matching
+  - Prevents speaker ID drift in long recordings
+
+### Technical
+- `backend/internal/service/transcription.go`:
+  - Added `SessionSpeakerProfile` struct with embedding storage
+  - Added `sessionSpeakerProfiles` map for cross-chunk tracking
+  - Added `matchSpeakersWithSession()` for embedding-based matching
+  - Added `remapSpeakerSegments()` to apply speaker ID mapping
+
 ## [1.40.4] - 2025-12-13
 
 ### Fixed
