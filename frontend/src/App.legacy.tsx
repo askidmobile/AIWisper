@@ -2548,7 +2548,18 @@ function App() {
         const handleKeyDown = (e: KeyboardEvent) => {
             // Игнорируем если фокус в текстовом поле
             const target = e.target as HTMLElement;
-            if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+            const activeElement = document.activeElement as HTMLElement;
+            
+            // Проверяем и target и activeElement (для случаев когда событие всплывает)
+            const isInInput = 
+                target.tagName === 'INPUT' || 
+                target.tagName === 'TEXTAREA' || 
+                target.isContentEditable ||
+                activeElement?.tagName === 'INPUT' ||
+                activeElement?.tagName === 'TEXTAREA' ||
+                activeElement?.isContentEditable;
+            
+            if (isInInput) {
                 // Но разрешаем Escape для закрытия модалок
                 if (e.code !== 'Escape') {
                     return;

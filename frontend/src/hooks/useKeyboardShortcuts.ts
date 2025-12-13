@@ -35,8 +35,19 @@ export const useKeyboardShortcuts = ({ shortcuts, enabled = true }: UseKeyboardS
         if (!enabled) return;
         
         // Игнорируем события в input/textarea
+        // Проверяем и target и activeElement (для случаев когда событие всплывает или фокус в модальном окне)
         const target = e.target as HTMLElement;
-        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        const activeElement = document.activeElement as HTMLElement;
+        
+        const isInInput = 
+            target.tagName === 'INPUT' || 
+            target.tagName === 'TEXTAREA' || 
+            target.isContentEditable ||
+            activeElement?.tagName === 'INPUT' ||
+            activeElement?.tagName === 'TEXTAREA' ||
+            activeElement?.isContentEditable;
+        
+        if (isInInput) {
             return;
         }
         

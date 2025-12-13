@@ -1890,10 +1890,36 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 
 		default:
 			// Кастомное имя (уже переименованный спикер)
-			// Пытаемся определить localID по позиции
-			localID = len(speakerMap) // Присваиваем следующий ID
+			// Пытаемся определить localID из профилей спикеров TranscriptionService
+			localID = -999 // Временное значение, будет обновлено ниже
 			displayName = speaker
-			// normalizedKey остаётся равным speaker
+
+			// Ищем localID в профилях спикеров по RecognizedName
+			if s.TranscriptionService != nil {
+				profiles := s.TranscriptionService.GetSessionSpeakerProfiles(sessionID)
+				for _, profile := range profiles {
+					if profile.RecognizedName == speaker {
+						localID = profile.SpeakerID - 1 // SpeakerID 1-based -> localID 0-based
+						normalizedKey = fmt.Sprintf("speaker_%d", localID)
+						log.Printf("getSessionSpeakers: found localID %d for custom name '%s' from profiles", localID, speaker)
+						break
+					}
+				}
+			}
+
+			// Если не нашли в профилях, ищем по количеству уже обработанных собеседников
+			if localID == -999 {
+				// Считаем сколько уникальных собеседников (не mic) уже есть
+				existingSpeakerCount := 0
+				for key := range speakerMap {
+					if key != "mic" {
+						existingSpeakerCount++
+					}
+				}
+				localID = existingSpeakerCount
+				normalizedKey = fmt.Sprintf("custom_%s", speaker) // Уникальный ключ для кастомного имени
+				log.Printf("getSessionSpeakers: assigned localID %d for custom name '%s' (fallback)", localID, speaker)
+			}
 		}
 
 		if _, ok := speakerMap[normalizedKey]; !ok {
@@ -1983,6 +2009,18 @@ func (s *Server) renameSpeakerInSession(sessionID string, localSpeakerID int, ne
 		}
 		if localSpeakerID == 0 {
 			oldNames = append(oldNames, "sys", "Собеседник")
+		}
+	}
+
+	// ВАЖНО: Ищем текущее кастомное имя спикера через getSessionSpeakers
+	// Это позволяет переименовывать уже переименованных спикеров
+	speakers := s.getSessionSpeakers(sessionID)
+	for _, sp := range speakers {
+		if sp.LocalID == localSpeakerID && sp.DisplayName != "" && sp.DisplayName != newName {
+			// Добавляем текущее имя первым в список для поиска
+			oldNames = append([]string{sp.DisplayName}, oldNames...)
+			log.Printf("renameSpeakerInSession: found current name '%s' for localID %d", sp.DisplayName, localSpeakerID)
+			break
 		}
 	}
 
@@ -2516,57 +2554,25 @@ func (s *Server) getSpeakerNamesForLocalIDInSession(sessionID string, localSpeak
 	// Начинаем со стандартных имён
 	names := s.getSpeakerNamesForLocalID(localSpeakerID)
 
-	// Получаем сессию для поиска кастомных имён
-	sess, err := s.SessionMgr.GetSession(sessionID)
-	if err != nil {
-		return names
-	}
-
-	// Собираем все уникальные имена спикеров из диалога
-	// и пытаемся сопоставить их с localSpeakerID
-	speakerCounts := make(map[string]int)
-	for _, chunk := range sess.Chunks {
-		for _, seg := range chunk.Dialogue {
-			if seg.Speaker != "" && seg.Speaker != "Вы" && seg.Speaker != "mic" {
-				speakerCounts[seg.Speaker]++
+	// ВАЖНО: Используем getSessionSpeakers для получения правильного маппинга localID -> displayName
+	// Это гарантирует корректное сопоставление даже для переименованных спикеров
+	speakers := s.getSessionSpeakers(sessionID)
+	for _, sp := range speakers {
+		if sp.LocalID == localSpeakerID && sp.DisplayName != "" {
+			// Добавляем актуальное имя первым в список для поиска
+			// Это обеспечивает приоритет кастомного имени над стандартными
+			found := false
+			for _, existing := range names {
+				if existing == sp.DisplayName {
+					found = true
+					break
+				}
 			}
-		}
-	}
-
-	// Если есть кастомные имена (не стандартные), добавляем их
-	standardNames := map[string]bool{
-		"sys": true, "Собеседник": true,
-	}
-	for i := 0; i < 10; i++ {
-		standardNames[fmt.Sprintf("Speaker %d", i)] = true
-		standardNames[fmt.Sprintf("Собеседник %d", i+1)] = true
-	}
-
-	// Находим кастомные имена и сопоставляем по порядку появления
-	var customNames []string
-	for name := range speakerCounts {
-		if !standardNames[name] {
-			customNames = append(customNames, name)
-		}
-	}
-
-	// Если localSpeakerID соответствует индексу кастомного имени, добавляем его
-	// Это упрощённая эвристика - в реальности нужно отслеживать маппинг
-	if localSpeakerID < len(customNames) {
-		names = append(names, customNames[localSpeakerID])
-	}
-
-	// Также добавляем все кастомные имена как fallback
-	for _, name := range customNames {
-		found := false
-		for _, existing := range names {
-			if existing == name {
-				found = true
-				break
+			if !found {
+				names = append([]string{sp.DisplayName}, names...)
+				log.Printf("getSpeakerNamesForLocalIDInSession: added displayName '%s' for localID %d", sp.DisplayName, localSpeakerID)
 			}
-		}
-		if !found {
-			names = append(names, name)
+			break
 		}
 	}
 
