@@ -90,6 +90,15 @@ type Server struct {
 	// Отмена полной ретранскрипции по sessionID
 	retranscribeCancels   map[string]func()
 	retranscribeCancelsMu sync.Mutex
+
+	// Кэш переименований спикеров для полной ретранскрипции
+	// Ключ: sessionID, значение: map[стандартное_имя]пользовательское_имя
+	speakerRenamesCache   map[string]map[string]string
+	speakerRenamesCacheMu sync.RWMutex
+
+	// Флаг активной полной ретранскрипции (не применять переименования после каждого чанка)
+	fullRetranscribeActive   map[string]bool
+	fullRetranscribeActiveMu sync.RWMutex
 }
 
 func NewServer(
@@ -119,6 +128,8 @@ func NewServer(
 		VoicePrintMatcher:             vpMatcher,
 		clients:                       make(map[transportClient]bool),
 		retranscribeCancels:           make(map[string]func()),
+		speakerRenamesCache:           make(map[string]map[string]string),
+		fullRetranscribeActive:        make(map[string]bool),
 	}
 	s.setupCallbacks()
 	return s
@@ -207,6 +218,28 @@ func (s *Server) setupCallbacks() {
 	// Chunk Transcribed -> Notify
 	s.SessionMgr.SetOnChunkTranscribed(func(chunk *session.Chunk) {
 		log.Printf("Sending transcription result for chunk %d to frontend", chunk.Index)
+
+		// Проверяем, идёт ли полная ретранскрипция
+		// Если да - не применяем переименования после каждого чанка (будет применено в конце)
+		s.fullRetranscribeActiveMu.RLock()
+		isFullRetranscribe := s.fullRetranscribeActive[chunk.SessionID]
+		s.fullRetranscribeActiveMu.RUnlock()
+
+		if !isFullRetranscribe {
+			// Для одиночной ретранскрипции - применяем переименования сразу
+			s.applyExistingSpeakerRenames(chunk.SessionID)
+
+			// Перечитываем чанк после применения переименований
+			if sess, err := s.SessionMgr.GetSession(chunk.SessionID); err == nil {
+				for _, c := range sess.Chunks {
+					if c.ID == chunk.ID {
+						chunk = c
+						break
+					}
+				}
+			}
+		}
+
 		s.broadcast(Message{
 			Type:      "chunk_transcribed",
 			SessionID: chunk.SessionID,
@@ -962,12 +995,30 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 				s.retranscribeCancelsMu.Unlock()
 			}()
 
+			// Кэшируем существующие переименования спикеров ПЕРЕД очисткой профилей
+			// чтобы применить их в конце ретранскрипции
+			cachedRenames := s.getExistingSpeakerRenames(sessionID)
+			if len(cachedRenames) > 0 {
+				s.speakerRenamesCacheMu.Lock()
+				s.speakerRenamesCache[sessionID] = cachedRenames
+				s.speakerRenamesCacheMu.Unlock()
+				log.Printf("Full retranscription: cached %d speaker renames for session %s", len(cachedRenames), sessionID[:8])
+			}
+
+			// Устанавливаем флаг активной полной ретранскрипции
+			s.fullRetranscribeActiveMu.Lock()
+			s.fullRetranscribeActive[sessionID] = true
+			s.fullRetranscribeActiveMu.Unlock()
+
 			// Очищаем профили спикеров для сессии при полной ретранскрипции
 			// чтобы начать сопоставление с чистого листа
 			s.TranscriptionService.ClearSessionSpeakerProfiles(sessionID)
 
 			if totalChunks == 0 {
 				log.Printf("Full retranscription: no chunks to process")
+				s.fullRetranscribeActiveMu.Lock()
+				delete(s.fullRetranscribeActive, sessionID)
+				s.fullRetranscribeActiveMu.Unlock()
 				s.broadcast(Message{Type: "full_transcription_completed", SessionID: sessionID, Session: sess})
 				return
 			}
@@ -979,6 +1030,13 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 				select {
 				case <-ctx.Done():
 					log.Printf("Full retranscription cancelled for session %s at chunk %d/%d", sessionID, i+1, totalChunks)
+					// Очищаем флаг и кэш при отмене
+					s.fullRetranscribeActiveMu.Lock()
+					delete(s.fullRetranscribeActive, sessionID)
+					s.fullRetranscribeActiveMu.Unlock()
+					s.speakerRenamesCacheMu.Lock()
+					delete(s.speakerRenamesCache, sessionID)
+					s.speakerRenamesCacheMu.Unlock()
 					s.broadcast(Message{
 						Type:      "full_transcription_cancelled",
 						SessionID: sessionID,
@@ -1008,8 +1066,31 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 				Type:      "full_transcription_progress",
 				SessionID: sessionID,
 				Progress:  1.0,
-				Data:      "Завершение...",
+				Data:      "Применение имён спикеров...",
 			})
+
+			// Снимаем флаг активной ретранскрипции
+			s.fullRetranscribeActiveMu.Lock()
+			delete(s.fullRetranscribeActive, sessionID)
+			s.fullRetranscribeActiveMu.Unlock()
+
+			// Применяем кэшированные переименования спикеров
+			s.speakerRenamesCacheMu.RLock()
+			finalRenames := s.speakerRenamesCache[sessionID]
+			s.speakerRenamesCacheMu.RUnlock()
+
+			if len(finalRenames) > 0 {
+				log.Printf("Full retranscription: applying %d cached speaker renames", len(finalRenames))
+				for oldName, newName := range finalRenames {
+					if err := s.SessionMgr.UpdateSpeakerName(sessionID, oldName, newName); err == nil {
+						log.Printf("Full retranscription: applied rename '%s' -> '%s'", oldName, newName)
+					}
+				}
+				// Очищаем кэш
+				s.speakerRenamesCacheMu.Lock()
+				delete(s.speakerRenamesCache, sessionID)
+				s.speakerRenamesCacheMu.Unlock()
+			}
 
 			updatedSess, _ := s.SessionMgr.GetSession(sessionID)
 			log.Printf("Full retranscription completed for session %s", sessionID)
@@ -1034,6 +1115,14 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			log.Printf("No active retranscription found for session %s", sessionID)
 		}
 		s.retranscribeCancelsMu.Unlock()
+
+		// Очищаем флаг и кэш при отмене
+		s.fullRetranscribeActiveMu.Lock()
+		delete(s.fullRetranscribeActive, sessionID)
+		s.fullRetranscribeActiveMu.Unlock()
+		s.speakerRenamesCacheMu.Lock()
+		delete(s.speakerRenamesCache, sessionID)
+		s.speakerRenamesCacheMu.Unlock()
 
 	case "enable_diarization":
 		// Provider: "auto" (default), "cpu", "coreml", "cuda"
@@ -1253,10 +1342,17 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 		// Если запрошено сохранение в глобальную базу
 		var voiceprintID string
 		if msg.SaveAsVoiceprint && s.VoicePrintStore != nil {
+			log.Printf("[VoicePrint] Attempting to save voiceprint for speaker %d in session %s", msg.LocalSpeakerID, msg.SessionID)
 			embedding, source, err := s.getSpeakerEmbedding(msg.SessionID, msg.LocalSpeakerID)
-			if err == nil && len(embedding) > 0 {
+			if err != nil {
+				log.Printf("[VoicePrint] Failed to get embedding: %v", err)
+			} else if len(embedding) == 0 {
+				log.Printf("[VoicePrint] Empty embedding returned")
+			} else {
 				vp, err := s.VoicePrintStore.Add(msg.SpeakerName, embedding, source)
-				if err == nil {
+				if err != nil {
+					log.Printf("[VoicePrint] Failed to save: %v", err)
+				} else {
 					voiceprintID = vp.ID
 					log.Printf("[VoicePrint] Saved from rename: %s (%s)", vp.Name, vp.ID[:8])
 				}
@@ -1680,9 +1776,8 @@ func (s *Server) getAudioDuration(audioPath string) (int64, error) {
 // getSpeakerEmbedding получает embedding спикера из сессии
 // Возвращает embedding, source ("mic" или "sys"), error
 func (s *Server) getSpeakerEmbedding(sessionID string, localSpeakerID int) ([]float32, string, error) {
-	// Получаем Pipeline для доступа к текущим профилям спикеров
-	if s.TranscriptionService == nil || s.TranscriptionService.Pipeline == nil {
-		return nil, "", fmt.Errorf("pipeline not available")
+	if s.TranscriptionService == nil {
+		return nil, "", fmt.Errorf("transcription service not available")
 	}
 
 	// Получаем сессию для определения source
@@ -1699,25 +1794,38 @@ func (s *Server) getSpeakerEmbedding(sessionID string, localSpeakerID int) ([]fl
 		source = "mic"
 	}
 
-	// Преобразуем localSpeakerID в globalSpeakerID
-	// localSpeakerID: -1 для mic, 0+ для sys спикеров
-	// globalSpeakerID в Pipeline: 1-based (1, 2, 3...)
-	// UI показывает: "Собеседник 1" = localID 0 = globalID 1
-	globalSpeakerID := localSpeakerID + 1
-
-	// Для микрофона (localID = -1) нет embedding в Pipeline
+	// Для микрофона (localID = -1) нет embedding в диаризации
 	// Микрофон обрабатывается отдельно и не проходит через диаризацию
 	if localSpeakerID < 0 {
 		return nil, source, fmt.Errorf("microphone speaker does not have embedding in diarization pipeline")
 	}
 
-	// Получаем embedding из Pipeline
-	embedding := s.TranscriptionService.Pipeline.GetSpeakerEmbedding(globalSpeakerID)
-	if embedding == nil {
-		return nil, source, fmt.Errorf("speaker %d not found in pipeline profiles", localSpeakerID)
+	// Преобразуем localSpeakerID в globalSpeakerID
+	// localSpeakerID: 0+ для sys спикеров (UI: "Собеседник 1" = localID 0)
+	// globalSpeakerID в профилях: 1-based (1, 2, 3...)
+	globalSpeakerID := localSpeakerID + 1
+
+	// Сначала пробуем получить из сохранённых профилей сессии
+	profiles := s.TranscriptionService.GetSessionSpeakerProfiles(sessionID)
+	for _, profile := range profiles {
+		if profile.SpeakerID == globalSpeakerID {
+			if len(profile.Embedding) > 0 {
+				log.Printf("[VoicePrint] getSpeakerEmbedding: found embedding in session profiles for speaker %d", localSpeakerID)
+				return profile.Embedding, source, nil
+			}
+		}
 	}
 
-	return embedding, source, nil
+	// Fallback: пробуем получить из Pipeline (если транскрипция ещё активна)
+	if s.TranscriptionService.Pipeline != nil {
+		embedding := s.TranscriptionService.Pipeline.GetSpeakerEmbedding(globalSpeakerID)
+		if embedding != nil {
+			log.Printf("[VoicePrint] getSpeakerEmbedding: found embedding in pipeline for speaker %d", localSpeakerID)
+			return embedding, source, nil
+		}
+	}
+
+	return nil, source, fmt.Errorf("speaker %d not found in session profiles or pipeline", localSpeakerID)
 }
 
 // getSessionSpeakers возвращает список спикеров в сессии
@@ -1894,6 +2002,93 @@ func (s *Server) renameSpeakerInSession(sessionID string, localSpeakerID int, ne
 		return lastErr
 	}
 	return nil
+}
+
+// getExistingSpeakerRenames возвращает map переименований спикеров в сессии
+// Ключ: стандартное имя ("Собеседник 1", "Собеседник 2", etc.)
+// Значение: пользовательское имя (если было переименовано)
+func (s *Server) getExistingSpeakerRenames(sessionID string) map[string]string {
+	renames := make(map[string]string)
+
+	sess, err := s.SessionMgr.GetSession(sessionID)
+	if err != nil {
+		return renames
+	}
+
+	// Стандартные имена, которые мы ищем
+	standardNames := map[string]bool{
+		"Собеседник":   true,
+		"Собеседник 1": true,
+		"Собеседник 2": true,
+		"Собеседник 3": true,
+		"Собеседник 4": true,
+		"Собеседник 5": true,
+	}
+
+	// Собираем все уникальные имена спикеров из диалогов
+	speakerNames := make(map[string]bool)
+	for _, chunk := range sess.Chunks {
+		for _, seg := range chunk.Dialogue {
+			if seg.Speaker != "" && seg.Speaker != "Вы" && seg.Speaker != "mic" {
+				speakerNames[seg.Speaker] = true
+			}
+		}
+	}
+
+	// Стратегия 1: Используем профили спикеров из TranscriptionService
+	// Профили содержат RecognizedName если спикер был распознан из voiceprint
+	if s.TranscriptionService != nil {
+		profiles := s.TranscriptionService.GetSessionSpeakerProfiles(sessionID)
+		for _, profile := range profiles {
+			if profile.RecognizedName != "" {
+				// Спикер был распознан - это переименование
+				standardName := fmt.Sprintf("Собеседник %d", profile.SpeakerID)
+				renames[standardName] = profile.RecognizedName
+				log.Printf("getExistingSpeakerRenames: from profile '%s' -> '%s'", standardName, profile.RecognizedName)
+			}
+		}
+	}
+
+	// Стратегия 2: Ищем пользовательские имена, которые заменили стандартные
+	// Если есть пользовательское имя и нет соответствующего стандартного,
+	// значит стандартное было переименовано
+	for name := range speakerNames {
+		if !standardNames[name] {
+			// Это пользовательское имя
+			// Пытаемся определить какой "Собеседник N" оно заменило
+			// Проверяем какие стандартные имена отсутствуют
+			for i := 1; i <= 5; i++ {
+				standardName := fmt.Sprintf("Собеседник %d", i)
+				if !speakerNames[standardName] {
+					// Стандартное имя отсутствует - возможно оно было переименовано
+					// Но только если у нас ещё нет переименования для этого стандартного имени
+					if _, exists := renames[standardName]; !exists {
+						renames[standardName] = name
+						log.Printf("getExistingSpeakerRenames: inferred '%s' -> '%s'", standardName, name)
+						break // Одно пользовательское имя может заменить только одно стандартное
+					}
+				}
+			}
+		}
+	}
+
+	return renames
+}
+
+// applyExistingSpeakerRenames применяет существующие переименования к сессии
+// Вызывается после ретранскрипции чанка для восстановления пользовательских имён
+func (s *Server) applyExistingSpeakerRenames(sessionID string) {
+	renames := s.getExistingSpeakerRenames(sessionID)
+	if len(renames) == 0 {
+		return
+	}
+
+	// Применяем каждое переименование через UpdateSpeakerName
+	for oldName, newName := range renames {
+		if err := s.SessionMgr.UpdateSpeakerName(sessionID, oldName, newName); err == nil {
+			log.Printf("applyExistingSpeakerRenames: applied rename '%s' -> '%s'", oldName, newName)
+		}
+	}
 }
 
 // updatePipelineTranscriber обновляет transcriber в Pipeline после смены модели

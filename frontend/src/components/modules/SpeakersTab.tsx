@@ -6,6 +6,8 @@ interface SpeakersTabProps {
     speakers: SessionSpeaker[];
     onRename: (localId: number, name: string, saveAsVoiceprint: boolean) => void;
     onPlaySample?: (localId: number) => void;
+    onStopSample?: () => void;
+    playingSpeakerId?: number | null;
 }
 
 // Цвета для разных спикеров
@@ -152,6 +154,8 @@ export default function SpeakersTab({
     speakers,
     onRename,
     onPlaySample,
+    onStopSample,
+    playingSpeakerId,
 }: SpeakersTabProps) {
     void _sessionId; // Suppress unused variable warning
     const [editingSpeaker, setEditingSpeaker] = useState<SessionSpeaker | null>(null);
@@ -317,19 +321,41 @@ export default function SpeakersTab({
                             <div style={{ display: 'flex', gap: '0.5rem' }}>
                                 {onPlaySample && speaker.hasSample && (
                                     <button
-                                        onClick={() => onPlaySample(speaker.localId)}
+                                        onClick={() => {
+                                            if (playingSpeakerId === speaker.localId && onStopSample) {
+                                                onStopSample();
+                                            } else {
+                                                onPlaySample(speaker.localId);
+                                            }
+                                        }}
                                         className="btn-icon btn-icon-sm"
-                                        title="Прослушать голос"
-                                        style={{ width: '32px', height: '32px' }}
+                                        title={playingSpeakerId === speaker.localId ? "Остановить" : "Прослушать голос"}
+                                        style={{ 
+                                            width: '32px', 
+                                            height: '32px',
+                                            color: playingSpeakerId === speaker.localId ? 'var(--primary)' : undefined,
+                                        }}
                                     >
-                                        <svg
-                                            width="14"
-                                            height="14"
-                                            viewBox="0 0 24 24"
-                                            fill="currentColor"
-                                        >
-                                            <path d="M8 5v14l11-7z" />
-                                        </svg>
+                                        {playingSpeakerId === speaker.localId ? (
+                                            <svg
+                                                width="14"
+                                                height="14"
+                                                viewBox="0 0 24 24"
+                                                fill="currentColor"
+                                            >
+                                                <rect x="6" y="4" width="4" height="16" />
+                                                <rect x="14" y="4" width="4" height="16" />
+                                            </svg>
+                                        ) : (
+                                            <svg
+                                                width="14"
+                                                height="14"
+                                                viewBox="0 0 24 24"
+                                                fill="currentColor"
+                                            >
+                                                <path d="M8 5v14l11-7z" />
+                                            </svg>
+                                        )}
                                     </button>
                                 )}
 

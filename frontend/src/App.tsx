@@ -249,6 +249,10 @@ function App() {
     const [voiceprints, setVoiceprints] = useState<VoicePrint[]>([]);
     const [voiceprintsLoading, setVoiceprintsLoading] = useState(false);
 
+    // Speaker sample playback
+    const [playingSpeakerId, setPlayingSpeakerId] = useState<number | null>(null);
+    const currentAudioRef = useRef<HTMLAudioElement | null>(null);
+
     // Devices
     const [devices, setDevices] = useState<AudioDevice[]>([]);
     const [micDevice, setMicDevice] = useState<string>('');
@@ -1493,22 +1497,51 @@ function App() {
         addLog(`Renaming speaker ${localId} to "${name}"${saveAsVoiceprint ? ' (saving voiceprint)' : ''}`);
     }, [selectedSession, addLog]);
 
+    // Остановка воспроизведения аудио-сэмпла
+    const handleStopSpeakerSample = useCallback(() => {
+        if (currentAudioRef.current) {
+            currentAudioRef.current.pause();
+            currentAudioRef.current.currentTime = 0;
+            currentAudioRef.current = null;
+        }
+        setPlayingSpeakerId(null);
+    }, []);
+
     // Воспроизведение аудио-сэмпла спикера
     const handlePlaySpeakerSample = useCallback((localId: number) => {
         if (!selectedSession) return;
+        
+        // Останавливаем предыдущее воспроизведение
+        handleStopSpeakerSample();
         
         // Формируем URL для аудио-сэмпла
         const sampleUrl = `${API_BASE}/api/speaker-sample/${selectedSession.id}/${localId}`;
         
         // Создаём аудио элемент и воспроизводим
         const audio = new Audio(sampleUrl);
+        currentAudioRef.current = audio;
+        setPlayingSpeakerId(localId);
+        
+        audio.onended = () => {
+            setPlayingSpeakerId(null);
+            currentAudioRef.current = null;
+        };
+        
+        audio.onerror = () => {
+            setPlayingSpeakerId(null);
+            currentAudioRef.current = null;
+            addLog(`Failed to play speaker sample`);
+        };
+        
         audio.play().catch(err => {
             console.error('Failed to play speaker sample:', err);
             addLog(`Failed to play speaker sample: ${err.message}`);
+            setPlayingSpeakerId(null);
+            currentAudioRef.current = null;
         });
         
         addLog(`Playing sample for speaker ${localId}`);
-    }, [selectedSession, addLog]);
+    }, [selectedSession, addLog, handleStopSpeakerSample]);
 
     // === Voiceprints Management ===
     
@@ -4772,6 +4805,8 @@ function App() {
                                         speakers={sessionSpeakers}
                                         onRename={handleRenameSpeaker}
                                         onPlaySample={handlePlaySpeakerSample}
+                                        onStopSample={handleStopSpeakerSample}
+                                        playingSpeakerId={playingSpeakerId}
                                     />
                                 )}
 

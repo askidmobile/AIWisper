@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.17] - 2025-12-13
+
+### Added
+- **Play/Stop Button for Speaker Samples**: Toggle playback of speaker audio samples in Speakers tab
+  - Play button changes to Pause icon during playback
+  - Click again to stop playback
+  - Visual indication of currently playing speaker (highlighted button)
+
+### Fixed
+- **VoicePrint Save from Speaker Rename**: Fixed voiceprint not being saved when renaming speaker with "Save as voiceprint" option
+  - `getSpeakerEmbedding()` now first checks `TranscriptionService.GetSessionSpeakerProfiles()` before falling back to Pipeline
+  - Added detailed logging for voiceprint save attempts
+
+### Improved
+- **Full Retranscription Performance**: Optimized speaker rename application during full retranscription
+  - Added `speakerRenamesCache` to cache speaker renames before clearing profiles
+  - Added `fullRetranscribeActive` flag to skip per-chunk rename application
+  - Speaker renames now applied once at the end instead of after each chunk (was causing 114 scans for 114 chunks)
+  - Progress message updated to show "Применение имён спикеров..." at the end
+
+### Technical
+- `backend/internal/api/server.go`:
+  - Added `speakerRenamesCache` and `fullRetranscribeActive` fields to Server struct
+  - Added `getExistingSpeakerRenames()` function to extract speaker renames from session
+  - Added `applyExistingSpeakerRenames()` function to restore user-defined speaker names
+  - Modified `getSpeakerEmbedding()` to check session profiles first
+  - Enhanced logging for voiceprint operations
+- `frontend/src/App.tsx`:
+  - Added `playingSpeakerId` state and `currentAudioRef` ref for audio playback tracking
+  - Added `handleStopSpeakerSample()` callback
+- `frontend/src/components/modules/SpeakersTab.tsx`:
+  - Added `onStopSample` and `playingSpeakerId` props
+  - Toggle between Play (▶) and Pause (||) icons based on playback state
+
 ## [1.40.15] - 2025-12-13
 
 ### Added
