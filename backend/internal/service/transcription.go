@@ -5,6 +5,7 @@ import (
 	"aiwisper/session"
 	"aiwisper/voiceprint"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -1815,6 +1816,10 @@ func (s *TranscriptionService) matchSpeakersWithSession(sessionID string, embedd
 		s.sessionSpeakerProfiles[sessionID] = profiles
 		log.Printf("matchSpeakersWithSession: first chunk, saved %d speaker profiles for session %s",
 			len(profiles), sessionID[:8])
+		// Сохраняем на диск для возможности загрузки при следующем открытии сессии
+		if err := s.SaveSessionSpeakerProfiles(sessionID); err != nil {
+			log.Printf("matchSpeakersWithSession: failed to save profiles to disk: %v", err)
+		}
 		return mapping // Пустой маппинг - используем оригинальные ID
 	}
 
@@ -1868,6 +1873,10 @@ func (s *TranscriptionService) matchSpeakersWithSession(sessionID string, embedd
 	}
 
 	s.sessionSpeakerProfiles[sessionID] = profiles
+	// Сохраняем на диск
+	if err := s.SaveSessionSpeakerProfiles(sessionID); err != nil {
+		log.Printf("matchSpeakersWithSession: failed to save profiles to disk: %v", err)
+	}
 	return mapping
 }
 
@@ -1913,4 +1922,74 @@ func (s *TranscriptionService) ClearSessionSpeakerProfiles(sessionID string) {
 		delete(s.sessionSpeakerProfiles, sessionID)
 		log.Printf("Cleared speaker profiles for session %s", sessionID[:8])
 	}
+}
+
+// SaveSessionSpeakerProfiles сохраняет профили спикеров на диск
+func (s *TranscriptionService) SaveSessionSpeakerProfiles(sessionID string) error {
+	if s.sessionSpeakerProfiles == nil {
+		return nil
+	}
+
+	profiles, ok := s.sessionSpeakerProfiles[sessionID]
+	if !ok || len(profiles) == 0 {
+		return nil
+	}
+
+	// Получаем путь к директории сессии
+	sess, err := s.SessionMgr.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+
+	profilesPath := filepath.Join(sess.DataDir, "speaker_profiles.json")
+	data, err := json.Marshal(profiles)
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(profilesPath, data, 0644); err != nil {
+		return err
+	}
+
+	log.Printf("Saved %d speaker profiles for session %s", len(profiles), sessionID[:8])
+	return nil
+}
+
+// LoadSessionSpeakerProfiles загружает профили спикеров с диска
+func (s *TranscriptionService) LoadSessionSpeakerProfiles(sessionID string) ([]SessionSpeakerProfile, error) {
+	// Сначала проверяем в памяти
+	if s.sessionSpeakerProfiles != nil {
+		if profiles, ok := s.sessionSpeakerProfiles[sessionID]; ok && len(profiles) > 0 {
+			return profiles, nil
+		}
+	}
+
+	// Загружаем с диска
+	sess, err := s.SessionMgr.GetSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	profilesPath := filepath.Join(sess.DataDir, "speaker_profiles.json")
+	data, err := os.ReadFile(profilesPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // Файла нет - это нормально для старых сессий
+		}
+		return nil, err
+	}
+
+	var profiles []SessionSpeakerProfile
+	if err := json.Unmarshal(data, &profiles); err != nil {
+		return nil, err
+	}
+
+	// Кэшируем в памяти
+	if s.sessionSpeakerProfiles == nil {
+		s.sessionSpeakerProfiles = make(map[string][]SessionSpeakerProfile)
+	}
+	s.sessionSpeakerProfiles[sessionID] = profiles
+
+	log.Printf("Loaded %d speaker profiles for session %s from disk", len(profiles), sessionID[:8])
+	return profiles, nil
 }

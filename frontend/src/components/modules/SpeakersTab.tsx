@@ -75,6 +75,7 @@ const RenameDialog: React.FC<RenameDialogProps> = ({
                     boxShadow: 'var(--shadow-lg)',
                 }}
                 onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
             >
                 <h3 style={{ margin: '0 0 1rem', color: 'var(--text-primary)' }}>
                     Переименовать спикера

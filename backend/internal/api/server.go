@@ -1805,8 +1805,11 @@ func (s *Server) getSpeakerEmbedding(sessionID string, localSpeakerID int) ([]fl
 	// globalSpeakerID в профилях: 1-based (1, 2, 3...)
 	globalSpeakerID := localSpeakerID + 1
 
-	// Сначала пробуем получить из сохранённых профилей сессии
-	profiles := s.TranscriptionService.GetSessionSpeakerProfiles(sessionID)
+	// Сначала пробуем получить из сохранённых профилей сессии (память или диск)
+	profiles, err := s.TranscriptionService.LoadSessionSpeakerProfiles(sessionID)
+	if err != nil {
+		log.Printf("[VoicePrint] getSpeakerEmbedding: failed to load profiles: %v", err)
+	}
 	for _, profile := range profiles {
 		if profile.SpeakerID == globalSpeakerID {
 			if len(profile.Embedding) > 0 {
@@ -2426,7 +2429,8 @@ func (s *Server) handleSpeakerSampleAPI(w http.ResponseWriter, r *http.Request) 
 
 	// Находим первый сегмент этого спикера для извлечения аудио
 	var targetSegment *session.TranscriptSegment
-	speakerNames := s.getSpeakerNamesForLocalID(localSpeakerID)
+	speakerNames := s.getSpeakerNamesForLocalIDInSession(sessionID, localSpeakerID)
+	log.Printf("Looking for speaker sample with names: %v", speakerNames)
 
 	for _, chunk := range sess.Chunks {
 		for i := range chunk.Dialogue {
@@ -2506,4 +2510,67 @@ func (s *Server) getSpeakerNamesForLocalID(localSpeakerID int) []string {
 		"Собеседник", // Для случая единственного собеседника
 		"sys",
 	}
+}
+
+// getSpeakerNamesForLocalIDInSession возвращает все возможные имена спикера по localID,
+// включая кастомные имена из сессии
+func (s *Server) getSpeakerNamesForLocalIDInSession(sessionID string, localSpeakerID int) []string {
+	// Начинаем со стандартных имён
+	names := s.getSpeakerNamesForLocalID(localSpeakerID)
+
+	// Получаем сессию для поиска кастомных имён
+	sess, err := s.SessionMgr.GetSession(sessionID)
+	if err != nil {
+		return names
+	}
+
+	// Собираем все уникальные имена спикеров из диалога
+	// и пытаемся сопоставить их с localSpeakerID
+	speakerCounts := make(map[string]int)
+	for _, chunk := range sess.Chunks {
+		for _, seg := range chunk.Dialogue {
+			if seg.Speaker != "" && seg.Speaker != "Вы" && seg.Speaker != "mic" {
+				speakerCounts[seg.Speaker]++
+			}
+		}
+	}
+
+	// Если есть кастомные имена (не стандартные), добавляем их
+	standardNames := map[string]bool{
+		"sys": true, "Собеседник": true,
+	}
+	for i := 0; i < 10; i++ {
+		standardNames[fmt.Sprintf("Speaker %d", i)] = true
+		standardNames[fmt.Sprintf("Собеседник %d", i+1)] = true
+	}
+
+	// Находим кастомные имена и сопоставляем по порядку появления
+	var customNames []string
+	for name := range speakerCounts {
+		if !standardNames[name] {
+			customNames = append(customNames, name)
+		}
+	}
+
+	// Если localSpeakerID соответствует индексу кастомного имени, добавляем его
+	// Это упрощённая эвристика - в реальности нужно отслеживать маппинг
+	if localSpeakerID < len(customNames) {
+		names = append(names, customNames[localSpeakerID])
+	}
+
+	// Также добавляем все кастомные имена как fallback
+	for _, name := range customNames {
+		found := false
+		for _, existing := range names {
+			if existing == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			names = append(names, name)
+		}
+	}
+
+	return names
 }

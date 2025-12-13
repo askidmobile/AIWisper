@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.18] - 2025-12-13
+
+### Fixed
+- **Speaker Sample Playback for Custom Names**: Fixed playback not working for speakers with custom names (e.g., "Лаша Кравченко")
+  - Added `getSpeakerNamesForLocalIDInSession()` function that includes custom speaker names from session
+  - Now correctly finds audio segments for renamed speakers
+
+- **Space Key Triggering Playback in Rename Dialog**: Fixed space key starting audio playback when typing speaker name
+  - Added `onKeyDown={(e) => e.stopPropagation()}` to dialog container to prevent keyboard shortcuts from propagating
+
+- **VoicePrint Persistence**: Fixed voiceprints not being saved when renaming speakers in old sessions
+  - Added `SaveSessionSpeakerProfiles()` and `LoadSessionSpeakerProfiles()` functions
+  - Speaker embeddings are now saved to `speaker_profiles.json` in session directory
+  - Embeddings are loaded from disk when opening old sessions
+  - VoicePrints can now be created from any session, not just active recordings
+
+### Technical
+- `backend/internal/api/server.go`:
+  - Added `getSpeakerNamesForLocalIDInSession()` for custom name lookup
+  - Updated `handleSpeakerSampleAPI()` to use session-aware name lookup
+  - Updated `getSpeakerEmbedding()` to load profiles from disk
+- `backend/internal/service/transcription.go`:
+  - Added `SaveSessionSpeakerProfiles()` - saves profiles to JSON file
+  - Added `LoadSessionSpeakerProfiles()` - loads profiles from disk with memory cache
+  - Profiles are now saved after each diarization run
+- `frontend/src/components/modules/SpeakersTab.tsx`:
+  - Added `onKeyDown` handler to prevent keyboard event propagation in rename dialog
+
 ## [1.40.17] - 2025-12-13
 
 ### Added
