@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.19] - 2025-12-14
+
+### Fixed
+- **Deadlock on Chunk Retranscription**: Fixed critical bug where UI didn't update after retranscribing a chunk
+  - **Problem**: Chunk remained in "Распознаётся..." status with hourglass icon despite successful transcription
+  - **Root Cause**: Deadlock in `OnChunkTranscribed` callback - callback was invoked from `UpdateChunk*` functions while holding `m.mu` and `session.mu` locks, then tried to acquire same locks via `applyExistingSpeakerRenames()` → `UpdateSpeakerName()`
+  - **Solution**: Moved callback invocation outside critical section in all three functions:
+    - `UpdateChunkTranscription`
+    - `UpdateChunkStereoWithSegments`
+    - `UpdateChunkWithDiarizedSegments`
+  - Callback now executes after locks are released, allowing safe calls to any methods
+
+### Technical
+- `backend/session/manager.go`:
+  - Refactored 3 functions to use anonymous function for critical section
+  - Callback stored in `callbackChunk` variable and invoked after `defer m.mu.Unlock()` completes
+  - Pattern: data update under lock → release lock → invoke callback
+
 ## [1.40.18] - 2025-12-13
 
 ### Fixed
