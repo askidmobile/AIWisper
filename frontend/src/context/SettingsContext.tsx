@@ -1,6 +1,6 @@
 import React, { createContext, useContext } from 'react';
 import { useSettings, AppSettings } from '../hooks/useSettings';
-import { HybridTranscriptionSettings } from '../types/models';
+import { HybridTranscriptionSettings, VADMode, VADMethod } from '../types/models';
 
 interface SettingsContextType {
     settings: AppSettings;
@@ -29,6 +29,13 @@ interface SettingsContextType {
     echoCancel: number;
     setEchoCancel: (v: number) => void;
     
+    // VAD настройки
+    vadMode: VADMode;
+    setVADMode: (v: VADMode) => void;
+    
+    vadMethod: VADMethod;
+    setVADMethod: (v: VADMethod) => void;
+    
     pauseThreshold: number;
     setPauseThreshold: (v: number) => void;
     
@@ -49,6 +56,10 @@ interface SettingsContextType {
     
     hybridTranscription: HybridTranscriptionSettings;
     setHybridTranscription: (v: HybridTranscriptionSettings) => void;
+    
+    // UI настройки
+    showSessionStats: boolean;
+    setShowSessionStats: (v: boolean) => void;
 }
 
 const SettingsContext = createContext<SettingsContextType | null>(null);
@@ -56,8 +67,24 @@ const SettingsContext = createContext<SettingsContextType | null>(null);
 export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const settingsHook = useSettings();
     
+    // Расширяем хук дополнительными геттерами/сеттерами
+    const extendedValue: SettingsContextType = {
+        ...settingsHook,
+        
+        // VAD настройки
+        vadMode: settingsHook.settings.vadMode,
+        setVADMode: (v) => settingsHook.updateSetting('vadMode', v),
+        
+        vadMethod: settingsHook.settings.vadMethod,
+        setVADMethod: (v) => settingsHook.updateSetting('vadMethod', v),
+        
+        // UI настройки
+        showSessionStats: settingsHook.settings.showSessionStats,
+        setShowSessionStats: (v) => settingsHook.updateSetting('showSessionStats', v),
+    };
+    
     return (
-        <SettingsContext.Provider value={settingsHook}>
+        <SettingsContext.Provider value={extendedValue}>
             {children}
         </SettingsContext.Provider>
     );

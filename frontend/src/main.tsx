@@ -2,16 +2,17 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import './index.css'
 
-// Feature flag для переключения между старым и новым UI
-// Установите USE_NEW_UI=true в localStorage для тестирования нового UI
-// Или добавьте VITE_USE_NEW_UI=true в .env файл
-const USE_NEW_UI = localStorage.getItem('USE_NEW_UI') === 'true' || 
-                   (import.meta as any).env?.VITE_USE_NEW_UI === 'true';
+// Feature flag для переключения между новым и старым UI
+// По умолчанию используется НОВЫЙ модульный UI (AppWithProviders)
+// Установите USE_LEGACY_UI=true в localStorage для использования старого App.tsx
+// Или добавьте VITE_USE_LEGACY_UI=true в .env файл
+const USE_LEGACY_UI = localStorage.getItem('USE_LEGACY_UI') === 'true' || 
+                      (import.meta as any).env?.VITE_USE_LEGACY_UI === 'true';
 
 // Динамический импорт для code splitting
-const AppComponent = USE_NEW_UI 
-    ? React.lazy(() => import('./AppWithProviders'))
-    : React.lazy(() => import('./App'));
+const AppComponent = USE_LEGACY_UI 
+    ? React.lazy(() => import('./App.legacy'))
+    : React.lazy(() => import('./AppWithProviders'));
 
 // Fallback компонент для загрузки
 const LoadingFallback = () => (
@@ -44,8 +45,9 @@ const LoadingFallback = () => (
 );
 
 // Логируем какой UI используется
-console.log(`[AIWisper] Using ${USE_NEW_UI ? 'NEW modular UI (MainLayout)' : 'LEGACY UI (App.tsx)'}`);
-console.log('[AIWisper] To switch UI, run in console: localStorage.setItem("USE_NEW_UI", "true") and reload');
+console.log(`[AIWisper] Using ${USE_LEGACY_UI ? 'LEGACY UI (App.tsx)' : 'NEW modular UI (MainLayout)'}`);
+console.log('[AIWisper] To switch to legacy UI, run: localStorage.setItem("USE_LEGACY_UI", "true") and reload');
+console.log('[AIWisper] To switch to new UI, run: localStorage.removeItem("USE_LEGACY_UI") and reload');
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>

@@ -24,3 +24,13 @@ export { useWebSocket } from './useWebSocket';
 
 // Streaming транскрипция
 export { useStreamingTranscription } from './useStreamingTranscription';
+
+// Волновая форма
+export { useWaveform } from './useWaveform';
+export type { WaveformStatus } from './useWaveform';
+
+// Запись
+export { useRecording, playBeep, formatDuration } from './useRecording';
+
+// Поиск сессий
+export { useSessionSearch } from './useSessionSearch';

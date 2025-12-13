@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.0] - 2025-12-14
+
+### Changed
+- **Modular UI Architecture**: Major refactoring of frontend codebase
+  - Reduced `TranscriptionView.tsx` from 1011 to 514 lines (-49%)
+  - Extracted `WelcomeViewSimple`, `RecordingView`, `ChunksViewSimple`, `DialogueHelpers` components
+  - New modular UI is now default (legacy UI available via `localStorage.setItem("USE_LEGACY_UI", "true")`)
+  - Bundle size reduced by 21% (103 KB vs 131 KB)
+
+### Technical
+- `src/App.tsx`: Minimal 11-line wrapper, legacy code moved to `App.legacy.tsx`
+- `src/main.tsx`: Changed feature flag from `USE_NEW_UI` to `USE_LEGACY_UI`
+- New components in `src/components/views/`, `src/components/chunks/`, `src/components/dialogue/`
+- Updated `docs/plan_refactoring_app_tsx_2025-12-13.md` with session results
+
 ## [1.40.19] - 2025-12-14
 
 ### Fixed
