@@ -217,8 +217,6 @@ func (s *Server) setupCallbacks() {
 
 	// Chunk Transcribed -> Notify
 	s.SessionMgr.SetOnChunkTranscribed(func(chunk *session.Chunk) {
-		log.Printf("Sending transcription result for chunk %d to frontend", chunk.Index)
-
 		// Проверяем, идёт ли полная ретранскрипция
 		// Если да - не применяем переименования после каждого чанка (будет применено в конце)
 		s.fullRetranscribeActiveMu.RLock()

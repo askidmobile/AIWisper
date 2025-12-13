@@ -269,58 +269,68 @@ func (m *Manager) AddChunk(sessionID string, chunk *Chunk) error {
 
 // UpdateChunkTranscription обновляет транскрипцию чанка
 func (m *Manager) UpdateChunkTranscription(sessionID, chunkID, text string, err error) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	var callbackChunk *Chunk
 
-	session, ok := m.sessions[sessionID]
-	if !ok {
-		return fmt.Errorf("session not found: %s", sessionID)
-	}
+	// Критическая секция - обновление данных под блокировкой
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
 
-	session.mu.Lock()
-	defer session.mu.Unlock()
-
-	for _, chunk := range session.Chunks {
-		if chunk.ID == chunkID {
-			now := time.Now()
-			chunk.TranscribedAt = &now
-
-			// Вычисляем время обработки если есть время начала
-			if chunk.ProcessingStartTime != nil {
-				chunk.ProcessingTime = now.Sub(*chunk.ProcessingStartTime).Milliseconds()
-			}
-
-			if err != nil {
-				chunk.Status = ChunkStatusFailed
-				chunk.Error = err.Error()
-				// Очищаем старые данные при ошибке
-				chunk.Transcription = ""
-				chunk.MicText = ""
-				chunk.SysText = ""
-				chunk.MicSegments = nil
-				chunk.SysSegments = nil
-				chunk.Dialogue = nil
-			} else {
-				chunk.Status = ChunkStatusCompleted
-				chunk.Transcription = text
-				chunk.Error = "" // Очищаем ошибку при успехе
-			}
-
-			// Сохраняем метаданные чанка
-			chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
-			data, _ := json.MarshalIndent(chunk, "", "  ")
-			os.WriteFile(chunkMetaPath, data, 0644)
-
-			// Callback
-			if m.onChunkTranscribed != nil {
-				m.onChunkTranscribed(chunk)
-			}
-
-			return nil
+		session, ok := m.sessions[sessionID]
+		if !ok {
+			return
 		}
+
+		session.mu.Lock()
+		defer session.mu.Unlock()
+
+		for _, chunk := range session.Chunks {
+			if chunk.ID == chunkID {
+				now := time.Now()
+				chunk.TranscribedAt = &now
+
+				// Вычисляем время обработки если есть время начала
+				if chunk.ProcessingStartTime != nil {
+					chunk.ProcessingTime = now.Sub(*chunk.ProcessingStartTime).Milliseconds()
+				}
+
+				if err != nil {
+					chunk.Status = ChunkStatusFailed
+					chunk.Error = err.Error()
+					// Очищаем старые данные при ошибке
+					chunk.Transcription = ""
+					chunk.MicText = ""
+					chunk.SysText = ""
+					chunk.MicSegments = nil
+					chunk.SysSegments = nil
+					chunk.Dialogue = nil
+				} else {
+					chunk.Status = ChunkStatusCompleted
+					chunk.Transcription = text
+					chunk.Error = "" // Очищаем ошибку при успехе
+				}
+
+				// Сохраняем метаданные чанка
+				chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
+				data, _ := json.MarshalIndent(chunk, "", "  ")
+				os.WriteFile(chunkMetaPath, data, 0644)
+
+				callbackChunk = chunk
+				return
+			}
+		}
+	}()
+
+	// Callback ВЫЗЫВАЕТСЯ ВНЕ БЛОКИРОВКИ чтобы избежать дедлока
+	if callbackChunk != nil && m.onChunkTranscribed != nil {
+		m.onChunkTranscribed(callbackChunk)
+		return nil
 	}
 
-	return fmt.Errorf("chunk not found: %s", chunkID)
+	if callbackChunk == nil {
+		return fmt.Errorf("chunk not found: %s", chunkID)
+	}
+	return nil
 }
 
 // UpdateChunkStereoTranscription обновляет раздельные транскрипции для mic и system
@@ -330,120 +340,140 @@ func (m *Manager) UpdateChunkStereoTranscription(sessionID, chunkID, micText, sy
 
 // UpdateChunkStereoWithSegments обновляет раздельные транскрипции с сегментами
 func (m *Manager) UpdateChunkStereoWithSegments(sessionID, chunkID, micText, sysText string, micSegments, sysSegments []TranscriptSegment, err error) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	var callbackChunk *Chunk
 
-	session, ok := m.sessions[sessionID]
-	if !ok {
-		return fmt.Errorf("session not found: %s", sessionID)
-	}
+	// Критическая секция - обновление данных под блокировкой
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
 
-	session.mu.Lock()
-	defer session.mu.Unlock()
-
-	for _, chunk := range session.Chunks {
-		if chunk.ID == chunkID {
-			now := time.Now()
-			chunk.TranscribedAt = &now
-
-			// Вычисляем время обработки если есть время начала
-			if chunk.ProcessingStartTime != nil {
-				chunk.ProcessingTime = now.Sub(*chunk.ProcessingStartTime).Milliseconds()
-			}
-
-			if err != nil {
-				chunk.Status = ChunkStatusFailed
-				chunk.Error = err.Error()
-				// Очищаем старые данные при ошибке
-				chunk.MicText = ""
-				chunk.SysText = ""
-				chunk.Transcription = ""
-				chunk.MicSegments = nil
-				chunk.SysSegments = nil
-				chunk.Dialogue = nil
-			} else {
-				chunk.Status = ChunkStatusCompleted
-				chunk.Error = "" // Очищаем ошибку при успехе
-				chunk.MicText = micText
-				chunk.SysText = sysText
-				chunk.MicSegments = micSegments
-				chunk.SysSegments = sysSegments
-
-				// Объединяем сегменты в хронологический диалог
-				chunk.Dialogue = mergeSegmentsToDialogue(micSegments, sysSegments)
-
-				// Формируем общую транскрипцию из диалога
-				chunk.Transcription = formatDialogue(chunk.Dialogue)
-			}
-
-			// Сохраняем метаданные чанка
-			chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
-			data, _ := json.MarshalIndent(chunk, "", "  ")
-			os.WriteFile(chunkMetaPath, data, 0644)
-
-			// Callback
-			if m.onChunkTranscribed != nil {
-				m.onChunkTranscribed(chunk)
-			}
-
-			return nil
+		session, ok := m.sessions[sessionID]
+		if !ok {
+			return
 		}
+
+		session.mu.Lock()
+		defer session.mu.Unlock()
+
+		for _, chunk := range session.Chunks {
+			if chunk.ID == chunkID {
+				now := time.Now()
+				chunk.TranscribedAt = &now
+
+				// Вычисляем время обработки если есть время начала
+				if chunk.ProcessingStartTime != nil {
+					chunk.ProcessingTime = now.Sub(*chunk.ProcessingStartTime).Milliseconds()
+				}
+
+				if err != nil {
+					chunk.Status = ChunkStatusFailed
+					chunk.Error = err.Error()
+					// Очищаем старые данные при ошибке
+					chunk.MicText = ""
+					chunk.SysText = ""
+					chunk.Transcription = ""
+					chunk.MicSegments = nil
+					chunk.SysSegments = nil
+					chunk.Dialogue = nil
+				} else {
+					chunk.Status = ChunkStatusCompleted
+					chunk.Error = "" // Очищаем ошибку при успехе
+					chunk.MicText = micText
+					chunk.SysText = sysText
+					chunk.MicSegments = micSegments
+					chunk.SysSegments = sysSegments
+
+					// Объединяем сегменты в хронологический диалог
+					chunk.Dialogue = mergeSegmentsToDialogue(micSegments, sysSegments)
+
+					// Формируем общую транскрипцию из диалога
+					chunk.Transcription = formatDialogue(chunk.Dialogue)
+				}
+
+				// Сохраняем метаданные чанка
+				chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
+				data, _ := json.MarshalIndent(chunk, "", "  ")
+				os.WriteFile(chunkMetaPath, data, 0644)
+
+				callbackChunk = chunk
+				return
+			}
+		}
+	}()
+
+	// Callback ВЫЗЫВАЕТСЯ ВНЕ БЛОКИРОВКИ чтобы избежать дедлока
+	if callbackChunk != nil && m.onChunkTranscribed != nil {
+		m.onChunkTranscribed(callbackChunk)
+		return nil
 	}
 
-	return fmt.Errorf("chunk not found: %s", chunkID)
+	if callbackChunk == nil {
+		return fmt.Errorf("chunk not found: %s", chunkID)
+	}
+	return nil
 }
 
 // UpdateChunkWithDiarizedSegments обновляет чанк с диаризованными сегментами (для mono режима с диаризацией)
 func (m *Manager) UpdateChunkWithDiarizedSegments(sessionID, chunkID, text string, segments []TranscriptSegment, err error) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	var callbackChunk *Chunk
 
-	session, ok := m.sessions[sessionID]
-	if !ok {
-		return fmt.Errorf("session not found: %s", sessionID)
-	}
+	// Критическая секция - обновление данных под блокировкой
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
 
-	session.mu.Lock()
-	defer session.mu.Unlock()
-
-	for _, chunk := range session.Chunks {
-		if chunk.ID == chunkID {
-			now := time.Now()
-			chunk.TranscribedAt = &now
-
-			// Вычисляем время обработки если есть время начала
-			if chunk.ProcessingStartTime != nil {
-				chunk.ProcessingTime = now.Sub(*chunk.ProcessingStartTime).Milliseconds()
-			}
-
-			if err != nil {
-				chunk.Status = ChunkStatusFailed
-				chunk.Error = err.Error()
-				chunk.Transcription = ""
-				chunk.Dialogue = nil
-			} else {
-				chunk.Status = ChunkStatusCompleted
-				chunk.Error = ""
-				chunk.Transcription = text
-				// Сохраняем сегменты как диалог (уже с метками спикеров)
-				chunk.Dialogue = segments
-			}
-
-			// Сохраняем метаданные чанка
-			chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
-			data, _ := json.MarshalIndent(chunk, "", "  ")
-			os.WriteFile(chunkMetaPath, data, 0644)
-
-			// Callback
-			if m.onChunkTranscribed != nil {
-				m.onChunkTranscribed(chunk)
-			}
-
-			return nil
+		session, ok := m.sessions[sessionID]
+		if !ok {
+			return
 		}
+
+		session.mu.Lock()
+		defer session.mu.Unlock()
+
+		for _, chunk := range session.Chunks {
+			if chunk.ID == chunkID {
+				now := time.Now()
+				chunk.TranscribedAt = &now
+
+				// Вычисляем время обработки если есть время начала
+				if chunk.ProcessingStartTime != nil {
+					chunk.ProcessingTime = now.Sub(*chunk.ProcessingStartTime).Milliseconds()
+				}
+
+				if err != nil {
+					chunk.Status = ChunkStatusFailed
+					chunk.Error = err.Error()
+					chunk.Transcription = ""
+					chunk.Dialogue = nil
+				} else {
+					chunk.Status = ChunkStatusCompleted
+					chunk.Error = ""
+					chunk.Transcription = text
+					// Сохраняем сегменты как диалог (уже с метками спикеров)
+					chunk.Dialogue = segments
+				}
+
+				// Сохраняем метаданные чанка
+				chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
+				data, _ := json.MarshalIndent(chunk, "", "  ")
+				os.WriteFile(chunkMetaPath, data, 0644)
+
+				callbackChunk = chunk
+				return
+			}
+		}
+	}()
+
+	// Callback ВЫЗЫВАЕТСЯ ВНЕ БЛОКИРОВКИ чтобы избежать дедлока
+	if callbackChunk != nil && m.onChunkTranscribed != nil {
+		m.onChunkTranscribed(callbackChunk)
+		return nil
 	}
 
-	return fmt.Errorf("chunk not found: %s", chunkID)
+	if callbackChunk == nil {
+		return fmt.Errorf("chunk not found: %s", chunkID)
+	}
+	return nil
 }
 
 // mergeSegmentsToDialogue объединяет сегменты mic и sys в хронологическом порядке
