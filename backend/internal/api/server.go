@@ -133,7 +133,6 @@ func (s *Server) Start() {
 	http.HandleFunc("/api/import", s.handleImportAudio)
 	http.HandleFunc("/api/export/batch", s.handleBatchExport)
 	http.HandleFunc("/api/speaker-sample/", s.handleSpeakerSampleAPI)
-	http.HandleFunc("/api/speaker-sample/", s.handleSpeakerSampleAPI)
 
 	log.Printf("Backend listening on HTTP :%s and gRPC %s", s.Config.Port, s.Config.GRPCAddr)
 	if err := http.ListenAndServe(":"+s.Config.Port, nil); err != nil {
