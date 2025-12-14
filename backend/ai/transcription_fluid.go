@@ -204,14 +204,18 @@ func (e *FluidASREngine) TranscribeWithSegments(samples []float32) ([]Transcript
 	}
 
 	if len(samples) == 0 {
-		return nil, nil
+		log.Printf("FluidASREngine: WARNING - received 0 samples, returning empty result")
+		return []TranscriptSegment{}, nil
 	}
+
+	log.Printf("FluidASREngine: TranscribeWithSegments called with %d samples (%.2fs)",
+		len(samples), float64(len(samples))/16000.0)
 
 	// Parakeet TDT требует минимум 1 секунду аудио
 	if len(samples) < MinSamplesForFluidASR {
-		log.Printf("FluidASREngine: audio too short (%d samples = %.2fs), minimum 1 second required",
+		log.Printf("FluidASREngine: WARNING - audio too short (%d samples = %.2fs), minimum 1 second required. Returning empty result.",
 			len(samples), float64(len(samples))/16000.0)
-		return nil, nil // Возвращаем пустой результат вместо ошибки
+		return []TranscriptSegment{}, nil // Возвращаем пустой массив вместо nil
 	}
 
 	startTime := time.Now()

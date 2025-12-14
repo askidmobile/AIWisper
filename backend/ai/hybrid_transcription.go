@@ -236,16 +236,35 @@ func (h *HybridTranscriber) transcribeParallel(samples []float32) (*HybridTransc
 	primarySegments, primaryErr = primaryResult.segments, primaryResult.err
 	secondarySegments, secondaryErr = secondaryResult.segments, secondaryResult.err
 
-	// Если первичная модель упала - пробуем вторичную
-	if primaryErr != nil {
-		if secondaryErr != nil {
-			return nil, fmt.Errorf("both models failed: primary: %v, secondary: %v", primaryErr, secondaryErr)
+	// Проверяем пустые результаты (не ошибки, но нет данных)
+	// Это важно для Parakeet TDT v3, который требует минимум 1 секунду аудио
+	primaryEmpty := len(primarySegments) == 0 || segmentsToFullText(primarySegments) == ""
+	secondaryEmpty := len(secondarySegments) == 0 || segmentsToFullText(secondarySegments) == ""
+
+	// Если первичная модель упала или вернула пустой результат - пробуем вторичную
+	if primaryErr != nil || primaryEmpty {
+		if secondaryErr != nil || secondaryEmpty {
+			if primaryErr != nil && secondaryErr != nil {
+				return nil, fmt.Errorf("both models failed: primary: %v, secondary: %v", primaryErr, secondaryErr)
+			}
+			if primaryErr != nil {
+				return nil, fmt.Errorf("primary failed: %v, secondary returned empty", primaryErr)
+			}
+			if secondaryErr != nil {
+				return nil, fmt.Errorf("primary returned empty, secondary failed: %v", secondaryErr)
+			}
+			// Обе модели вернули пустой результат (аудио слишком короткое для обеих)
+			log.Printf("[HybridTranscriber] Parallel: Both models returned empty (audio too short?)")
+			return &HybridTranscriptionResult{Segments: []TranscriptSegment{}}, nil
 		}
+		// Primary пустой/ошибка, но secondary есть - используем secondary
+		log.Printf("[HybridTranscriber] Parallel: Primary returned empty/error, using secondary result")
 		return &HybridTranscriptionResult{Segments: secondarySegments}, nil
 	}
 
-	// Если вторичная модель упала - используем первичную
-	if secondaryErr != nil {
+	// Если вторичная модель упала или вернула пустой результат - используем первичную
+	if secondaryErr != nil || secondaryEmpty {
+		log.Printf("[HybridTranscriber] Parallel: Secondary returned empty/error (audio < 1s for Parakeet?), using primary result as-is")
 		return &HybridTranscriptionResult{Segments: primarySegments}, nil
 	}
 
