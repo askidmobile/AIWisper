@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.1] - 2025-12-14
+
+### Fixed
+- **Speaker Re-Rename Bug**: Fixed inability to rename already renamed speakers
+  - **Problem**: After renaming "Собеседник 1" to "Иван", couldn't rename "Иван" to something else
+  - **Root Cause**: `renameSpeakerInSession()` only searched for standard names, not current custom names
+  - **Solution**: Now uses `getSessionSpeakers()` to find current speaker name before renaming
+
+- **Space Key in Rename Dialog**: Fixed space key triggering audio playback when typing speaker name
+  - **Problem**: Pressing space while entering name in rename dialog started audio playback
+  - **Solution**: Added `document.activeElement` check in keyboard handlers and `onKeyDown` handler on dialog overlay
+  - Fixed in both `useKeyboardShortcuts.ts` and `App.legacy.tsx`
+
+- **Wrong Speaker Sample Playback**: Fixed incorrect audio segment being played for speaker preview
+  - **Problem**: Clicking play button for a speaker played wrong person's audio
+  - **Root Cause**: `getSpeakerNamesForLocalIDInSession()` used unstable map iteration order for custom name mapping
+  - **Solution**: Now uses `getSessionSpeakers()` for correct localID → displayName mapping
+
+### Technical
+- `backend/internal/api/server.go`:
+  - `renameSpeakerInSession()`: Added lookup of current custom name via `getSessionSpeakers()`
+  - `getSpeakerNamesForLocalIDInSession()`: Rewritten to use `getSessionSpeakers()` for reliable mapping
+  - `getSessionSpeakers()`: Now looks up localID from `TranscriptionService` profiles for custom names
+- `frontend/src/hooks/useKeyboardShortcuts.ts`: Added `document.activeElement` check
+- `frontend/src/App.legacy.tsx`: Added `document.activeElement` check in keyboard handler
+- `frontend/src/components/modules/SpeakersTab.tsx`: Added `onKeyDown` handler to dialog overlay
+
 ## [1.41.0] - 2025-12-14
 
 ### Changed
