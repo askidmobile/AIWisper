@@ -148,6 +148,7 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
             isConnected,
             autoEnableAttempted: autoEnableAttempted.current,
             savedSettingsEnabled: savedSettings?.enabled,
+            provider: savedSettings?.provider,
             modelsCount: models.length
         });
         
@@ -156,6 +157,23 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
             return;
         }
         
+        // FluidAudio (coreml) не требует моделей - они скачиваются автоматически
+        if (savedSettings.provider === 'coreml') {
+            autoEnableAttempted.current = true;
+            console.log('[Diarization] Auto-enabling FluidAudio (coreml)...');
+            setIsLoading(true);
+            setError(null);
+            
+            sendMessage({
+                type: 'enable_diarization',
+                segmentationModelPath: '',
+                embeddingModelPath: '',
+                diarizationProvider: 'coreml',
+            });
+            return;
+        }
+        
+        // Для Sherpa-ONNX нужны модели
         // Ждём пока модели загрузятся
         if (models.length === 0) {
             console.log('[Diarization] Auto-enable waiting: models not loaded yet');
@@ -244,12 +262,39 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     const enableDiarization = useCallback(
         (segModelId: string, embModelId: string, provider: string = 'auto') => {
-            // Находим модели
+            setIsLoading(true);
+            setError(null);
+            
+            // FluidAudio (coreml) не требует моделей - они скачиваются автоматически
+            if (provider === 'coreml') {
+                console.log('[Diarization] Enabling FluidAudio (coreml)...');
+                
+                // Сохраняем настройки
+                const settings: DiarizationSettings = {
+                    enabled: true,
+                    segModelId: '',
+                    embModelId: '',
+                    provider: 'coreml',
+                };
+                saveDiarizationSettings(settings);
+                setSavedSettings(settings);
+
+                sendMessage({
+                    type: 'enable_diarization',
+                    segmentationModelPath: '',
+                    embeddingModelPath: '',
+                    diarizationProvider: 'coreml',
+                });
+                return;
+            }
+            
+            // Для Sherpa-ONNX нужны модели
             const segModel = segmentationModels.find((m) => m.id === segModelId);
             const embModel = embeddingModels.find((m) => m.id === embModelId);
 
             if (!segModel || !embModel) {
                 setError('Модели не найдены');
+                setIsLoading(false);
                 return;
             }
 
@@ -257,22 +302,22 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
             if (segModel.status !== 'downloaded' && segModel.status !== 'active') {
                 setError('Сначала скачайте модель сегментации');
                 downloadModel(segModelId);
+                setIsLoading(false);
                 return;
             }
             if (embModel.status !== 'downloaded' && embModel.status !== 'active') {
                 setError('Сначала скачайте модель эмбеддингов');
                 downloadModel(embModelId);
+                setIsLoading(false);
                 return;
             }
 
             if (!segModel.path || !embModel.path) {
                 setError('Пути к моделям не найдены');
+                setIsLoading(false);
                 return;
             }
 
-            setIsLoading(true);
-            setError(null);
-            
             // Сохраняем настройки
             const settings: DiarizationSettings = {
                 enabled: true,
