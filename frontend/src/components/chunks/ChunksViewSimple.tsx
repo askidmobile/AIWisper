@@ -87,18 +87,23 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
     onRetranscribe,
 }) => {
     const durationSec = ((chunk.duration || 0) / 1e9).toFixed(1);
-    const statusColor = chunk.status === 'completed' ? '#4caf50' 
-        : chunk.status === 'error' ? '#f44336' 
-        : '#ff9800';
+    const statusColor = chunk.status === 'completed' ? 'var(--success)' 
+        : chunk.status === 'error' ? 'var(--danger)' 
+        : 'var(--warning)';
 
     return (
         <div style={{
-            padding: '0.6rem 0.8rem',
-            marginBottom: '0.4rem',
-            backgroundColor: isTranscribing ? '#2a2a1a' : isHighlighted ? '#1a3a2a' : '#12121f',
-            borderRadius: '4px',
+            padding: '0.75rem 1rem',
+            marginBottom: '0.5rem',
+            backgroundColor: isTranscribing 
+                ? 'rgba(255, 152, 0, 0.1)' 
+                : isHighlighted 
+                    ? 'rgba(76, 175, 80, 0.1)' 
+                    : 'var(--surface)',
+            borderRadius: 'var(--radius-md)',
             borderLeft: `3px solid ${statusColor}`,
             transition: 'background-color 0.3s ease',
+            border: '1px solid var(--glass-border-subtle)',
         }}>
             {/* Header */}
             <div style={{ 
@@ -106,67 +111,87 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
                 justifyContent: 'space-between', 
                 alignItems: 'center' 
             }}>
-                <span style={{ color: '#888' }}>
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                     #{chunk.index ?? 0} • {durationSec}s
                 </span>
                 
-                <div style={{ display: 'flex', gap: '5px' }}>
+                <div style={{ display: 'flex', gap: '6px' }}>
                     <button
                         onClick={onPlay}
+                        title={isPlaying ? 'Остановить' : 'Воспроизвести'}
                         style={{
-                            padding: '0.15rem 0.4rem',
-                            fontSize: '0.75rem',
-                            backgroundColor: isPlaying ? '#f44336' : '#2196f3',
+                            padding: '0.25rem 0.5rem',
+                            backgroundColor: isPlaying ? 'var(--danger)' : 'var(--primary)',
                             color: 'white',
                             border: 'none',
-                            borderRadius: '3px',
-                            cursor: 'pointer'
+                            borderRadius: 'var(--radius-sm)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
                         }}
                     >
-                        {isPlaying ? '⏹' : '▶'}
+                        {isPlaying ? (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                                <rect x="6" y="4" width="4" height="16" rx="1"/>
+                                <rect x="14" y="4" width="4" height="16" rx="1"/>
+                            </svg>
+                        ) : (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+                                <polygon points="5 3 19 12 5 21 5 3"/>
+                            </svg>
+                        )}
                     </button>
                     
                     <button
                         onClick={onRetranscribe}
                         title="Повторить транскрипцию"
                         style={{
-                            padding: '0.15rem 0.4rem',
-                            fontSize: '0.75rem',
-                            backgroundColor: '#333',
-                            border: 'none',
-                            borderRadius: '3px',
-                            color: '#888',
-                            cursor: 'pointer'
+                            padding: '0.25rem 0.5rem',
+                            backgroundColor: 'var(--surface-strong)',
+                            border: '1px solid var(--glass-border)',
+                            borderRadius: 'var(--radius-sm)',
+                            color: 'var(--text-muted)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
                         }}
                     >
-                        🔄
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M23 4v6h-6"/>
+                            <path d="M1 20v-6h6"/>
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                        </svg>
                     </button>
                 </div>
             </div>
 
             {/* Content */}
-            <div style={{ marginTop: '0.4rem', color: '#ccc' }}>
+            <div style={{ marginTop: '0.5rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
                 {chunk.transcription || ''}
             </div>
 
             {/* Transcribing indicator */}
             {isTranscribing && (
                 <div style={{ 
-                    marginTop: '0.4rem', 
-                    color: '#ff9800', 
+                    marginTop: '0.5rem', 
+                    color: 'var(--warning)', 
                     fontSize: '0.8rem', 
                     display: 'flex', 
                     alignItems: 'center', 
                     gap: '0.5rem' 
                 }}>
-                    <span style={{ animation: 'pulse 1s infinite' }}>⏳</span> 
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}>
+                        <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                    </svg>
                     Распознаётся...
                 </div>
             )}
 
             {/* Error */}
             {chunk.error && (
-                <div style={{ marginTop: '0.4rem', color: '#f44336', fontSize: '0.8rem' }}>
+                <div style={{ marginTop: '0.5rem', color: 'var(--danger)', fontSize: '0.8rem' }}>
                     Ошибка: {chunk.error}
                 </div>
             )}
