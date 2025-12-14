@@ -312,12 +312,13 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     const handleRenameSpeaker = useCallback((localId: number, newName: string, saveAsVoiceprint: boolean) => {
         if (!selectedSession) return;
         sendMessage({
-            type: 'rename_speaker',
+            type: 'rename_session_speaker',
             sessionId: selectedSession.id,
-            localId,
-            newName,
+            localSpeakerId: localId,
+            speakerName: newName,
             saveAsVoiceprint
         });
+        console.log(`[MainLayout] Renaming speaker ${localId} to "${newName}"${saveAsVoiceprint ? ' (saving voiceprint)' : ''}`);
     }, [selectedSession, sendMessage]);
 
     // Play speaker sample

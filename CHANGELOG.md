@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.22] - 2025-12-14
+
+### Fixed
+- **Speaker Rename Not Working**: Исправлена кнопка переименования спикера в разделе "Собеседники"
+  - **Проблема**: Кнопка редактирования (✏️) не работала - ничего не происходило при нажатии
+  - **Причина**: Неправильный тип WebSocket сообщения (`rename_speaker` вместо `rename_session_speaker`) и неправильные имена полей
+  - **Решение**: Исправлен тип сообщения и имена полей в `MainLayout.tsx`:
+    - `type: 'rename_speaker'` → `type: 'rename_session_speaker'`
+    - `localId` → `localSpeakerId`
+    - `newName` → `speakerName`
+  - Теперь переименование спикера работает корректно, включая сохранение в глобальную базу voiceprints
+
+### Technical
+- `frontend/src/components/layout/MainLayout.tsx`:
+  - Исправлен `handleRenameSpeaker` для соответствия API бэкенда
+  - Добавлено логирование для отладки
+
 ## [1.41.21] - 2025-12-14
 
 ### Fixed
