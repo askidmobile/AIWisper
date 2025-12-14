@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.13] - 2025-12-14
+
+### Fixed
+- **Hybrid Transcription Ignoring `<unk>` Tokens**: Исправлена критическая ошибка в гибридной транскрипции
+  - **Проблема**: Алгоритм выбирал результат с `<unk>` токенами (например, `<unk>лки-палки`) вместо чистого варианта (`елки-палки`)
+  - **Причина 1**: Калибровка confidence не применялась к `fluid-asr` engine (использует GigaAM внутри)
+  - **Причина 2**: Наличие `<unk>` токенов не влияло на оценку качества распознавания
+  - **Решение**: 
+    - Добавлена калибровка для `fluid-asr` и `fluid` (factor=0.75, как у GigaAM)
+    - Добавлен штраф за `<unk>` токены: -15% от confidence за каждый токен
+    - Добавлена функция `countUnkTokens()` для подсчёта проблемных токенов
+
+### Technical
+- `backend/ai/hybrid_transcription.go`:
+  - `DefaultCalibrations`: добавлены паттерны `fluid-asr` и `fluid` с factor=0.75
+  - `mergeByConfidence()`: добавлен подсчёт и штраф за `<unk>` токены
+  - Добавлена функция `countUnkTokens()` для подсчёта `<unk>` и `[unk]` токенов
+
 ## [1.41.12] - 2025-12-14
 
 ### Fixed

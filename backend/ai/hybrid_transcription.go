@@ -63,11 +63,13 @@ type ConfidenceCalibration struct {
 
 // DefaultCalibrations дефолтные калибровки для известных моделей
 // GigaAM завышает confidence на ~25% из-за особенностей CTC loss
+// fluid-asr использует GigaAM внутри, поэтому тоже требует калибровки
 var DefaultCalibrations = []ConfidenceCalibration{
 	{ModelPattern: "(?i)gigaam", ScaleFactor: 0.75, Bias: 0},
+	{ModelPattern: "(?i)fluid-asr", ScaleFactor: 0.75, Bias: 0}, // fluid-asr = GigaAM
+	{ModelPattern: "(?i)fluid", ScaleFactor: 0.75, Bias: 0},     // fluid тоже = GigaAM
 	{ModelPattern: "(?i)whisper", ScaleFactor: 1.0, Bias: 0},
 	{ModelPattern: "(?i)parakeet", ScaleFactor: 1.0, Bias: 0},
-	{ModelPattern: "(?i)fluid", ScaleFactor: 1.0, Bias: 0},
 }
 
 // DefaultVotingConfig возвращает дефолтную конфигурацию voting-системы
@@ -322,6 +324,20 @@ func (h *HybridTranscriber) mergeByConfidence(primary, secondary []TranscriptSeg
 	log.Printf("[HybridTranscriber] MergeByConfidence: primaryAvgConf=%.4f, secondaryAvgConf=%.4f",
 		primaryAvgConf, secondaryAvgConf)
 
+	// КРИТИЧНО: Проверяем наличие <unk> токенов - это явный признак низкого качества
+	// Если модель выдала <unk>, её confidence должен быть сильно понижен
+	primaryUnkCount := countUnkTokens(primaryWords)
+	secondaryUnkCount := countUnkTokens(secondaryWords)
+
+	// Штраф за каждый <unk> токен: -15% от confidence
+	primaryUnkPenalty := float32(primaryUnkCount) * 0.15
+	secondaryUnkPenalty := float32(secondaryUnkCount) * 0.15
+
+	if primaryUnkCount > 0 || secondaryUnkCount > 0 {
+		log.Printf("[HybridTranscriber] MergeByConfidence: <unk> tokens - primary=%d (penalty=%.2f), secondary=%d (penalty=%.2f)",
+			primaryUnkCount, primaryUnkPenalty, secondaryUnkCount, secondaryUnkPenalty)
+	}
+
 	// ВАЖНО: Применяем калибровку confidence для честного сравнения
 	// GigaAM систематически завышает confidence на ~25% из-за CTC loss
 	calibrations := h.config.Voting.Calibrations
@@ -331,11 +347,20 @@ func (h *HybridTranscriber) mergeByConfidence(primary, secondary []TranscriptSeg
 	primaryCalFactor := getCalibrationFactor(h.primaryEngine.Name(), calibrations)
 	secondaryCalFactor := getCalibrationFactor(h.secondaryEngine.Name(), calibrations)
 
-	primaryCalibratedConf := primaryAvgConf * primaryCalFactor
-	secondaryCalibratedConf := secondaryAvgConf * secondaryCalFactor
+	// Применяем калибровку И штраф за <unk>
+	primaryCalibratedConf := (primaryAvgConf * primaryCalFactor) - primaryUnkPenalty
+	secondaryCalibratedConf := (secondaryAvgConf * secondaryCalFactor) - secondaryUnkPenalty
 
-	log.Printf("[HybridTranscriber] MergeByConfidence: calibrated primaryConf=%.4f (factor=%.2f), secondaryConf=%.4f (factor=%.2f)",
-		primaryCalibratedConf, primaryCalFactor, secondaryCalibratedConf, secondaryCalFactor)
+	// Не даём confidence уйти в минус
+	if primaryCalibratedConf < 0 {
+		primaryCalibratedConf = 0
+	}
+	if secondaryCalibratedConf < 0 {
+		secondaryCalibratedConf = 0
+	}
+
+	log.Printf("[HybridTranscriber] MergeByConfidence: calibrated primaryConf=%.4f (factor=%.2f, unkPenalty=%.2f), secondaryConf=%.4f (factor=%.2f, unkPenalty=%.2f)",
+		primaryCalibratedConf, primaryCalFactor, primaryUnkPenalty, secondaryCalibratedConf, secondaryCalFactor, secondaryUnkPenalty)
 
 	// Стратегия выбора (на основе КАЛИБРОВАННЫХ confidence):
 	// 1. Если разница в confidence > 10% - берём модель с большим confidence
@@ -405,6 +430,19 @@ func calcAverageConfidence(words []TranscriptWord) float32 {
 		return 0
 	}
 	return sum / float32(count)
+}
+
+// countUnkTokens подсчитывает количество <unk> токенов в словах
+// <unk> токены указывают на то, что модель не смогла распознать слово
+func countUnkTokens(words []TranscriptWord) int {
+	count := 0
+	for _, w := range words {
+		text := strings.ToLower(w.Text)
+		if strings.Contains(text, "<unk>") || strings.Contains(text, "[unk]") {
+			count++
+		}
+	}
+	return count
 }
 
 // WordAlignment представляет выравнивание между словами двух моделей
