@@ -1,7 +1,34 @@
 import React from 'react';
-import { Chunk } from '../../types/session';
+import { Chunk, TranscriptSegment } from '../../types/session';
 
 const API_BASE = `http://localhost:${(globalThis as any).AIWISPER_HTTP_PORT || 18080}`;
+
+// Цвета для разных спикеров (как в legacy)
+const SPEAKER_COLORS = ['#2196f3', '#e91e63', '#ff9800', '#9c27b0', '#00bcd4', '#8bc34a'];
+
+// Определение имени и цвета спикера
+const getSpeakerInfo = (speaker?: string): { name: string; color: string } => {
+    if (speaker === 'mic' || speaker === 'Вы') {
+        return { name: 'Вы', color: '#4caf50' };
+    } else if (speaker?.startsWith('Speaker ')) {
+        const speakerNum = parseInt(speaker.replace('Speaker ', ''), 10);
+        return {
+            name: `Собеседник ${speakerNum + 1}`,
+            color: SPEAKER_COLORS[speakerNum % SPEAKER_COLORS.length]
+        };
+    } else if (speaker === 'sys') {
+        return { name: 'Собеседник', color: '#2196f3' };
+    } else {
+        return { name: speaker || 'Собеседник', color: '#2196f3' };
+    }
+};
+
+// Форматирование времени
+const formatTime = (ms: number): string => {
+    const mins = Math.floor(ms / 60000);
+    const secs = Math.floor((ms % 60000) / 1000);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+};
 
 interface ChunksViewSimpleProps {
     chunks: Chunk[];
@@ -14,8 +41,7 @@ interface ChunksViewSimpleProps {
 }
 
 /**
- * Упрощённый компонент для отображения списка чанков
- * Совместим с API TranscriptionView
+ * Упрощённый компонент для отображения списка чанков с подсветкой спикеров
  */
 export const ChunksViewSimple: React.FC<ChunksViewSimpleProps> = ({
     chunks,
@@ -87,9 +113,10 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
     onRetranscribe,
 }) => {
     const durationSec = ((chunk.duration || 0) / 1e9).toFixed(1);
-    const statusColor = chunk.status === 'completed' ? 'var(--success)' 
-        : chunk.status === 'error' ? 'var(--danger)' 
-        : 'var(--warning)';
+
+    // Определяем есть ли диалог с разными спикерами
+    const hasDialogue = chunk.dialogue && chunk.dialogue.length > 0;
+    const hasMicSys = chunk.micText || chunk.sysText;
 
     return (
         <div style={{
@@ -101,7 +128,6 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
                     ? 'rgba(76, 175, 80, 0.1)' 
                     : 'var(--surface)',
             borderRadius: 'var(--radius-md)',
-            borderLeft: `3px solid ${statusColor}`,
             transition: 'background-color 0.3s ease',
             border: '1px solid var(--glass-border-subtle)',
         }}>
@@ -168,8 +194,19 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
             </div>
 
             {/* Content */}
-            <div style={{ marginTop: '0.5rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-                {chunk.transcription || ''}
+            <div style={{ marginTop: '0.5rem', lineHeight: 1.6 }}>
+                {hasDialogue ? (
+                    // Отображаем диалог с разными спикерами
+                    <DialogueContent dialogue={chunk.dialogue!} chunkStartMs={chunk.startMs} />
+                ) : hasMicSys ? (
+                    // Отображаем mic/sys разделение
+                    <MicSysContent micText={chunk.micText} sysText={chunk.sysText} />
+                ) : (
+                    // Простой текст
+                    <div style={{ color: 'var(--text-secondary)' }}>
+                        {chunk.transcription || ''}
+                    </div>
+                )}
             </div>
 
             {/* Transcribing indicator */}
@@ -193,6 +230,90 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
             {chunk.error && (
                 <div style={{ marginTop: '0.5rem', color: 'var(--danger)', fontSize: '0.8rem' }}>
                     Ошибка: {chunk.error}
+                </div>
+            )}
+        </div>
+    );
+};
+
+/**
+ * Компонент для отображения диалога с разными спикерами
+ */
+const DialogueContent: React.FC<{ dialogue: TranscriptSegment[]; chunkStartMs: number }> = ({ dialogue }) => {
+    return (
+        <div>
+            {dialogue.map((seg, idx) => {
+                const { name: speakerName, color: speakerColor } = getSpeakerInfo(seg.speaker);
+                const timeStr = formatTime(seg.start);
+
+                return (
+                    <div 
+                        key={idx}
+                        style={{
+                            marginBottom: '0.4rem',
+                            paddingLeft: '0.5rem',
+                            paddingRight: '0.5rem',
+                            paddingTop: '0.2rem',
+                            paddingBottom: '0.2rem',
+                            borderLeft: `3px solid ${speakerColor}`,
+                            borderRadius: '0 4px 4px 0',
+                        }}
+                    >
+                        <span style={{
+                            color: 'var(--text-muted)',
+                            fontSize: '0.8rem',
+                            fontFamily: 'monospace',
+                        }}>
+                            [{timeStr}]
+                        </span>
+                        {' '}
+                        <span style={{
+                            color: speakerColor,
+                            fontWeight: 'bold',
+                        }}>
+                            {speakerName}:
+                        </span>
+                        {' '}
+                        <span style={{ color: 'var(--text-primary)', wordBreak: 'break-word' }}>
+                            {seg.text}
+                        </span>
+                    </div>
+                );
+            })}
+        </div>
+    );
+};
+
+/**
+ * Компонент для отображения mic/sys разделения
+ */
+const MicSysContent: React.FC<{ micText?: string; sysText?: string }> = ({ micText, sysText }) => {
+    return (
+        <div>
+            {micText && (
+                <div style={{
+                    marginBottom: '0.4rem',
+                    borderLeft: '3px solid #4caf50',
+                    paddingLeft: '0.5rem',
+                    paddingTop: '0.2rem',
+                    paddingBottom: '0.2rem',
+                    borderRadius: '0 4px 4px 0',
+                }}>
+                    <span style={{ color: '#4caf50', fontWeight: 'bold', fontSize: '0.85rem' }}>Вы: </span>
+                    <span style={{ color: 'var(--text-primary)' }}>{micText}</span>
+                </div>
+            )}
+            {sysText && (
+                <div style={{
+                    marginBottom: '0.4rem',
+                    borderLeft: '3px solid #2196f3',
+                    paddingLeft: '0.5rem',
+                    paddingTop: '0.2rem',
+                    paddingBottom: '0.2rem',
+                    borderRadius: '0 4px 4px 0',
+                }}>
+                    <span style={{ color: '#2196f3', fontWeight: 'bold', fontSize: '0.85rem' }}>Собеседник: </span>
+                    <span style={{ color: 'var(--text-primary)' }}>{sysText}</span>
                 </div>
             )}
         </div>

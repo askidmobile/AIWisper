@@ -1,88 +1,235 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { flushSync } from 'react-dom';
 
 export const useAudioPlayer = () => {
     const audioRef = useRef<HTMLAudioElement | null>(null);
-    const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
     const [playingUrl, setPlayingUrl] = useState<string | null>(null);
     const [isCurrentlyPlaying, setIsCurrentlyPlaying] = useState(false);
 
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
+    
+    // VU meter levels (0-100)
+    const [micLevel, setMicLevel] = useState(0);
+    const [sysLevel, setSysLevel] = useState(0);
+
+    // Web Audio API refs
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const analyserLeftRef = useRef<AnalyserNode | null>(null);
+    const analyserRightRef = useRef<AnalyserNode | null>(null);
+    const audioSourceConnectedRef = useRef(false);
+    const leftTimeDataRef = useRef<Float32Array | null>(null);
+    const rightTimeDataRef = useRef<Float32Array | null>(null);
+    const playbackRafRef = useRef<number | null>(null);
+    const lastPlaybackTimeRef = useRef(0);
 
     // Initialize audio element
     useEffect(() => {
         const audio = new Audio();
+        audio.crossOrigin = 'anonymous'; // Required for Web Audio API
         
         audio.onended = () => {
-            console.log('[useAudioPlayer] Audio ended');
             setPlayingUrl(null);
             setIsCurrentlyPlaying(false);
+            resetLevels();
         };
         
         audio.onerror = (e) => {
             console.error('[useAudioPlayer] Audio error:', e);
             setPlayingUrl(null);
             setIsCurrentlyPlaying(false);
+            resetLevels();
         };
         
         audio.ontimeupdate = () => setCurrentTime(audio.currentTime);
         audio.onloadedmetadata = () => setDuration(audio.duration);
         
-        // Отслеживаем реальное состояние воспроизведения
-        audio.onplay = () => {
-            console.log('[useAudioPlayer] onplay event');
-            setIsCurrentlyPlaying(true);
-        };
-        audio.onpause = () => {
-            console.log('[useAudioPlayer] onpause event');
-            setIsCurrentlyPlaying(false);
-        };
+        audio.onplay = () => setIsCurrentlyPlaying(true);
+        audio.onpause = () => setIsCurrentlyPlaying(false);
 
         audioRef.current = audio;
-        setAudioElement(audio); // Сохраняем в состояние для реактивности
+        
         return () => {
             audio.pause();
+            if (playbackRafRef.current !== null) {
+                cancelAnimationFrame(playbackRafRef.current);
+            }
+            if (audioContextRef.current) {
+                audioContextRef.current.close();
+            }
             audioRef.current = null;
-            setAudioElement(null);
         };
     }, []);
 
-    // Функция воспроизведения - только запускает воспроизведение
-    const play = useCallback((url: string) => {
-        if (!audioRef.current) return;
-
-        console.log('[useAudioPlayer] play() called', { url, currentPlayingUrl: playingUrl });
-
-        if (playingUrl === url) {
-            // Тот же URL - продолжаем воспроизведение с текущей позиции
-            console.log('[useAudioPlayer] Same URL, resuming playback');
-            audioRef.current.play().catch(console.error);
-        } else {
-            // Новый URL - загружаем и играем
-            console.log('[useAudioPlayer] New URL, loading and playing');
-            audioRef.current.src = url;
-            audioRef.current.play().catch(console.error);
-            setPlayingUrl(url);
+    const resetLevels = useCallback(() => {
+        setMicLevel(0);
+        setSysLevel(0);
+        if (playbackRafRef.current !== null) {
+            cancelAnimationFrame(playbackRafRef.current);
+            playbackRafRef.current = null;
         }
-    }, [playingUrl]);
+    }, []);
 
-    // Функция паузы - только ставит на паузу
+    // Calculate RMS from audio samples
+    const calculateRMS = (data: Float32Array): number => {
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) {
+            const sample = data[i];
+            sum += sample * sample;
+        }
+        return Math.sqrt(sum / data.length);
+    };
+
+    // Convert RMS to VU meter level using dB scale
+    const rmsToVuLevel = (rms: number): number => {
+        if (rms <= 0) return 0;
+        const db = 20 * Math.log10(rms);
+        const minDb = -50;
+        const maxDb = 0;
+        const percent = ((db - minDb) / (maxDb - minDb)) * 100;
+        return Math.max(0, Math.min(100, percent));
+    };
+
+    // Setup Web Audio API graph
+    const setupAudioGraph = useCallback(() => {
+        const audioEl = audioRef.current;
+        if (!audioEl || audioSourceConnectedRef.current) return;
+
+        if (!audioContextRef.current) {
+            audioContextRef.current = new AudioContext();
+        }
+
+        if (audioContextRef.current.state === 'suspended') {
+            audioContextRef.current.resume();
+        }
+
+        const source = audioContextRef.current.createMediaElementSource(audioEl);
+        const splitter = audioContextRef.current.createChannelSplitter(2);
+
+        analyserLeftRef.current = audioContextRef.current.createAnalyser();
+        analyserRightRef.current = audioContextRef.current.createAnalyser();
+        
+        // Optimized for instant VU meter response
+        analyserLeftRef.current.fftSize = 128;
+        analyserRightRef.current.fftSize = 128;
+        analyserLeftRef.current.smoothingTimeConstant = 0;
+        analyserRightRef.current.smoothingTimeConstant = 0;
+
+        leftTimeDataRef.current = new Float32Array(analyserLeftRef.current.fftSize);
+        rightTimeDataRef.current = new Float32Array(analyserRightRef.current.fftSize);
+
+        const merger = audioContextRef.current.createChannelMerger(2);
+
+        source.connect(splitter);
+        splitter.connect(analyserLeftRef.current, 0);
+        splitter.connect(analyserRightRef.current, 1);
+
+        analyserLeftRef.current.connect(merger, 0, 0);
+        analyserRightRef.current.connect(merger, 0, 1);
+        merger.connect(audioContextRef.current.destination);
+
+        audioSourceConnectedRef.current = true;
+    }, []);
+
+    // Audio analysis loop
+    const analyzeAudio = useCallback(() => {
+        const leftAnalyser = analyserLeftRef.current;
+        const rightAnalyser = analyserRightRef.current;
+        const el = audioRef.current;
+
+        if (!el || el.paused || el.ended) {
+            resetLevels();
+            return;
+        }
+
+        // Update playback time
+        const currentPlaybackTime = el.currentTime;
+        if (Math.abs(currentPlaybackTime - lastPlaybackTimeRef.current) > 0.02) {
+            lastPlaybackTimeRef.current = currentPlaybackTime;
+            setCurrentTime(currentPlaybackTime);
+        }
+
+        // Analyze audio levels
+        if (leftAnalyser && rightAnalyser && leftTimeDataRef.current && rightTimeDataRef.current) {
+            leftAnalyser.getFloatTimeDomainData(leftTimeDataRef.current as Float32Array<ArrayBuffer>);
+            rightAnalyser.getFloatTimeDomainData(rightTimeDataRef.current as Float32Array<ArrayBuffer>);
+
+            const micRms = calculateRMS(leftTimeDataRef.current);
+            const sysRms = calculateRMS(rightTimeDataRef.current);
+
+            const newMicLevel = rmsToVuLevel(micRms);
+            const newSysLevel = rmsToVuLevel(sysRms);
+
+            // Use flushSync for immediate React re-render
+            flushSync(() => {
+                setMicLevel(newMicLevel);
+                setSysLevel(newSysLevel);
+            });
+        }
+
+        playbackRafRef.current = requestAnimationFrame(analyzeAudio);
+    }, [resetLevels]);
+
+    // Play function with Web Audio API setup
+    const play = useCallback((url: string) => {
+        const audioEl = audioRef.current;
+        if (!audioEl) return;
+
+        // Stop previous analysis loop
+        if (playbackRafRef.current !== null) {
+            cancelAnimationFrame(playbackRafRef.current);
+            playbackRafRef.current = null;
+        }
+
+        // Toggle off if same URL
+        if (playingUrl === url) {
+            audioEl.pause();
+            audioEl.currentTime = 0;
+            setPlayingUrl(null);
+            setCurrentTime(0);
+            lastPlaybackTimeRef.current = 0;
+            resetLevels();
+            return;
+        }
+
+        audioEl.src = url;
+        setCurrentTime(0);
+        lastPlaybackTimeRef.current = 0;
+
+        // Setup Web Audio API graph (only once)
+        setupAudioGraph();
+
+        audioEl.play()
+            .then(() => {
+                setPlayingUrl(url);
+                playbackRafRef.current = requestAnimationFrame(analyzeAudio);
+            })
+            .catch((err) => {
+                console.error('Failed to play audio:', err);
+                resetLevels();
+                setPlayingUrl(null);
+            });
+    }, [playingUrl, setupAudioGraph, analyzeAudio, resetLevels]);
+
+    // Pause function
     const pause = useCallback(() => {
-        console.log('[useAudioPlayer] pause() called, audio paused:', audioRef.current?.paused);
         if (audioRef.current && !audioRef.current.paused) {
             audioRef.current.pause();
         }
     }, []);
 
+    // Stop function
     const stop = useCallback(() => {
         if (audioRef.current) {
             audioRef.current.pause();
             audioRef.current.currentTime = 0;
             setPlayingUrl(null);
             setIsCurrentlyPlaying(false);
+            resetLevels();
         }
-    }, []);
+    }, [resetLevels]);
 
+    // Seek function
     const seek = useCallback((time: number) => {
         if (audioRef.current) {
             audioRef.current.currentTime = time;
@@ -96,11 +243,13 @@ export const useAudioPlayer = () => {
         pause,
         stop, 
         seek, 
-        isPlayingUrl, // Функция для проверки конкретного URL
-        isPlaying: isCurrentlyPlaying, // Boolean состояние воспроизведения
+        isPlayingUrl,
+        isPlaying: isCurrentlyPlaying,
         playingUrl, 
         currentTime, 
         duration,
-        audioElement, // Доступ к audio элементу для VU-метров
+        // VU meter levels from Web Audio API
+        micLevel,
+        sysLevel,
     };
 };
