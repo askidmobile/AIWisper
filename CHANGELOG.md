@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.20] - 2025-12-14
+
+### Fixed
+- **Hybrid Transcription Empty Secondary Result**: Исправлена обработка пустых результатов от secondary модели
+  - **Проблема**: Parakeet TDT v3 требует минимум 1 секунду аудио (16000 samples). При коротких чанках возвращал пустой результат, что ломало гибридную транскрипцию
+  - **Решение**: Добавлена симметричная проверка пустых результатов для обеих моделей:
+    - Если Primary пустой, но Secondary есть → используем Secondary
+    - Если Secondary пустой, но Primary есть → используем Primary
+    - Если обе пустые → возвращаем пустой результат (аудио слишком короткое)
+  - Пустой результат от одной модели НЕ означает что результат другой невалидный
+
+### Added
+- **Full Retranscription Progress UI**: Добавлен UI для отображения прогресса полной ретранскрипции
+  - Прогресс-бар с процентами в SessionControls
+  - Индикатор ретранскрипции на сессии в Sidebar
+  - Кнопка отмены ретранскрипции
+  - Блокировка записи и настроек во время ретранскрипции
+  - WebSocket события: `full_transcription_started/progress/completed/error/cancelled`
+
+### Technical
+- `backend/ai/hybrid_transcription.go`:
+  - Добавлена проверка `primaryEmpty` и `secondaryEmpty` перед merge
+  - Симметричная логика fallback для обеих моделей
+- `backend/ai/transcription_fluid.go`:
+  - Добавлено логирование количества samples при каждом вызове
+  - Возвращает пустой массив вместо nil для консистентности
+- `frontend/src/context/SessionContext.tsx`:
+  - Добавлено состояние ретранскрипции (isFullTranscribing, progress, status, error)
+  - Обработчики WebSocket событий
+- `frontend/src/components/modules/SessionControls.tsx`:
+  - Прогресс-бар и кнопка отмены
+- `frontend/src/components/layout/Sidebar.tsx`:
+  - Индикатор на сессии
+- `frontend/src/components/layout/Header.tsx`:
+  - Блокировка настроек во время ретранскрипции
+
+## [1.41.19] - 2025-12-14
+
+### Added
+- **Full Retranscription Progress UI**: Initial implementation (merged into 1.41.20)
+
 ## [1.41.18] - 2025-12-14
 
 ### Improved
