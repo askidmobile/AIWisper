@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.12] - 2025-12-14
+
+### Fixed
+- **Retranscribe Chunk Not Working**: Исправлена кнопка ретранскрипции чанка, которая не передавала необходимые параметры
+  - **Проблема**: Frontend отправлял только `{ type: 'retranscribe_chunk', chunkId }` без sessionId, model, language и настроек гибридной транскрипции
+  - **Решение**: Добавлена передача всех необходимых параметров из контекстов (ModelContext, SettingsContext)
+  - Теперь ретранскрипция использует текущую модель, язык и настройки гибридного режима
+
+### Technical
+- `frontend/src/components/modules/TranscriptionView.tsx`:
+  - Добавлен импорт `useModelContext` и `useSettingsContext`
+  - Функция `handleRetranscribe` теперь передаёт: sessionId, model, language, hybridEnabled и все параметры гибридной транскрипции
+
 ## [1.41.11] - 2025-12-14
 
 ### Performance

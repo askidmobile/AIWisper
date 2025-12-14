@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { useSessionContext } from '../../context/SessionContext';
 import { useWebSocketContext } from '../../context/WebSocketContext';
+import { useSettingsContext } from '../../context/SettingsContext';
+import { useModelContext } from '../../context/ModelContext';
 import SessionTabs, { TabType } from '../SessionTabs';
 import SummaryView from '../SummaryView';
 import SpeakersTab from './SpeakersTab';
@@ -62,6 +64,13 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
         generateSummary
     } = useSessionContext();
     const { sendMessage, subscribe } = useWebSocketContext();
+    const { activeModelId } = useModelContext();
+    const { 
+        language, 
+        hybridTranscription,
+        ollamaModel: settingsOllamaModel,
+        ollamaUrl 
+    } = useSettingsContext();
 
     // Local state for UI
     const [activeTab, setActiveTab] = useState<TabType>('dialogue');
@@ -253,8 +262,27 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
 
     // Handlers
     const handleRetranscribe = (chunkId: string) => {
+        if (!displaySession) return;
+        
         setTranscribingChunkId(chunkId);
-        sendMessage({ type: 'retranscribe_chunk', chunkId });
+        sendMessage({ 
+            type: 'retranscribe_chunk', 
+            sessionId: displaySession.id,
+            data: chunkId,
+            model: activeModelId,
+            language: language,
+            // Настройки гибридной транскрипции
+            hybridEnabled: hybridTranscription.enabled,
+            hybridSecondaryModelId: hybridTranscription.secondaryModelId,
+            hybridConfidenceThreshold: hybridTranscription.confidenceThreshold,
+            hybridContextWords: hybridTranscription.contextWords,
+            hybridUseLLMForMerge: hybridTranscription.useLLMForMerge,
+            hybridMode: hybridTranscription.mode,
+            hybridHotwords: hybridTranscription.hotwords,
+            // Модель Ollama для LLM - используем prop или из настроек
+            hybridOllamaModel: ollamaModel || settingsOllamaModel,
+            hybridOllamaUrl: ollamaUrl,
+        });
     };
 
     // Summary state is in SessionContext (summary field),
