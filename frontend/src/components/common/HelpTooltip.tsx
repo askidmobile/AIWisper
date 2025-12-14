@@ -10,6 +10,7 @@ interface HelpTooltipProps {
 /**
  * Компонент HelpTooltip - иконка (?) с всплывающей подсказкой
  * При клике показывает модальное окно с подробной информацией
+ * Автоматически корректирует позицию при выходе за границы viewport
  */
 export const HelpTooltip: React.FC<HelpTooltipProps> = ({
     title,
@@ -18,6 +19,7 @@ export const HelpTooltip: React.FC<HelpTooltipProps> = ({
     maxWidth = 400,
 }) => {
     const [isOpen, setIsOpen] = useState(false);
+    const [adjustedPosition, setAdjustedPosition] = useState<React.CSSProperties>({});
     const tooltipRef = useRef<HTMLDivElement>(null);
     const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -59,6 +61,53 @@ export const HelpTooltip: React.FC<HelpTooltipProps> = ({
             document.removeEventListener('keydown', handleEscape);
         };
     }, [isOpen]);
+
+    // Автоматическая коррекция позиции при выходе за границы viewport
+    useEffect(() => {
+        if (isOpen && tooltipRef.current) {
+            const tooltip = tooltipRef.current;
+            const rect = tooltip.getBoundingClientRect();
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+            const padding = 16; // Отступ от края viewport
+            
+            const corrections: React.CSSProperties = {};
+            
+            // Коррекция по горизонтали
+            if (rect.left < padding) {
+                // Выходит за левый край
+                corrections.left = `${padding - rect.left}px`;
+                corrections.right = 'auto';
+                corrections.transform = position === 'left' || position === 'right' 
+                    ? 'translateY(-50%)' 
+                    : 'none';
+            } else if (rect.right > viewportWidth - padding) {
+                // Выходит за правый край
+                corrections.right = `${rect.right - viewportWidth + padding}px`;
+                corrections.left = 'auto';
+                corrections.transform = position === 'left' || position === 'right' 
+                    ? 'translateY(-50%)' 
+                    : 'none';
+            }
+            
+            // Коррекция по вертикали
+            if (rect.top < padding) {
+                // Выходит за верхний край
+                corrections.top = `${padding - rect.top}px`;
+                corrections.bottom = 'auto';
+            } else if (rect.bottom > viewportHeight - padding) {
+                // Выходит за нижний край
+                corrections.bottom = `${rect.bottom - viewportHeight + padding}px`;
+                corrections.top = 'auto';
+            }
+            
+            if (Object.keys(corrections).length > 0) {
+                setAdjustedPosition(corrections);
+            }
+        } else {
+            setAdjustedPosition({});
+        }
+    }, [isOpen, position]);
 
     const getPositionStyles = (): React.CSSProperties => {
         switch (position) {
@@ -139,6 +188,7 @@ export const HelpTooltip: React.FC<HelpTooltipProps> = ({
                         position: 'absolute',
                         zIndex: 1000,
                         ...getPositionStyles(),
+                        ...adjustedPosition,
                     }}
                 >
                     <div
