@@ -415,33 +415,48 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                                 <button
                                                     onClick={() => setAutoScrollToPlayback(!autoScrollToPlayback)}
                                                     style={{
-                                                        padding: '4px 8px',
+                                                        padding: '4px 10px',
                                                         fontSize: '0.75rem',
-                                                        backgroundColor: autoScrollToPlayback ? 'var(--primary)' : 'transparent',
-                                                        color: autoScrollToPlayback ? 'white' : 'var(--text-muted)',
-                                                        border: '1px solid var(--border)',
-                                                        borderRadius: '4px',
+                                                        backgroundColor: autoScrollToPlayback 
+                                                            ? 'var(--glass-bg-elevated)' 
+                                                            : 'transparent',
+                                                        color: autoScrollToPlayback 
+                                                            ? 'var(--text-primary)' 
+                                                            : 'var(--text-muted)',
+                                                        border: autoScrollToPlayback 
+                                                            ? '1px solid var(--glass-border)' 
+                                                            : '1px solid var(--border)',
+                                                        borderRadius: '6px',
                                                         cursor: 'pointer',
-                                                        transition: 'all 0.2s'
+                                                        transition: 'all 0.2s',
+                                                        backdropFilter: autoScrollToPlayback ? 'blur(8px)' : 'none',
+                                                        WebkitBackdropFilter: autoScrollToPlayback ? 'blur(8px)' : 'none',
                                                     }}
                                                     title={autoScrollToPlayback ? 'Автоскролл включён' : 'Автоскролл выключен'}
                                                 >
-                                                    {autoScrollToPlayback ? '📍 Следить' : '📍 Не следить'}
+                                                    {autoScrollToPlayback ? '📍 Следить' : '📍 Следить'}
                                                 </button>
                                             )}
                                             {/* Кнопка показа confidence */}
                                             <button
                                                 onClick={() => setShowConfidence(!showConfidence)}
                                                 style={{
-                                                    padding: '4px 8px',
+                                                    padding: '4px 10px',
                                                     fontSize: '0.75rem',
-                                                    backgroundColor: showConfidence ? 'var(--warning)' : 'transparent',
-                                                    color: showConfidence ? 'white' : 'var(--text-muted)',
-                                                    border: '1px solid var(--border)',
-                                                    borderRadius: '4px',
+                                                    backgroundColor: showConfidence 
+                                                        ? 'var(--glass-bg-elevated)' 
+                                                        : 'transparent',
+                                                    color: showConfidence 
+                                                        ? 'var(--text-primary)' 
+                                                        : 'var(--text-muted)',
+                                                    border: showConfidence 
+                                                        ? '1px solid var(--glass-border)' 
+                                                        : '1px solid var(--border)',
+                                                    borderRadius: '6px',
                                                     cursor: 'pointer',
                                                     transition: 'all 0.2s',
-                                                    marginLeft: isPlaying ? '4px' : '0'
+                                                    backdropFilter: showConfidence ? 'blur(8px)' : 'none',
+                                                    WebkitBackdropFilter: showConfidence ? 'blur(8px)' : 'none',
                                                 }}
                                                 title={showConfidence 
                                                     ? 'Скрыть подсветку уверенности распознавания' 

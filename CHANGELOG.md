@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.16] - 2025-12-14
+
+### Fixed
+- **Transcription Buttons Style**: Кнопки "Следить" и "Confidence" приведены к единому glass-стилю
+  - Убраны яркие цвета (фиолетовый primary, жёлтый warning)
+  - Активное состояние: glass-эффект с blur и нейтральным фоном
+  - Неактивное состояние: прозрачный фон с muted текстом
+  - Добавлен backdrop-filter blur для активных кнопок
+
+### Technical
+- `frontend/src/components/modules/TranscriptionView.tsx`:
+  - Кнопки используют `var(--glass-bg-elevated)` и `var(--glass-border)` для активного состояния
+  - Текст: `var(--text-primary)` / `var(--text-muted)` вместо белого
+  - Увеличен padding и borderRadius для соответствия дизайн-системе
+
 ## [1.41.15] - 2025-12-14
 
 ### Improved
