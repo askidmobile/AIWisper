@@ -53,6 +53,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
         streamingChunkSeconds,
         streamingConfirmationThreshold,
         hybridTranscription, setHybridTranscription,
+        ollamaUrl,
     } = useSettings();
     
     // Streaming настройки используются в useEffect для WebSocket
@@ -475,6 +476,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
 
     // Retranscribe all chunks
     const handleRetranscribeAll = useCallback(() => {
+        console.log('[handleRetranscribeAll] Called, selectedSession:', selectedSession?.id);
+        
         if (!selectedSession) {
             addLog('No session selected for retranscription');
             return;
@@ -482,6 +485,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
 
         const activeModel = models.find(m => m.id === activeModelId);
         const modelId = activeModel?.id || activeModelId;
+
+        console.log('[handleRetranscribeAll] activeModel:', activeModel?.name, 'modelId:', modelId);
 
         const isModelReady = activeModel?.status === 'downloaded' || activeModel?.status === 'active';
         if (!isModelReady && activeModelId) {
@@ -496,15 +501,26 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             return;
         }
 
+        console.log('[handleRetranscribeAll] Sending retranscribe_full message');
         sendMessage({
             type: 'retranscribe_full',
             sessionId: selectedSession.id,
             model: modelId,
             language: language,
-            diarizationEnabled: false
+            diarizationEnabled: false,
+            // Добавляем настройки гибридной транскрипции
+            hybridEnabled: hybridTranscription.enabled,
+            hybridSecondaryModelId: hybridTranscription.secondaryModelId,
+            hybridConfidenceThreshold: hybridTranscription.confidenceThreshold,
+            hybridContextWords: hybridTranscription.contextWords,
+            hybridUseLLMForMerge: hybridTranscription.useLLMForMerge,
+            hybridMode: hybridTranscription.mode,
+            hybridHotwords: hybridTranscription.hotwords,
+            hybridOllamaModel: ollamaModel,
+            hybridOllamaUrl: ollamaUrl,
         });
-        addLog(`Starting full retranscription with model: ${activeModel?.name || modelId}`);
-    }, [selectedSession, models, activeModelId, language, sendMessage, addLog]);
+        addLog(`Starting full retranscription with model: ${activeModel?.name || modelId}, hybrid: ${hybridTranscription.enabled}`);
+    }, [selectedSession, models, activeModelId, language, sendMessage, addLog, hybridTranscription, ollamaModel, ollamaUrl]);
 
     // Load Ollama models
     const loadOllama = useCallback(() => {

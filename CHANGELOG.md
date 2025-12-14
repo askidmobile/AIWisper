@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.17] - 2025-12-14
+
+### Fixed
+- **Full Retranscription with Hybrid Mode**: Исправлена полная ретранскрипция с поддержкой гибридного режима
+  - Добавлена передача настроек гибридной транскрипции в `retranscribe_full`
+  - Backend теперь применяет гибридный режим при полной ретранскрипции
+  - Добавлены debug-логи для отладки вызова ретранскрипции
+
+### Technical
+- `frontend/src/components/layout/MainLayout.tsx`:
+  - `handleRetranscribeAll` теперь передаёт все hybridTranscription параметры
+  - Добавлен `ollamaUrl` из useSettings
+  - Добавлены console.log для отладки
+
+- `backend/internal/api/server.go`:
+  - `retranscribe_full` теперь настраивает HybridTranscriptionConfig
+  - Гибридный режим включается/выключается в зависимости от настроек
+
 ## [1.41.16] - 2025-12-14
 
 ### Fixed

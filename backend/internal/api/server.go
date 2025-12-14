@@ -949,6 +949,34 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			}
 		}
 
+		// Настраиваем гибридную транскрипцию если включена
+		if msg.HybridEnabled && msg.HybridSecondaryModelID != "" {
+			hybridConfig := &ai.HybridTranscriptionConfig{
+				Enabled:             true,
+				SecondaryModelID:    msg.HybridSecondaryModelID,
+				ConfidenceThreshold: float32(msg.HybridConfidenceThreshold),
+				ContextWords:        msg.HybridContextWords,
+				UseLLMForMerge:      msg.HybridUseLLMForMerge,
+				Mode:                ai.HybridMode(msg.HybridMode),
+				OllamaModel:         msg.HybridOllamaModel,
+				OllamaURL:           msg.HybridOllamaURL,
+				Hotwords:            msg.HybridHotwords,
+			}
+			if hybridConfig.ConfidenceThreshold <= 0 {
+				hybridConfig.ConfidenceThreshold = 0.7
+			}
+			if hybridConfig.ContextWords <= 0 {
+				hybridConfig.ContextWords = 3
+			}
+			if s.TranscriptionService != nil {
+				s.TranscriptionService.SetHybridConfig(hybridConfig)
+				log.Printf("Full retranscription: hybrid mode enabled with secondary model %s", msg.HybridSecondaryModelID)
+			}
+		} else if s.TranscriptionService != nil {
+			// Отключаем гибридный режим если не включён
+			s.TranscriptionService.SetHybridConfig(nil)
+		}
+
 		// Проверяем сессию заранее для определения количества чанков
 		sess, err := s.SessionMgr.GetSession(msg.SessionID)
 		if err != nil {
