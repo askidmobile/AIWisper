@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.7] - 2025-12-14
+
+### Fixed
+- **VU Meters During Playback**: Полностью переписан аудиоплеер с Web Audio API
+  - Используется `AnalyserNode` для реального анализа аудио в реальном времени
+  - `requestAnimationFrame` для плавной анимации ~60fps
+  - `flushSync` для немедленного обновления React state
+  - VU-метры теперь анимируются при воспроизведении записи
+
+- **Speaker Colors in Chunks**: Добавлена подсветка спикеров в разделе "Отрезки"
+  - Поддержка `chunk.dialogue` с разными спикерами
+  - Цветовая палитра `SPEAKER_COLORS` как в legacy UI
+  - Компоненты `DialogueContent` и `MicSysContent` для разных типов отображения
+  - Время `[MM:SS]` и имя спикера с цветом
+
+- **FluidAudio (CoreML) Diarization Auto-Enable**: Исправлено автовключение диаризации
+  - FluidAudio не требует моделей - они скачиваются автоматически
+  - Специальная обработка для `provider === 'coreml'`
+  - Автовключение при старте если сохранено `diarizationProvider: 'coreml'`
+
+- **Settings Persistence**: Исправлено сохранение настроек
+  - `ModelContext` сохраняет/восстанавливает активную модель
+  - `DiarizationContext` использует общие настройки приложения
+  - Удалён отдельный localStorage ключ `aiwisper_diarization`
+
+### Changed
+- **Removed Console Footer**: Удалена консоль внизу экрана
+  - Логи теперь в консоль браузера (DevTools)
+  - Освобождено место для основного контента
+
+### Added
+- **Liquid Glass Effect for Export Menu**: Эффект размытия для меню экспорта
+  - `backdrop-filter: blur(24px) saturate(180%)`
+  - Полупрозрачный фон и улучшенные тени
+
+### Technical
+- `frontend/src/hooks/useAudioPlayer.ts`: Полностью переписан с Web Audio API
+- `frontend/src/context/DiarizationContext.tsx`: Поддержка FluidAudio и общих настроек
+- `frontend/src/context/ModelContext.tsx`: Сохранение модели в настройки
+- `frontend/src/components/chunks/ChunksViewSimple.tsx`: Подсветка спикеров
+- `frontend/src/components/layout/MainLayout.tsx`: Удалён ConsoleFooter
+
+## [1.41.2] - 2025-12-14
+
+### Fixed
+- **Settings Modal**: Настройки снова открываются в модальном окне (было встроенным блоком)
+- **Speakers Tab**: Вкладка "Собеседники" теперь показывает список спикеров
+- **Chunks Speaker Display**: Отрезки показывают правильных спикеров с цветами
+- **Statistics Duration**: Исправлен расчёт длительности (было 377126ч, стало корректное время)
+- **App Version**: Версия в справке теперь корректная (была 1.39.0)
+- **Summary Styles**: Исправлены цвета в разделе "Сводка" (CSS переменные вместо хардкода)
+
+### Technical
+- `frontend/src/components/layout/MainLayout.tsx`: Заменён SettingsPanel на SettingsModal
+- `frontend/src/components/modules/SessionStats.tsx`: Исправлена конвертация наносекунд
+- Добавлена константа `APP_VERSION = '1.41.7'`
+
 ## [1.41.1] - 2025-12-14
 
 ### Fixed
