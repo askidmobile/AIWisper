@@ -11,6 +11,7 @@ type WaveformViewMode = 'simple' | 'detailed';
 interface SessionControlsProps {
     session: Session;
     isPlaying: boolean;
+    isPlayingFullSession?: boolean; // true если воспроизводится full.mp3, false если чанк
     onPlayPause: () => void;
     onSeek: (time: number) => void;
     currentTime: number;
@@ -26,6 +27,7 @@ interface SessionControlsProps {
 export const SessionControls: React.FC<SessionControlsProps> = ({
     session,
     isPlaying,
+    isPlayingFullSession = false,
     onPlayPause,
     onSeek,
     currentTime,
@@ -106,8 +108,12 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
         return `${m}:${s.toString().padStart(2, '0')}`;
     };
 
+    // Для простого waveform всегда используем длительность сессии
+    const sessionDuration = (session.totalDuration || 0) / 1000;
+    
+    // displayDuration используется для кнопок перемотки и детального waveform
     const displayDuration =
-        isFinite(duration) && duration > 0 ? duration : (session.totalDuration || 0) / 1000;
+        isFinite(duration) && duration > 0 ? duration : sessionDuration;
 
     const handleSkip = (seconds: number) => {
         const newTime = Math.max(0, Math.min(currentTime + seconds, displayDuration));
@@ -121,7 +127,11 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
         setPlaybackSpeed(speeds[nextIndex]);
     };
 
-    const progress = displayDuration > 0 ? (currentTime / displayDuration) * 100 : 0;
+    // Прогресс для простого waveform - показываем только при воспроизведении полной сессии
+    // При воспроизведении чанка currentTime относится к чанку, а не к сессии
+    const progress = isPlayingFullSession && sessionDuration > 0 
+        ? (currentTime / sessionDuration) * 100 
+        : 0;
     
     // Title handlers
     const handleSaveTitle = () => {

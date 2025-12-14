@@ -26,6 +26,7 @@ interface TranscriptionViewProps {
     ollamaModel: string;
     // New props for player
     isPlaying: boolean;
+    isPlayingFullSession?: boolean; // true если воспроизводится full.mp3
     onPlaySession: (id: string) => void;
     onPauseSession: () => void;
     currentTime: number;
@@ -49,7 +50,7 @@ interface TranscriptionViewProps {
 
 export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     onPlayChunk, playingUrl, ollamaModel,
-    isPlaying, onPlaySession, onPauseSession, currentTime, duration, onSeek,
+    isPlaying, isPlayingFullSession, onPlaySession, onPauseSession, currentTime, duration, onSeek,
     sessionSpeakers = [],
     onRetranscribeAll,
     onRenameSpeaker,
@@ -316,6 +317,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                         <SessionControls
                             session={displaySession}
                             isPlaying={isPlaying}
+                            isPlayingFullSession={isPlayingFullSession}
                             onPlayPause={() => {
                                 if (isPlaying) {
                                     onPauseSession();

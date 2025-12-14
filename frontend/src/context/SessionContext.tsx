@@ -131,6 +131,36 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
             ));
         });
 
+        // Обработчик обновления названия сессии (новый API)
+        const unsubTitleUpdated = subscribe('session_title_updated', (msg) => {
+            // Обновляем название в selectedSession
+            setSelectedSession(prev => {
+                if (!prev || prev.id !== msg.sessionId) return prev;
+                return { ...prev, title: msg.title };
+            });
+            // Также обновляем в списке сессий
+            setSessions(prev => prev.map(s =>
+                s.id === msg.sessionId
+                    ? { ...s, title: msg.title }
+                    : s
+            ));
+        });
+        
+        // Обработчик обновления тегов сессии
+        const unsubTagsUpdated = subscribe('session_tags_updated', (msg) => {
+            // Обновляем теги в selectedSession
+            setSelectedSession(prev => {
+                if (!prev || prev.id !== msg.sessionId) return prev;
+                return { ...prev, tags: msg.tags };
+            });
+            // Также обновляем в списке сессий
+            setSessions(prev => prev.map(s =>
+                s.id === msg.sessionId
+                    ? { ...s, tags: msg.tags }
+                    : s
+            ));
+        });
+
         // Full transcription events
         const unsubFullStarted = subscribe('full_transcription_started', (msg) => {
             setIsFullTranscribing(true);
@@ -177,6 +207,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
             unsubList(); unsubStarted(); unsubStopped(); unsubDetails();
             unsubChunkCreated(); unsubChunkTranscribed(); unsubAudioLevel();
             unsubSummary(); unsubImprove(); unsubRenamed();
+            unsubTitleUpdated(); unsubTagsUpdated();
             unsubFullStarted(); unsubFullProgress(); unsubFullCompleted();
             unsubFullError(); unsubFullCancelled();
         };

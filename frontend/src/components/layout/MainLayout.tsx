@@ -22,7 +22,7 @@ import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData, computeWaveform } from '../../utils/waveform';
 
 // Версия приложения из package.json
-const APP_VERSION = '1.41.28';
+const APP_VERSION = '1.41.29';
 
 interface MainLayoutProps {
     addLog: (msg: string) => void;
@@ -826,6 +826,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                                 playingUrl={playingUrl}
                                 ollamaModel={ollamaModel}
                                 isPlaying={isPlaying}
+                                isPlayingFullSession={playingUrl?.includes('/full.mp3') ?? false}
                                 onPlaySession={handlePlaySession}
                                 onPauseSession={pause}
                                 currentTime={currentTime}

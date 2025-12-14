@@ -2094,6 +2094,17 @@ func (s *Server) computeSessionSpeakers(sess *session.Session, sessionID string)
 		profiles = s.TranscriptionService.GetSessionSpeakerProfiles(sessionID)
 	}
 
+	// Создаём маппинг localID -> recognizedName из профилей
+	// Это позволяет объединять "Speaker N" и кастомные имена
+	localIDToName := make(map[int]string)
+	nameToLocalID := make(map[string]int)
+	for _, profile := range profiles {
+		if profile.RecognizedName != "" {
+			localIDToName[profile.SpeakerID-1] = profile.RecognizedName
+			nameToLocalID[profile.RecognizedName] = profile.SpeakerID - 1
+		}
+	}
+
 	// Вспомогательная функция для обработки сегмента
 	processSpeaker := func(speaker string, duration int64) {
 		if speaker == "" {
@@ -2114,59 +2125,70 @@ func (s *Server) computeSessionSpeakers(sess *session.Session, sessionID string)
 
 		case speaker == "sys" || speaker == "Собеседник":
 			localID = 0
-			displayName = "Собеседник 1"
+			// Проверяем, есть ли кастомное имя для этого спикера
+			if name, ok := localIDToName[0]; ok {
+				displayName = name
+			} else {
+				displayName = "Собеседник 1"
+			}
 			normalizedKey = "speaker_0"
 
 		case strings.HasPrefix(speaker, "Speaker "):
 			var num int
 			fmt.Sscanf(speaker, "Speaker %d", &num)
 			localID = num
-			displayName = fmt.Sprintf("Собеседник %d", num+1)
+			// Проверяем, есть ли кастомное имя для этого спикера
+			if name, ok := localIDToName[num]; ok {
+				displayName = name
+			} else {
+				displayName = fmt.Sprintf("Собеседник %d", num+1)
+			}
 			normalizedKey = fmt.Sprintf("speaker_%d", num)
 
 		case strings.HasPrefix(speaker, "Собеседник "):
 			var num int
 			fmt.Sscanf(speaker, "Собеседник %d", &num)
 			localID = num - 1
-			displayName = speaker
-			normalizedKey = fmt.Sprintf("speaker_%d", num-1)
+			// Проверяем, есть ли кастомное имя для этого спикера
+			if name, ok := localIDToName[localID]; ok {
+				displayName = name
+			} else {
+				displayName = speaker
+			}
+			normalizedKey = fmt.Sprintf("speaker_%d", localID)
 
 		default:
-			// Кастомное имя - ищем в кэшированных профилях
-			localID = -999
+			// Кастомное имя - ищем соответствующий localID
 			displayName = speaker
 
-			// Сначала проверяем, есть ли уже спикер с таким displayName в speakerMap
-			// Это важно для объединённых спикеров
-			for key, existingSp := range speakerMap {
-				if existingSp.DisplayName == speaker {
-					localID = existingSp.LocalID
-					normalizedKey = key
-					break
-				}
-			}
-
-			// Если не нашли в speakerMap, ищем в профилях
-			if localID == -999 {
-				for _, profile := range profiles {
-					if profile.RecognizedName == speaker {
-						localID = profile.SpeakerID - 1
-						normalizedKey = fmt.Sprintf("speaker_%d", localID)
+			// Проверяем, есть ли этот спикер в профилях
+			if id, ok := nameToLocalID[speaker]; ok {
+				localID = id
+				normalizedKey = fmt.Sprintf("speaker_%d", localID)
+			} else {
+				// Проверяем, есть ли уже спикер с таким displayName в speakerMap
+				found := false
+				for key, existingSp := range speakerMap {
+					if existingSp.DisplayName == speaker {
+						localID = existingSp.LocalID
+						normalizedKey = key
+						found = true
 						break
 					}
 				}
-			}
 
-			// Если всё ещё не нашли - создаём новый
-			if localID == -999 {
-				existingSpeakerCount := 0
-				for key := range speakerMap {
-					if key != "mic" {
-						existingSpeakerCount++
+				// Если не нашли - создаём новый с уникальным localID
+				if !found {
+					// Находим максимальный localID среди существующих
+					maxLocalID := -1
+					for _, existingSp := range speakerMap {
+						if !existingSp.IsMic && existingSp.LocalID > maxLocalID {
+							maxLocalID = existingSp.LocalID
+						}
 					}
+					localID = maxLocalID + 1
+					normalizedKey = fmt.Sprintf("custom_%s", speaker)
 				}
-				localID = existingSpeakerCount
-				normalizedKey = fmt.Sprintf("custom_%s", speaker)
 			}
 		}
 
