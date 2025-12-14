@@ -17,10 +17,12 @@ import { useWebSocketContext } from '../../context/WebSocketContext';
 import ModelManager from '../ModelManager';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { AudioMeterBar } from '../common/AudioMeterBar';
+import { AudioMeterSidebar } from '../AudioMeterSidebar';
 import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
+import { WaveformData, computeWaveform } from '../../utils/waveform';
 
 // Версия приложения из package.json
-const APP_VERSION = '1.41.2';
+const APP_VERSION = '1.41.3';
 
 interface MainLayoutProps {
     logs: string[];
@@ -31,7 +33,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
     const API_BASE = `http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}`;
     
     // Контексты
-    const { startSession, stopSession, isRecording, selectedSession } = useSessionContext();
+    const { startSession, stopSession, isRecording, selectedSession, micLevel, sysLevel } = useSessionContext();
     const { activeModelId, models, fetchOllamaModels, downloadModel, cancelDownload, deleteModel, setActiveModel } = useModelContext();
     const { sendMessage, subscribe } = useWebSocketContext();
 
@@ -87,9 +89,150 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
     const [diarizationLoading, setDiarizationLoading] = useState(false);
     const [diarizationError, setDiarizationError] = useState<string | null>(null);
 
+    // Waveform state
+    const [waveformData, setWaveformData] = useState<WaveformData | null>(null);
+    const [waveformStatus, setWaveformStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+    const [waveformError, setWaveformError] = useState<string | null>(null);
+    const waveformSessionIdRef = useRef<string | null>(null);
+
+    // Playback VU levels (from waveform data)
+    const [playbackMicLevel, setPlaybackMicLevel] = useState(0);
+    const [playbackSysLevel, setPlaybackSysLevel] = useState(0);
+    const playbackLevelSlicesRef = useRef<{
+        mic: number[];
+        sys: number[];
+        sliceDuration: number;
+        duration: number;
+    } | null>(null);
+
     // VAD settings
     const [vadMode, setVADMode] = useState<'auto' | 'compression' | 'per-region' | 'off'>('auto');
     const [vadMethod, setVADMethod] = useState<'auto' | 'energy' | 'silero'>('auto');
+
+    // Load waveform data when session changes
+    useEffect(() => {
+        const targetId = selectedSession?.id;
+        if (!targetId) {
+            waveformSessionIdRef.current = null;
+            setWaveformData(null);
+            setWaveformStatus('idle');
+            setWaveformError(null);
+            playbackLevelSlicesRef.current = null;
+            return;
+        }
+
+        // Skip if already loaded for this session
+        if (waveformSessionIdRef.current === targetId && waveformData) return;
+
+        let cancelled = false;
+        setWaveformStatus('loading');
+        setWaveformError(null);
+
+        const loadWaveform = async () => {
+            try {
+                // 1. Try to load from cache first
+                const cacheResp = await fetch(`${API_BASE}/api/waveform/${targetId}`);
+                if (cacheResp.ok && cacheResp.status !== 204) {
+                    const cachedWaveform = await cacheResp.json();
+                    if (!cancelled && cachedWaveform) {
+                        console.log('[Waveform] Loaded from cache');
+                        setWaveformData(cachedWaveform);
+                        waveformSessionIdRef.current = targetId;
+                        setWaveformStatus('ready');
+                        return;
+                    }
+                }
+
+                // 2. No cache - compute from audio
+                console.log('[Waveform] Computing from audio...');
+                const url = `${API_BASE}/api/sessions/${targetId}/full.mp3`;
+                const resp = await fetch(url);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const arr = await resp.arrayBuffer();
+                if (cancelled) return;
+
+                const ctx = new AudioContext();
+                const decoded = await ctx.decodeAudioData(arr);
+                if (cancelled) {
+                    ctx.close();
+                    return;
+                }
+
+                const waveform = computeWaveform(decoded);
+                ctx.close();
+                if (!cancelled) {
+                    setWaveformData(waveform);
+                    waveformSessionIdRef.current = targetId;
+                    setWaveformStatus('ready');
+
+                    // 3. Save to cache (async, don't block UI)
+                    fetch(`${API_BASE}/api/waveform/${targetId}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(waveform),
+                    }).then(() => {
+                        console.log('[Waveform] Saved to cache');
+                    }).catch(err => {
+                        console.warn('[Waveform] Failed to save cache:', err);
+                    });
+                }
+            } catch (err) {
+                if (cancelled) return;
+                console.error('Failed to build waveform', err);
+                setWaveformData(null);
+                waveformSessionIdRef.current = null;
+                setWaveformStatus('error');
+                setWaveformError(err instanceof Error ? err.message : String(err));
+            }
+        };
+
+        loadWaveform();
+
+        return () => { cancelled = true; };
+    }, [selectedSession?.id, API_BASE]);
+
+    // Prepare playback level slices from waveform data
+    useEffect(() => {
+        if (!waveformData) {
+            playbackLevelSlicesRef.current = null;
+            return;
+        }
+        // Use absolute RMS values for VU meter (not normalized peaks)
+        const mic = waveformData.rmsAbsolute?.[0] || waveformData.peaks[0] || [];
+        const sys = waveformData.rmsAbsolute?.[1] || waveformData.rmsAbsolute?.[0] || waveformData.peaks[1] || mic;
+        playbackLevelSlicesRef.current = {
+            mic,
+            sys,
+            sliceDuration: waveformData.sampleDuration,
+            duration: waveformData.duration,
+        };
+    }, [waveformData]);
+
+    // Update VU levels during playback
+    useEffect(() => {
+        if (!isPlaying || !playbackLevelSlicesRef.current) {
+            setPlaybackMicLevel(0);
+            setPlaybackSysLevel(0);
+            return;
+        }
+
+        const updateLevels = () => {
+            const slices = playbackLevelSlicesRef.current;
+            if (!slices) return;
+
+            const sliceIndex = Math.floor(currentTime / slices.sliceDuration);
+            const micLevel = slices.mic[sliceIndex] ?? 0;
+            const sysLevel = slices.sys[sliceIndex] ?? 0;
+
+            // Convert to 0-100 scale with some amplification
+            setPlaybackMicLevel(Math.min(100, micLevel * 150));
+            setPlaybackSysLevel(Math.min(100, sysLevel * 150));
+        };
+
+        updateLevels();
+        const interval = setInterval(updateLevels, 50);
+        return () => clearInterval(interval);
+    }, [isPlaying, currentTime]);
 
     // Fetch audio devices
     useEffect(() => {
@@ -630,25 +773,39 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
 
 
 
-                    <ErrorBoundary>
-                        <TranscriptionView
-                            onPlayChunk={handlePlayChunk}
-                            playingUrl={playingUrl}
-                            ollamaModel={ollamaModel}
-                            isPlaying={isPlaying}
-                            onPlaySession={handlePlaySession}
-                            onPauseSession={pause}
-                            currentTime={currentTime}
-                            duration={duration}
-                            onSeek={seek}
-                            sessionSpeakers={sessionSpeakers}
-                            onRetranscribeAll={handleRetranscribeAll}
-                            onRenameSpeaker={handleRenameSpeaker}
-                            onPlaySpeakerSample={handlePlaySpeakerSample}
-                            onStopSpeakerSample={handleStopSpeakerSample}
-                            playingSpeakerId={playingSpeakerId}
-                        />
-                    </ErrorBoundary>
+                    <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+                        <ErrorBoundary>
+                            <TranscriptionView
+                                onPlayChunk={handlePlayChunk}
+                                playingUrl={playingUrl}
+                                ollamaModel={ollamaModel}
+                                isPlaying={isPlaying}
+                                onPlaySession={handlePlaySession}
+                                onPauseSession={pause}
+                                currentTime={currentTime}
+                                duration={duration}
+                                onSeek={seek}
+                                sessionSpeakers={sessionSpeakers}
+                                onRetranscribeAll={handleRetranscribeAll}
+                                onRenameSpeaker={handleRenameSpeaker}
+                                onPlaySpeakerSample={handlePlaySpeakerSample}
+                                onStopSpeakerSample={handleStopSpeakerSample}
+                                playingSpeakerId={playingSpeakerId}
+                                waveformData={waveformData}
+                                waveformLoading={waveformStatus === 'loading'}
+                                waveformError={waveformStatus === 'error' ? (waveformError || 'Не удалось загрузить аудио') : null}
+                            />
+                        </ErrorBoundary>
+
+                        {/* VU Meters Sidebar */}
+                        {(isRecording || isPlaying) && (
+                            <AudioMeterSidebar
+                                micLevel={isPlaying ? playbackMicLevel : micLevel}
+                                sysLevel={isPlaying ? playbackSysLevel : sysLevel}
+                                isActive={isRecording || isPlaying}
+                            />
+                        )}
+                    </div>
                 </div>
             </div>
 

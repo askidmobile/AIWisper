@@ -16,6 +16,8 @@ import {
     ScrollbarPositionIndicator, 
     SegmentText 
 } from '../dialogue/DialogueHelpers';
+import WaveformDisplay from '../WaveformDisplay';
+import { WaveformData } from '../../utils/waveform';
 
 interface TranscriptionViewProps {
     onPlayChunk: (url: string) => void;
@@ -37,6 +39,10 @@ interface TranscriptionViewProps {
     onPlaySpeakerSample?: (localId: number) => void;
     onStopSpeakerSample?: () => void;
     playingSpeakerId?: number | null;
+    // Waveform props
+    waveformData?: WaveformData | null;
+    waveformLoading?: boolean;
+    waveformError?: string | null;
 }
 
 export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
@@ -47,7 +53,10 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     onRenameSpeaker,
     onPlaySpeakerSample,
     onStopSpeakerSample,
-    playingSpeakerId
+    playingSpeakerId,
+    waveformData,
+    waveformLoading,
+    waveformError
 }) => {
     const {
         currentSession, selectedSession, isRecording,
@@ -291,6 +300,23 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                             onRetranscribe={() => onRetranscribeAll?.()}
                             onImprove={() => setActiveTab('summary')}
                         />
+                    )}
+
+                    {/* Waveform Display */}
+                    {displaySession && !isRecording && (
+                        <div style={{ padding: '0 1rem 1rem' }}>
+                            <WaveformDisplay
+                                currentTime={currentTime}
+                                playbackOffset={0}
+                                totalDuration={waveformData?.duration || duration || displaySession.totalDuration / 1_000_000_000}
+                                isPlaying={isPlaying}
+                                waveformData={waveformData}
+                                loading={waveformLoading}
+                                error={waveformError}
+                                channelLabels={['Mic', 'Sys']}
+                                onSeek={onSeek}
+                            />
+                        </div>
                     )}
 
                     {/* SessionTabs */}
