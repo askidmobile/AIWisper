@@ -1,6 +1,6 @@
 {
   "name": "aiwisper",
-  "version": "1.41.29",
+  "version": "1.41.30",
   "description": "AIWisper - Speech to Text Application",
   "main": "dist-electron/main.js",
   "scripts": {

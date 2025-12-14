@@ -1349,9 +1349,23 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			return
 		}
 
+		// Получаем имя voiceprint перед удалением для очистки профилей
+		voiceprintName := ""
+		if vp, err := s.VoicePrintStore.Get(msg.VoicePrintID); err == nil && vp != nil {
+			voiceprintName = vp.Name
+		}
+
 		if err := s.VoicePrintStore.Delete(msg.VoicePrintID); err != nil {
 			send(Message{Type: "voiceprint_error", Error: err.Error()})
 			return
+		}
+
+		// Очищаем RecognizedName во всех профилях сессий, где использовался этот voiceprint
+		if s.TranscriptionService != nil && voiceprintName != "" {
+			cleared := s.TranscriptionService.ClearVoiceprintFromProfiles(msg.VoicePrintID, voiceprintName)
+			if cleared > 0 {
+				log.Printf("delete_voiceprint: cleared %d speaker profiles referencing '%s'", cleared, voiceprintName)
+			}
 		}
 
 		send(Message{Type: "voiceprint_deleted", VoicePrintID: msg.VoicePrintID})
@@ -2242,11 +2256,32 @@ func (s *Server) computeSessionSpeakers(sess *session.Session, sessionID string)
 
 		sp.HasSample = sp.TotalDuration >= 2.0
 
-		if !sp.IsMic && s.TranscriptionService != nil {
+		// Проверяем, является ли текущее имя "стандартным" (не кастомным)
+		// Стандартные имена: "Собеседник", "Собеседник N", "Speaker N"
+		isStandardName := sp.DisplayName == "Собеседник" ||
+			strings.HasPrefix(sp.DisplayName, "Собеседник ") ||
+			strings.HasPrefix(sp.DisplayName, "Speaker ")
+
+		// Проверяем распознанное имя из профилей только если:
+		// 1. Это не mic (пользователь)
+		// 2. Текущее имя стандартное (не было переименовано пользователем)
+		if !sp.IsMic && isStandardName && s.TranscriptionService != nil {
 			recognizedName := s.TranscriptionService.GetRecognizedSpeakerName(sessionID, sp.LocalID)
 			if recognizedName != "" {
 				sp.DisplayName = recognizedName
 				sp.IsRecognized = true
+			}
+		}
+
+		// Если имя кастомное (не стандартное), проверяем, есть ли оно в глобальной базе voiceprints
+		// для установки флага IsRecognized
+		if !sp.IsMic && !isStandardName && s.VoicePrintStore != nil {
+			// Проверяем, есть ли voiceprint с таким именем
+			for _, vp := range s.VoicePrintStore.GetAll() {
+				if vp.Name == sp.DisplayName {
+					sp.IsRecognized = true
+					break
+				}
 			}
 		}
 

@@ -2104,3 +2104,35 @@ func (s *TranscriptionService) LoadSessionSpeakerProfiles(sessionID string) ([]S
 	log.Printf("Loaded %d speaker profiles for session %s from disk", len(profiles), sessionID[:8])
 	return profiles, nil
 }
+
+// ClearVoiceprintFromProfiles очищает RecognizedName и VoicePrintID во всех профилях,
+// где использовался удалённый voiceprint. Вызывается при удалении voiceprint из базы.
+func (s *TranscriptionService) ClearVoiceprintFromProfiles(voiceprintID string, voiceprintName string) int {
+	if s.sessionSpeakerProfiles == nil {
+		return 0
+	}
+
+	cleared := 0
+	for sessionID, profiles := range s.sessionSpeakerProfiles {
+		modified := false
+		for i := range profiles {
+			// Проверяем по ID или по имени (для старых профилей без ID)
+			if profiles[i].VoicePrintID == voiceprintID ||
+				(profiles[i].VoicePrintID == "" && profiles[i].RecognizedName == voiceprintName) {
+				log.Printf("ClearVoiceprintFromProfiles: clearing '%s' from session %s, speaker %d",
+					profiles[i].RecognizedName, sessionID[:8], profiles[i].SpeakerID)
+				profiles[i].RecognizedName = ""
+				profiles[i].VoicePrintID = ""
+				modified = true
+				cleared++
+			}
+		}
+		if modified {
+			s.sessionSpeakerProfiles[sessionID] = profiles
+			// Сохраняем изменения на диск
+			s.SaveSessionSpeakerProfiles(sessionID)
+		}
+	}
+
+	return cleared
+}
