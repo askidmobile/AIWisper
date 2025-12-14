@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Sidebar } from './Sidebar';
 import { Header } from './Header';
-import { SettingsPanel } from '../modules/SettingsPanel';
+import { SettingsModal } from '../SettingsModal';
 import { TranscriptionView } from '../modules/TranscriptionView';
 import { ConsoleFooter } from '../modules/ConsoleFooter';
 import { RecordingOverlay } from '../RecordingOverlay';
@@ -17,6 +17,10 @@ import { useWebSocketContext } from '../../context/WebSocketContext';
 import ModelManager from '../ModelManager';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { AudioMeterBar } from '../common/AudioMeterBar';
+import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
+
+// Версия приложения из package.json
+const APP_VERSION = '1.41.2';
 
 interface MainLayoutProps {
     logs: string[];
@@ -43,12 +47,18 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
         useVoiceIsolation, setUseVoiceIsolation,
         echoCancel, setEchoCancel,
         ollamaModel, setOllamaModel,
-        enableStreaming, setEnableStreaming,
-        pauseThreshold, setPauseThreshold,
-        streamingChunkSeconds, setStreamingChunkSeconds,
-        streamingConfirmationThreshold, setStreamingConfirmationThreshold,
+        enableStreaming,
+        pauseThreshold,
+        streamingChunkSeconds,
+        streamingConfirmationThreshold,
         hybridTranscription, setHybridTranscription,
     } = useSettings();
+    
+    // Streaming настройки используются в useEffect для WebSocket
+    void enableStreaming;
+    void pauseThreshold;
+    void streamingChunkSeconds;
+    void streamingConfirmationThreshold;
 
     // UI State
     const [showSettings, setShowSettings] = useState(false);
@@ -59,6 +69,27 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
 
     // Devices
     const [inputDevices, setInputDevices] = useState<Array<{ id: string; name: string; isInput: boolean; isOutput: boolean }>>([]);
+
+    // Session Speakers (для VoicePrint интеграции)
+    const [sessionSpeakers, setSessionSpeakers] = useState<SessionSpeaker[]>([]);
+    
+    // Speaker sample playback
+    const [playingSpeakerId, setPlayingSpeakerId] = useState<number | null>(null);
+    const speakerAudioRef = useRef<HTMLAudioElement | null>(null);
+
+    // Global Voiceprints (сохранённые голоса)
+    const [voiceprints, setVoiceprints] = useState<VoicePrint[]>([]);
+    const [voiceprintsLoading, setVoiceprintsLoading] = useState(false);
+
+    // Diarization state
+    const [diarizationEnabled, setDiarizationEnabled] = useState(false);
+    const [diarizationProvider, setDiarizationProvider] = useState<string>('');
+    const [diarizationLoading, setDiarizationLoading] = useState(false);
+    const [diarizationError, setDiarizationError] = useState<string | null>(null);
+
+    // VAD settings
+    const [vadMode, setVADMode] = useState<'auto' | 'compression' | 'per-region' | 'off'>('auto');
+    const [vadMethod, setVADMethod] = useState<'auto' | 'energy' | 'silero'>('auto');
 
     // Fetch audio devices
     useEffect(() => {
@@ -105,6 +136,155 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
             unsubLoadError();
         };
     }, [subscribe, addLog]);
+
+    // Subscribe to session speakers events
+    useEffect(() => {
+        const unsubSpeakers = subscribe('session_speakers', (msg: any) => {
+            setSessionSpeakers(msg.speakers || []);
+        });
+
+        const unsubSpeakerRenamed = subscribe('speaker_renamed', (msg: any) => {
+            setSessionSpeakers(prev => prev.map(s =>
+                s.localId === msg.localId ? { ...s, displayName: msg.newName, isRecognized: msg.savedAsVoiceprint || s.isRecognized } : s
+            ));
+        });
+
+        const unsubChunkTranscribed = subscribe('chunk_transcribed', (msg: any) => {
+            // Запрашиваем обновлённый список спикеров после транскрипции
+            if (msg.sessionId) {
+                sendMessage({ type: 'get_session_speakers', sessionId: msg.sessionId });
+            }
+        });
+
+        const unsubDiarizationStatus = subscribe('diarization_status', (msg: any) => {
+            setDiarizationEnabled(msg.enabled);
+            setDiarizationProvider(msg.provider || '');
+            setDiarizationLoading(false);
+        });
+
+        const unsubDiarizationError = subscribe('diarization_error', (msg: any) => {
+            setDiarizationError(msg.error);
+            setDiarizationLoading(false);
+        });
+
+        return () => {
+            unsubSpeakers();
+            unsubSpeakerRenamed();
+            unsubChunkTranscribed();
+            unsubDiarizationStatus();
+            unsubDiarizationError();
+        };
+    }, [subscribe, sendMessage]);
+
+    // Load session speakers when session changes
+    useEffect(() => {
+        if (selectedSession) {
+            sendMessage({ type: 'get_session_speakers', sessionId: selectedSession.id });
+        } else {
+            setSessionSpeakers([]);
+        }
+    }, [selectedSession, sendMessage]);
+
+    // Load voiceprints
+    const refreshVoiceprints = useCallback(() => {
+        setVoiceprintsLoading(true);
+        fetch(`${API_BASE}/api/voiceprints`)
+            .then(res => res.json())
+            .then(data => {
+                setVoiceprints(data.voiceprints || []);
+                setVoiceprintsLoading(false);
+            })
+            .catch(() => {
+                setVoiceprintsLoading(false);
+            });
+    }, [API_BASE]);
+
+    // Load voiceprints on mount
+    useEffect(() => {
+        refreshVoiceprints();
+    }, [refreshVoiceprints]);
+
+    // Speaker rename handler
+    const handleRenameSpeaker = useCallback((localId: number, newName: string, saveAsVoiceprint: boolean) => {
+        if (!selectedSession) return;
+        sendMessage({
+            type: 'rename_speaker',
+            sessionId: selectedSession.id,
+            localId,
+            newName,
+            saveAsVoiceprint
+        });
+    }, [selectedSession, sendMessage]);
+
+    // Play speaker sample
+    const handlePlaySpeakerSample = useCallback((localId: number) => {
+        if (!selectedSession) return;
+        
+        // Останавливаем предыдущее воспроизведение
+        if (speakerAudioRef.current) {
+            speakerAudioRef.current.pause();
+            speakerAudioRef.current = null;
+        }
+        
+        const url = `${API_BASE}/api/sessions/${selectedSession.id}/speaker/${localId}/sample.mp3`;
+        const audio = new Audio(url);
+        speakerAudioRef.current = audio;
+        setPlayingSpeakerId(localId);
+        
+        audio.onended = () => {
+            setPlayingSpeakerId(null);
+            speakerAudioRef.current = null;
+        };
+        audio.onerror = () => {
+            setPlayingSpeakerId(null);
+            speakerAudioRef.current = null;
+        };
+        
+        audio.play().catch(() => {
+            setPlayingSpeakerId(null);
+            speakerAudioRef.current = null;
+        });
+    }, [selectedSession, API_BASE]);
+
+    // Stop speaker sample
+    const handleStopSpeakerSample = useCallback(() => {
+        if (speakerAudioRef.current) {
+            speakerAudioRef.current.pause();
+            speakerAudioRef.current = null;
+        }
+        setPlayingSpeakerId(null);
+    }, []);
+
+    // Voiceprint handlers
+    const handleRenameVoiceprint = useCallback((id: string, name: string) => {
+        fetch(`${API_BASE}/api/voiceprints/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        }).then(() => refreshVoiceprints());
+    }, [API_BASE, refreshVoiceprints]);
+
+    const handleDeleteVoiceprint = useCallback((id: string) => {
+        fetch(`${API_BASE}/api/voiceprints/${id}`, { method: 'DELETE' })
+            .then(() => refreshVoiceprints());
+    }, [API_BASE, refreshVoiceprints]);
+
+    // Diarization handlers
+    const handleEnableDiarization = useCallback((segModelId: string, embModelId: string, provider: string) => {
+        setDiarizationLoading(true);
+        setDiarizationError(null);
+        sendMessage({
+            type: 'enable_diarization',
+            segmentationModelId: segModelId,
+            embeddingModelId: embModelId,
+            provider
+        });
+    }, [sendMessage]);
+
+    const handleDisableDiarization = useCallback(() => {
+        setDiarizationLoading(true);
+        sendMessage({ type: 'disable_diarization' });
+    }, [sendMessage]);
 
     // Auto enable/disable streaming transcription
     useEffect(() => {
@@ -205,8 +385,6 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
     const loadOllama = useCallback(() => {
         fetchOllamaModels(settings.ollamaUrl);
     }, [fetchOllamaModels, settings.ollamaUrl]);
-
-    const settingsLocked = isRecording;
 
     // Export hook
     const { copyToClipboard, exportTXT } = useExport();
@@ -450,37 +628,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
                         onShowHelp={() => setShowHelp(true)}
                     />
 
-                    {showSettings && (
-                        <SettingsPanel
-                            settingsLocked={settingsLocked}
-                            micDevice={micDevice}
-                            setMicDevice={setMicDevice}
-                            inputDevices={inputDevices}
-                            captureSystem={captureSystem}
-                            setCaptureSystem={setCaptureSystem}
-                            screenCaptureKitAvailable={true}
-                            useVoiceIsolation={useVoiceIsolation}
-                            setUseVoiceIsolation={setUseVoiceIsolation}
-                            echoCancel={echoCancel}
-                            setEchoCancel={setEchoCancel}
-                            ollamaModel={ollamaModel}
-                            setOllamaModel={setOllamaModel}
-                            loadOllamaModels={loadOllama}
-                            onShowModelManager={() => setShowModelManager(true)}
-                            enableStreaming={enableStreaming}
-                            setEnableStreaming={setEnableStreaming}
-                            pauseThreshold={pauseThreshold}
-                            setPauseThreshold={setPauseThreshold}
-                            streamingChunkSeconds={streamingChunkSeconds}
-                            setStreamingChunkSeconds={setStreamingChunkSeconds}
-                            streamingConfirmationThreshold={streamingConfirmationThreshold}
-                            setStreamingConfirmationThreshold={setStreamingConfirmationThreshold}
-                            theme={theme}
-                            setTheme={toggleTheme}
-                            hybridTranscription={hybridTranscription}
-                            setHybridTranscription={setHybridTranscription}
-                        />
-                    )}
+
 
                     <ErrorBoundary>
                         <TranscriptionView
@@ -493,8 +641,12 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
                             currentTime={currentTime}
                             duration={duration}
                             onSeek={seek}
-                            sessionSpeakers={[]}
+                            sessionSpeakers={sessionSpeakers}
                             onRetranscribeAll={handleRetranscribeAll}
+                            onRenameSpeaker={handleRenameSpeaker}
+                            onPlaySpeakerSample={handlePlaySpeakerSample}
+                            onStopSpeakerSample={handleStopSpeakerSample}
+                            playingSpeakerId={playingSpeakerId}
                         />
                     </ErrorBoundary>
                 </div>
@@ -516,11 +668,61 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
                 />
             )}
 
+            {/* Settings Modal */}
+            <SettingsModal
+                isOpen={showSettings}
+                onClose={() => setShowSettings(false)}
+                devices={inputDevices.map(d => ({ ...d, isInput: true }))}
+                micDevice={micDevice}
+                setMicDevice={setMicDevice}
+                captureSystem={captureSystem}
+                setCaptureSystem={setCaptureSystem}
+                vadMode={vadMode}
+                setVADMode={setVADMode}
+                vadMethod={vadMethod}
+                setVADMethod={setVADMethod}
+                screenCaptureKitAvailable={true}
+                useVoiceIsolation={useVoiceIsolation}
+                setUseVoiceIsolation={setUseVoiceIsolation}
+                echoCancel={echoCancel}
+                setEchoCancel={setEchoCancel}
+                language={language}
+                setLanguage={() => {}} // TODO: добавить в useSettings
+                theme={theme}
+                setTheme={toggleTheme}
+                ollamaModel={ollamaModel}
+                setOllamaModel={setOllamaModel}
+                ollamaModels={[]}
+                ollamaModelsLoading={false}
+                ollamaError={null}
+                loadOllamaModels={loadOllama}
+                onShowModelManager={() => setShowModelManager(true)}
+                activeModelId={activeModelId}
+                models={models}
+                // Diarization
+                diarizationStatus={{ enabled: diarizationEnabled, provider: diarizationProvider }}
+                diarizationLoading={diarizationLoading}
+                diarizationError={diarizationError}
+                segmentationModels={models.filter(m => m.engine === 'diarization' && m.diarizationType === 'segmentation')}
+                embeddingModels={models.filter(m => m.engine === 'diarization' && m.diarizationType === 'embedding')}
+                onEnableDiarization={handleEnableDiarization}
+                onDisableDiarization={handleDisableDiarization}
+                // Гибридная транскрипция
+                hybridTranscription={hybridTranscription}
+                onHybridTranscriptionChange={setHybridTranscription}
+                // Voiceprints
+                voiceprints={voiceprints}
+                voiceprintsLoading={voiceprintsLoading}
+                onRenameVoiceprint={handleRenameVoiceprint}
+                onDeleteVoiceprint={handleDeleteVoiceprint}
+                onRefreshVoiceprints={refreshVoiceprints}
+            />
+
             {/* Help Modal */}
             <HelpModal
                 isOpen={showHelp}
                 onClose={() => setShowHelp(false)}
-                appVersion="1.39.0"
+                appVersion={APP_VERSION}
             />
 
             {/* Audio Meter Bar */}

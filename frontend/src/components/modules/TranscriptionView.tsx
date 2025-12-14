@@ -3,6 +3,7 @@ import { useSessionContext } from '../../context/SessionContext';
 import { useWebSocketContext } from '../../context/WebSocketContext';
 import SessionTabs, { TabType } from '../SessionTabs';
 import SummaryView from '../SummaryView';
+import SpeakersTab from './SpeakersTab';
 import { SessionControls } from './SessionControls';
 import { SessionStats } from './SessionStats';
 import { TranscriptSegment } from '../../types/session';
@@ -31,13 +32,22 @@ interface TranscriptionViewProps {
     sessionSpeakers?: SessionSpeaker[];
     // Retranscribe all chunks
     onRetranscribeAll?: () => void;
+    // Speaker management
+    onRenameSpeaker?: (localId: number, newName: string, saveAsVoiceprint: boolean) => void;
+    onPlaySpeakerSample?: (localId: number) => void;
+    onStopSpeakerSample?: () => void;
+    playingSpeakerId?: number | null;
 }
 
 export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     onPlayChunk, playingUrl, ollamaModel,
     isPlaying, onPlaySession, onPauseSession, currentTime, duration, onSeek,
     sessionSpeakers = [],
-    onRetranscribeAll
+    onRetranscribeAll,
+    onRenameSpeaker,
+    onPlaySpeakerSample,
+    onStopSpeakerSample,
+    playingSpeakerId
 }) => {
     const {
         currentSession, selectedSession, isRecording,
@@ -292,6 +302,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                 hasSummary={!!displaySession.summary}
                                 isGeneratingSummary={isGeneratingSummary}
                                 isRecording={isRecording}
+                                speakersCount={sessionSpeakers.length}
                             />
                         </div>
                     )}
@@ -491,6 +502,18 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                             <SessionStats
                                 dialogue={allDialogue}
                                 totalDuration={displaySession.totalDuration}
+                            />
+                        )}
+
+                        {/* Tab: Speakers */}
+                        {activeTab === 'speakers' && displaySession && onRenameSpeaker && (
+                            <SpeakersTab
+                                sessionId={displaySession.id}
+                                speakers={sessionSpeakers}
+                                onRename={onRenameSpeaker}
+                                onPlaySample={onPlaySpeakerSample}
+                                onStopSample={onStopSpeakerSample}
+                                playingSpeakerId={playingSpeakerId}
                             />
                         )}
 

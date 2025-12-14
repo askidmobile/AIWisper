@@ -143,8 +143,9 @@ export default function SummaryView({
         return (
             <div style={{
                 padding: '1rem',
-                backgroundColor: '#1a1a2e',
-                borderRadius: '8px',
+                backgroundColor: 'var(--surface)',
+                borderRadius: 'var(--radius-lg)',
+                border: '1px solid var(--glass-border)',
                 lineHeight: '1.8',
                 width: '100%',
                 maxWidth: '100%',
@@ -160,9 +161,9 @@ export default function SummaryView({
                     alignItems: 'center',
                     marginBottom: '1rem',
                     paddingBottom: '0.75rem',
-                    borderBottom: '1px solid #333'
+                    borderBottom: '1px solid var(--glass-border)'
                 }}>
-                    <h4 style={{ margin: 0, color: '#888', fontSize: '0.9rem' }}>
+                    <h4 style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.9rem' }}>
                         📋 Summary
                     </h4>
                     <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
@@ -173,10 +174,10 @@ export default function SummaryView({
                                 title="Экспорт summary"
                                 style={{
                                     padding: '0.3rem 0.6rem',
-                                    backgroundColor: copySuccess ? '#00b894' : '#6c5ce7',
+                                    backgroundColor: copySuccess ? 'var(--success)' : 'var(--primary)',
                                     color: '#fff',
                                     border: 'none',
-                                    borderRadius: '4px',
+                                    borderRadius: 'var(--radius-sm)',
                                     cursor: 'pointer',
                                     fontSize: '0.75rem',
                                     display: 'flex',
@@ -194,13 +195,13 @@ export default function SummaryView({
                                     top: '100%',
                                     right: 0,
                                     marginTop: '0.3rem',
-                                    backgroundColor: '#1a1a2e',
-                                    border: '1px solid #333',
-                                    borderRadius: '6px',
+                                    backgroundColor: 'var(--surface-elevated)',
+                                    border: '1px solid var(--glass-border)',
+                                    borderRadius: 'var(--radius-md)',
                                     overflow: 'hidden',
                                     zIndex: 100,
                                     minWidth: '160px',
-                                    boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+                                    boxShadow: 'var(--shadow-lg)'
                                 }}>
                                     <button
                                         onClick={handleCopyToClipboard}
@@ -209,7 +210,7 @@ export default function SummaryView({
                                             padding: '0.6rem 1rem',
                                             backgroundColor: 'transparent',
                                             border: 'none',
-                                            color: '#fff',
+                                            color: 'var(--text-primary)',
                                             cursor: 'pointer',
                                             textAlign: 'left',
                                             display: 'flex',
@@ -217,7 +218,7 @@ export default function SummaryView({
                                             gap: '0.5rem',
                                             fontSize: '0.85rem'
                                         }}
-                                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2a2a4e'}
+                                        onMouseEnter={e => e.currentTarget.style.backgroundColor = 'var(--glass-bg)'}
                                         onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
                                     >
                                         📋 Копировать
@@ -229,8 +230,8 @@ export default function SummaryView({
                                             padding: '0.6rem 1rem',
                                             backgroundColor: 'transparent',
                                             border: 'none',
-                                            borderTop: '1px solid #333',
-                                            color: '#fff',
+                                            borderTop: '1px solid var(--glass-border)',
+                                            color: 'var(--text-primary)',
                                             cursor: 'pointer',
                                             textAlign: 'left',
                                             display: 'flex',
@@ -238,7 +239,7 @@ export default function SummaryView({
                                             gap: '0.5rem',
                                             fontSize: '0.85rem'
                                         }}
-                                        onMouseEnter={e => e.currentTarget.style.backgroundColor = '#2a2a4e'}
+                                        onMouseEnter={e => e.currentTarget.style.backgroundColor = 'var(--glass-bg)'}
                                         onMouseLeave={e => e.currentTarget.style.backgroundColor = 'transparent'}
                                     >
                                         💾 Скачать .md
@@ -252,10 +253,10 @@ export default function SummaryView({
                             title="Перегенерировать summary"
                             style={{
                                 padding: '0.3rem 0.6rem',
-                                backgroundColor: '#333',
-                                color: '#888',
-                                border: 'none',
-                                borderRadius: '4px',
+                                backgroundColor: 'var(--surface-strong)',
+                                color: 'var(--text-muted)',
+                                border: '1px solid var(--glass-border)',
+                                borderRadius: 'var(--radius-sm)',
                                 cursor: 'pointer',
                                 fontSize: '0.75rem'
                             }}
@@ -265,7 +266,7 @@ export default function SummaryView({
                     </div>
                 </div>
                 <div className="markdown-content" style={{
-                    color: '#ddd',
+                    color: 'var(--text-secondary)',
                     fontSize: '0.95rem',
                     overflow: 'hidden',
                     overflowWrap: 'break-word',
@@ -275,11 +276,11 @@ export default function SummaryView({
                         components={{
                             h2: ({children}) => (
                                 <h2 style={{ 
-                                    color: '#fff', 
+                                    color: 'var(--text-primary)', 
                                     fontSize: '1.1rem', 
                                     marginTop: '1.2rem', 
                                     marginBottom: '0.6rem',
-                                    borderBottom: '1px solid #333',
+                                    borderBottom: '1px solid var(--glass-border)',
                                     paddingBottom: '0.4rem'
                                 }}>
                                     {children}
@@ -287,7 +288,7 @@ export default function SummaryView({
                             ),
                             h3: ({children}) => (
                                 <h3 style={{ 
-                                    color: '#ccc', 
+                                    color: 'var(--text-secondary)', 
                                     fontSize: '1rem', 
                                     marginTop: '1rem', 
                                     marginBottom: '0.5rem' 
@@ -307,7 +308,7 @@ export default function SummaryView({
                             li: ({children}) => (
                                 <li style={{ 
                                     marginBottom: '0.4rem',
-                                    color: '#bbb',
+                                    color: 'var(--text-secondary)',
                                     overflowWrap: 'break-word',
                                     wordBreak: 'break-word'
                                 }}>
@@ -317,7 +318,7 @@ export default function SummaryView({
                             p: ({children}) => (
                                 <p style={{ 
                                     margin: '0.5rem 0',
-                                    color: '#ccc',
+                                    color: 'var(--text-secondary)',
                                     overflowWrap: 'break-word',
                                     wordBreak: 'break-word'
                                 }}>
@@ -325,12 +326,12 @@ export default function SummaryView({
                                 </p>
                             ),
                             strong: ({children}) => (
-                                <strong style={{ color: '#fff' }}>
+                                <strong style={{ color: 'var(--text-primary)' }}>
                                     {children}
                                 </strong>
                             ),
                             em: ({children}) => (
-                                <em style={{ color: '#aaa' }}>
+                                <em style={{ color: 'var(--text-muted)' }}>
                                     {children}
                                 </em>
                             )
