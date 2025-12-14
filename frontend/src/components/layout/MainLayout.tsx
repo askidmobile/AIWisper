@@ -22,7 +22,7 @@ import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData, computeWaveform } from '../../utils/waveform';
 
 // Версия приложения из package.json
-const APP_VERSION = '1.41.9';
+const APP_VERSION = '1.41.10';
 
 interface MainLayoutProps {
     addLog: (msg: string) => void;

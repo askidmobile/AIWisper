@@ -59,6 +59,8 @@ const RenameDialog: React.FC<RenameDialogProps> = ({ currentName, onSave, onClos
                 right: 0,
                 bottom: 0,
                 backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                backdropFilter: 'blur(8px)',
+                WebkitBackdropFilter: 'blur(8px)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -68,11 +70,14 @@ const RenameDialog: React.FC<RenameDialogProps> = ({ currentName, onSave, onClos
         >
             <div
                 style={{
-                    backgroundColor: 'var(--surface)',
-                    borderRadius: 'var(--radius-lg)',
+                    background: 'var(--glass-bg-elevated)',
+                    backdropFilter: 'blur(var(--glass-blur)) saturate(var(--glass-saturation))',
+                    WebkitBackdropFilter: 'blur(var(--glass-blur)) saturate(var(--glass-saturation))',
+                    borderRadius: 'var(--radius-xl)',
                     padding: '1.5rem',
                     minWidth: '320px',
-                    boxShadow: 'var(--shadow-lg)',
+                    boxShadow: 'var(--shadow-elevated)',
+                    border: '1px solid var(--glass-border)',
                 }}
                 onClick={(e) => e.stopPropagation()}
             >
@@ -146,6 +151,8 @@ const DeleteDialog: React.FC<DeleteDialogProps> = ({ name, onConfirm, onClose })
                 right: 0,
                 bottom: 0,
                 backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                backdropFilter: 'blur(8px)',
+                WebkitBackdropFilter: 'blur(8px)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -155,12 +162,15 @@ const DeleteDialog: React.FC<DeleteDialogProps> = ({ name, onConfirm, onClose })
         >
             <div
                 style={{
-                    backgroundColor: 'var(--surface)',
-                    borderRadius: 'var(--radius-lg)',
+                    background: 'var(--glass-bg-elevated)',
+                    backdropFilter: 'blur(var(--glass-blur)) saturate(var(--glass-saturation))',
+                    WebkitBackdropFilter: 'blur(var(--glass-blur)) saturate(var(--glass-saturation))',
+                    borderRadius: 'var(--radius-xl)',
                     padding: '1.5rem',
                     minWidth: '320px',
                     maxWidth: '400px',
-                    boxShadow: 'var(--shadow-lg)',
+                    boxShadow: 'var(--shadow-elevated)',
+                    border: '1px solid var(--glass-border)',
                 }}
                 onClick={(e) => e.stopPropagation()}
             >

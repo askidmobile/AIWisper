@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.10] - 2025-12-14
+
+### Fixed
+- **Liquid Glass Dialogs**: Применён Liquid Glass стиль к диалогам подтверждения
+  - Диалог удаления голоса в настройках теперь использует glass-эффект
+  - Диалог переименования голоса в настройках обновлён
+  - Диалог переименования спикера на вкладке "Собеседники" обновлён
+  - Добавлен backdrop-filter blur для overlay и контента диалогов
+
+### Technical
+- `frontend/src/components/modules/VoiceprintsSettings.tsx`:
+  - RenameDialog и DeleteDialog используют `var(--glass-bg-elevated)`, `var(--glass-blur)`, `var(--glass-border)`
+- `frontend/src/components/modules/SpeakersTab.tsx`:
+  - RenameDialog использует Liquid Glass стиль
+
 ## [1.41.9] - 2025-12-14
 
 ### Fixed
