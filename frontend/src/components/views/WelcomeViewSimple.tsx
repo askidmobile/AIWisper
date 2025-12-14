@@ -17,20 +17,20 @@ export const WelcomeViewSimple: React.FC = () => {
             maxWidth: '600px',
             margin: '0 auto'
         }}>
-            {/* App Icon */}
+            {/* App Icon - Pill shape like reference */}
             <div style={{ 
-                width: '80px', 
-                height: '80px', 
-                borderRadius: '20px',
+                width: '120px', 
+                height: '56px', 
+                borderRadius: '28px',
                 background: 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 marginTop: '1rem',
-                marginBottom: '2rem',
+                marginBottom: '1.5rem',
                 boxShadow: 'var(--shadow-glow-primary)'
             }}>
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
                     <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                     <line x1="12" y1="19" x2="12" y2="23"/>
@@ -42,9 +42,9 @@ export const WelcomeViewSimple: React.FC = () => {
                 fontSize: '1.5rem', 
                 fontWeight: 'var(--font-weight-bold)',
                 color: 'var(--text-primary)',
-                marginBottom: '0.25rem',
+                marginBottom: '0.15rem',
                 textAlign: 'center',
-                lineHeight: 1.2
+                lineHeight: 1.1
             }}>
                 AIWisper
             </h1>
@@ -52,8 +52,9 @@ export const WelcomeViewSimple: React.FC = () => {
                 fontSize: '0.95rem', 
                 color: 'var(--text-secondary)',
                 marginBottom: '2rem',
+                marginTop: 0,
                 textAlign: 'center',
-                lineHeight: 1.3
+                lineHeight: 1.2
             }}>
                 Умный транскрибатор с разделением спикеров
             </p>
