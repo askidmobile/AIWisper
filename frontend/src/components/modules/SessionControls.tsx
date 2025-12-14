@@ -559,16 +559,18 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                                 onClick={() => setShowExportMenu(false)}
                             />
                             
-                            {/* Menu */}
+                            {/* Menu - Liquid Glass Effect */}
                             <div
                                 style={{
                                     position: 'absolute',
                                     bottom: 'calc(100% + 8px)',
                                     right: 0,
-                                    background: 'var(--surface-elevated)',
+                                    background: 'rgba(30, 30, 35, 0.75)',
+                                    backdropFilter: 'blur(24px) saturate(180%)',
+                                    WebkitBackdropFilter: 'blur(24px) saturate(180%)',
                                     borderRadius: 'var(--radius-lg)',
-                                    border: '1px solid var(--glass-border)',
-                                    boxShadow: 'var(--shadow-lg)',
+                                    border: '1px solid rgba(255, 255, 255, 0.12)',
+                                    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
                                     padding: '0.5rem',
                                     minWidth: '180px',
                                     zIndex: 100,
@@ -585,43 +587,45 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                                     }}
                                     style={{
                                         width: '100%',
-                                        padding: '0.5rem 0.75rem',
+                                        padding: '0.6rem 0.75rem',
                                         background: 'transparent',
                                         border: 'none',
                                         borderRadius: 'var(--radius-md)',
-                                        color: 'var(--text-primary)',
+                                        color: 'rgba(255, 255, 255, 0.95)',
                                         fontSize: '0.85rem',
                                         textAlign: 'left',
                                         cursor: 'pointer',
                                         display: 'flex',
                                         alignItems: 'center',
-                                        gap: '0.5rem',
+                                        gap: '0.6rem',
+                                        transition: 'background 0.15s ease',
                                     }}
-                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'}
                                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                                 >
                                     📋 {copySuccess ? 'Скопировано!' : 'Копировать текст'}
                                 </button>
                                 
-                                <div style={{ height: '1px', background: 'var(--glass-border-subtle)', margin: '0.25rem 0' }} />
+                                <div style={{ height: '1px', background: 'rgba(255, 255, 255, 0.08)', margin: '0.25rem 0.5rem' }} />
                                 
                                 <button
                                     onClick={() => { exportTXT(session); setShowExportMenu(false); }}
                                     style={{
                                         width: '100%',
-                                        padding: '0.5rem 0.75rem',
+                                        padding: '0.6rem 0.75rem',
                                         background: 'transparent',
                                         border: 'none',
                                         borderRadius: 'var(--radius-md)',
-                                        color: 'var(--text-primary)',
+                                        color: 'rgba(255, 255, 255, 0.95)',
                                         fontSize: '0.85rem',
                                         textAlign: 'left',
                                         cursor: 'pointer',
                                         display: 'flex',
                                         alignItems: 'center',
-                                        gap: '0.5rem',
+                                        gap: '0.6rem',
+                                        transition: 'background 0.15s ease',
                                     }}
-                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'}
                                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                                 >
                                     📄 Текст (.txt)
@@ -631,19 +635,20 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                                     onClick={() => { exportSRT(session); setShowExportMenu(false); }}
                                     style={{
                                         width: '100%',
-                                        padding: '0.5rem 0.75rem',
+                                        padding: '0.6rem 0.75rem',
                                         background: 'transparent',
                                         border: 'none',
                                         borderRadius: 'var(--radius-md)',
-                                        color: 'var(--text-primary)',
+                                        color: 'rgba(255, 255, 255, 0.95)',
                                         fontSize: '0.85rem',
                                         textAlign: 'left',
                                         cursor: 'pointer',
                                         display: 'flex',
                                         alignItems: 'center',
-                                        gap: '0.5rem',
+                                        gap: '0.6rem',
+                                        transition: 'background 0.15s ease',
                                     }}
-                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'}
                                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                                 >
                                     🎬 Субтитры (.srt)
@@ -653,19 +658,20 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                                     onClick={() => { exportVTT(session); setShowExportMenu(false); }}
                                     style={{
                                         width: '100%',
-                                        padding: '0.5rem 0.75rem',
+                                        padding: '0.6rem 0.75rem',
                                         background: 'transparent',
                                         border: 'none',
                                         borderRadius: 'var(--radius-md)',
-                                        color: 'var(--text-primary)',
+                                        color: 'rgba(255, 255, 255, 0.95)',
                                         fontSize: '0.85rem',
                                         textAlign: 'left',
                                         cursor: 'pointer',
                                         display: 'flex',
                                         alignItems: 'center',
-                                        gap: '0.5rem',
+                                        gap: '0.6rem',
+                                        transition: 'background 0.15s ease',
                                     }}
-                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'}
                                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                                 >
                                     🌐 WebVTT (.vtt)
@@ -675,19 +681,20 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                                     onClick={() => { exportJSON(session); setShowExportMenu(false); }}
                                     style={{
                                         width: '100%',
-                                        padding: '0.5rem 0.75rem',
+                                        padding: '0.6rem 0.75rem',
                                         background: 'transparent',
                                         border: 'none',
                                         borderRadius: 'var(--radius-md)',
-                                        color: 'var(--text-primary)',
+                                        color: 'rgba(255, 255, 255, 0.95)',
                                         fontSize: '0.85rem',
                                         textAlign: 'left',
                                         cursor: 'pointer',
                                         display: 'flex',
                                         alignItems: 'center',
-                                        gap: '0.5rem',
+                                        gap: '0.6rem',
+                                        transition: 'background 0.15s ease',
                                     }}
-                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'}
                                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                                 >
                                     📊 JSON (.json)
@@ -697,19 +704,20 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                                     onClick={() => { exportMarkdown(session); setShowExportMenu(false); }}
                                     style={{
                                         width: '100%',
-                                        padding: '0.5rem 0.75rem',
+                                        padding: '0.6rem 0.75rem',
                                         background: 'transparent',
                                         border: 'none',
                                         borderRadius: 'var(--radius-md)',
-                                        color: 'var(--text-primary)',
+                                        color: 'rgba(255, 255, 255, 0.95)',
                                         fontSize: '0.85rem',
                                         textAlign: 'left',
                                         cursor: 'pointer',
                                         display: 'flex',
                                         alignItems: 'center',
-                                        gap: '0.5rem',
+                                        gap: '0.6rem',
+                                        transition: 'background 0.15s ease',
                                     }}
-                                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--glass-bg-hover)'}
+                                    onMouseEnter={(e) => e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)'}
                                     onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                                 >
                                     📝 Markdown (.md)
