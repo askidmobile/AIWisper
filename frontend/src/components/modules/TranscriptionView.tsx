@@ -61,7 +61,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
 }) => {
     const {
         currentSession, selectedSession, isRecording,
-        generateSummary
+        generateSummary, isFullTranscribing
     } = useSessionContext();
     const { sendMessage, subscribe } = useWebSocketContext();
     const { activeModelId } = useModelContext();
@@ -546,6 +546,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                 playingUrl={playingUrl}
                                 highlightedChunkId={highlightedChunkId}
                                 transcribingChunkId={transcribingChunkId}
+                                isFullTranscribing={isFullTranscribing}
                                 onPlayChunk={onPlayChunk}
                                 onRetranscribe={handleRetranscribe}
                             />

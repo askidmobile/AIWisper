@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.21] - 2025-12-14
+
+### Fixed
+- **Chunk Retranscribe Button Blocking**: Заблокирована кнопка ретранскрибации отдельного отрезка во время полной ретранскрибации
+  - **Проблема**: Во время полной ретранскрибации можно было нажать кнопку ретранскрибации отдельного чанка, что вызывало конфликт
+  - **Решение**: Добавлен проп `isFullTranscribing` в `ChunksViewSimple`, блокирующий кнопки ретранскрибации отрезков
+  - Визуальная индикация: кнопка становится полупрозрачной (opacity 0.4) и cursor: not-allowed
+  - Tooltip меняется на "Дождитесь завершения ретранскрибации"
+
+### Technical
+- `frontend/src/components/chunks/ChunksViewSimple.tsx`:
+  - Добавлен проп `isFullTranscribing` в интерфейс `ChunksViewSimpleProps`
+  - Добавлен проп `isRetranscribeDisabled` в интерфейс `ChunkItemProps`
+  - Кнопка ретранскрибации получает `disabled` и визуальные стили при блокировке
+- `frontend/src/components/modules/TranscriptionView.tsx`:
+  - Импорт `isFullTranscribing` из `SessionContext`
+  - Передача пропа в `ChunksViewSimple`
+
 ## [1.41.20] - 2025-12-14
 
 ### Fixed

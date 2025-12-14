@@ -36,6 +36,7 @@ interface ChunksViewSimpleProps {
     playingUrl: string | null;
     highlightedChunkId: string | null;
     transcribingChunkId: string | null;
+    isFullTranscribing?: boolean; // Блокировка во время полной ретранскрибации
     onPlayChunk: (url: string) => void;
     onRetranscribe: (chunkId: string) => void;
 }
@@ -49,6 +50,7 @@ export const ChunksViewSimple: React.FC<ChunksViewSimpleProps> = ({
     playingUrl,
     highlightedChunkId,
     transcribingChunkId,
+    isFullTranscribing = false,
     onPlayChunk,
     onRetranscribe,
 }) => {
@@ -82,6 +84,7 @@ export const ChunksViewSimple: React.FC<ChunksViewSimpleProps> = ({
                         isPlaying={isPlaying}
                         isHighlighted={isHighlighted}
                         isTranscribing={isTranscribing}
+                        isRetranscribeDisabled={isFullTranscribing}
                         onPlay={() => onPlayChunk(chunkUrl)}
                         onRetranscribe={() => chunk.id && onRetranscribe(chunk.id)}
                     />
@@ -100,6 +103,7 @@ interface ChunkItemProps {
     isPlaying: boolean;
     isHighlighted: boolean;
     isTranscribing: boolean;
+    isRetranscribeDisabled?: boolean; // Блокировка кнопки ретранскрибации
     onPlay: () => void;
     onRetranscribe: () => void;
 }
@@ -109,6 +113,7 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
     isPlaying,
     isHighlighted,
     isTranscribing,
+    isRetranscribeDisabled = false,
     onPlay,
     onRetranscribe,
 }) => {
@@ -171,14 +176,16 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
                     
                     <button
                         onClick={onRetranscribe}
-                        title="Повторить транскрипцию"
+                        disabled={isRetranscribeDisabled || isTranscribing}
+                        title={isRetranscribeDisabled ? "Дождитесь завершения ретранскрибации" : "Повторить транскрипцию"}
                         style={{
                             padding: '0.25rem 0.5rem',
                             backgroundColor: 'var(--surface-strong)',
                             border: '1px solid var(--glass-border)',
                             borderRadius: 'var(--radius-sm)',
                             color: 'var(--text-muted)',
-                            cursor: 'pointer',
+                            cursor: (isRetranscribeDisabled || isTranscribing) ? 'not-allowed' : 'pointer',
+                            opacity: (isRetranscribeDisabled || isTranscribing) ? 0.4 : 1,
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'center'
