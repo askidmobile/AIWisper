@@ -26,7 +26,8 @@ export const WelcomeViewSimple: React.FC = () => {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                marginBottom: '1.5rem',
+                marginTop: '1rem',
+                marginBottom: '2rem',
                 boxShadow: 'var(--shadow-glow-primary)'
             }}>
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -41,8 +42,9 @@ export const WelcomeViewSimple: React.FC = () => {
                 fontSize: '1.5rem', 
                 fontWeight: 'var(--font-weight-bold)',
                 color: 'var(--text-primary)',
-                marginBottom: '0.5rem',
-                textAlign: 'center'
+                marginBottom: '0.25rem',
+                textAlign: 'center',
+                lineHeight: 1.2
             }}>
                 AIWisper
             </h1>
@@ -50,7 +52,8 @@ export const WelcomeViewSimple: React.FC = () => {
                 fontSize: '0.95rem', 
                 color: 'var(--text-secondary)',
                 marginBottom: '2rem',
-                textAlign: 'center'
+                textAlign: 'center',
+                lineHeight: 1.3
             }}>
                 Умный транскрибатор с разделением спикеров
             </p>
@@ -102,10 +105,22 @@ export const WelcomeViewSimple: React.FC = () => {
                 gap: '0.75rem',
                 width: '100%'
             }}>
-                <FeatureCard icon="🎯" text="Точное распознавание" />
-                <FeatureCard icon="👥" text="Разделение спикеров" />
-                <FeatureCard icon="📝" text="AI-сводка" />
-                <FeatureCard icon="🔒" text="Локальная обработка" />
+                <FeatureCard 
+                    icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>}
+                    text="Точное распознавание" 
+                />
+                <FeatureCard 
+                    icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>}
+                    text="Разделение спикеров" 
+                />
+                <FeatureCard 
+                    icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>}
+                    text="AI-сводка" 
+                />
+                <FeatureCard 
+                    icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>}
+                    text="Локальная обработка" 
+                />
             </div>
 
             <p style={{ 
@@ -159,7 +174,7 @@ const QuickStartStep: React.FC<QuickStartStepProps> = ({ number, title, descript
  * Карточка фичи
  */
 interface FeatureCardProps {
-    icon: string;
+    icon: React.ReactNode;
     text: string;
 }
 
@@ -171,9 +186,10 @@ const FeatureCard: React.FC<FeatureCardProps> = ({ icon, text }) => (
         border: '1px solid var(--glass-border-subtle)',
         display: 'flex',
         alignItems: 'center',
-        gap: '0.5rem'
+        gap: '0.6rem',
+        color: 'var(--text-muted)'
     }}>
-        <span style={{ fontSize: '1.1rem' }}>{icon}</span>
+        <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>{icon}</span>
         <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{text}</span>
     </div>
 );
