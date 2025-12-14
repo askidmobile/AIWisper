@@ -270,60 +270,70 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                         </h3>
                     )}
                     
-                    {/* Date */}
-                    <span
+                    {/* Date & Tags Row */}
+                    <div
                         style={{
-                            fontSize: '0.8rem',
-                            color: 'var(--text-muted)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
+                            gap: '0.5rem',
                         }}
                     >
-                        {session.startTime ? new Date(session.startTime).toLocaleDateString('ru-RU', {
-                            day: 'numeric',
-                            month: 'short',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                        }) : 'Дата неизвестна'}
-                    </span>
-                    
-                    {/* Tags Display */}
-                    {session.tags && session.tags.length > 0 && (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginTop: '0.5rem' }}>
-                            {session.tags.map((tag) => (
-                                <span
-                                    key={tag}
-                                    style={{
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: '0.3rem',
-                                        padding: '0.2rem 0.5rem',
-                                        fontSize: '0.75rem',
-                                        background: 'var(--primary-alpha)',
-                                        color: 'var(--primary)',
-                                        borderRadius: '999px',
-                                        border: '1px solid var(--primary-alpha)',
-                                    }}
-                                >
-                                    #{tag}
-                                    <button
-                                        onClick={() => handleRemoveTag(tag)}
+                        <span
+                            style={{
+                                fontSize: '0.8rem',
+                                color: 'var(--text-muted)',
+                            }}
+                        >
+                            {session.startTime ? new Date(session.startTime).toLocaleDateString('ru-RU', {
+                                day: 'numeric',
+                                month: 'short',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                            }) : 'Дата неизвестна'}
+                        </span>
+                        
+                        {/* Tags Display - inline with date */}
+                        {session.tags && session.tags.length > 0 && (
+                            <>
+                                <span style={{ color: 'var(--text-muted)', opacity: 0.4 }}>•</span>
+                                {session.tags.map((tag) => (
+                                    <span
+                                        key={tag}
                                         style={{
-                                            background: 'none',
-                                            border: 'none',
-                                            padding: 0,
-                                            cursor: 'pointer',
-                                            color: 'var(--primary)',
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            gap: '0.2rem',
+                                            padding: '0.1rem 0.4rem',
                                             fontSize: '0.7rem',
-                                            lineHeight: 1,
-                                            opacity: 0.7,
+                                            background: 'var(--primary-alpha)',
+                                            color: 'var(--primary)',
+                                            borderRadius: '4px',
+                                            fontWeight: 500,
                                         }}
-                                        title="Удалить тег"
                                     >
-                                        ✕
-                                    </button>
-                                </span>
-                            ))}
-                        </div>
-                    )}
+                                        {tag}
+                                        <button
+                                            onClick={() => handleRemoveTag(tag)}
+                                            style={{
+                                                background: 'none',
+                                                border: 'none',
+                                                padding: '0 0 0 2px',
+                                                cursor: 'pointer',
+                                                color: 'var(--primary)',
+                                                fontSize: '0.6rem',
+                                                lineHeight: 1,
+                                                opacity: 0.6,
+                                            }}
+                                            title="Удалить тег"
+                                        >
+                                            ✕
+                                        </button>
+                                    </span>
+                                ))}
+                            </>
+                        )}
+                    </div>
                 </div>
                 
                 {/* Add Tag Button/Input */}
