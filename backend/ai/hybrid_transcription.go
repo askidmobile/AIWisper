@@ -63,13 +63,11 @@ type ConfidenceCalibration struct {
 
 // DefaultCalibrations дефолтные калибровки для известных моделей
 // GigaAM завышает confidence на ~25% из-за особенностей CTC loss
-// fluid-asr использует GigaAM внутри, поэтому тоже требует калибровки
 var DefaultCalibrations = []ConfidenceCalibration{
 	{ModelPattern: "(?i)gigaam", ScaleFactor: 0.75, Bias: 0},
-	{ModelPattern: "(?i)fluid-asr", ScaleFactor: 0.75, Bias: 0}, // fluid-asr = GigaAM
-	{ModelPattern: "(?i)fluid", ScaleFactor: 0.75, Bias: 0},     // fluid тоже = GigaAM
 	{ModelPattern: "(?i)whisper", ScaleFactor: 1.0, Bias: 0},
 	{ModelPattern: "(?i)parakeet", ScaleFactor: 1.0, Bias: 0},
+	{ModelPattern: "(?i)fluid", ScaleFactor: 1.0, Bias: 0}, // fluid-asr = Parakeet TDT v3
 }
 
 // DefaultVotingConfig возвращает дефолтную конфигурацию voting-системы
@@ -326,8 +324,9 @@ func (h *HybridTranscriber) mergeByConfidence(primary, secondary []TranscriptSeg
 
 	// КРИТИЧНО: Проверяем наличие <unk> токенов - это явный признак низкого качества
 	// Если модель выдала <unk>, её confidence должен быть сильно понижен
-	primaryUnkCount := countUnkTokens(primaryWords)
-	secondaryUnkCount := countUnkTokens(secondaryWords)
+	// Проверяем и в словах, и в текстах сегментов (некоторые движки фильтруют из Words, но не из Text)
+	primaryUnkCount := countUnkTokens(primaryWords) + countUnkTokensInSegments(primary)
+	secondaryUnkCount := countUnkTokens(secondaryWords) + countUnkTokensInSegments(secondary)
 
 	// Штраф за каждый <unk> токен: -15% от confidence
 	primaryUnkPenalty := float32(primaryUnkCount) * 0.15
@@ -441,6 +440,19 @@ func countUnkTokens(words []TranscriptWord) int {
 		if strings.Contains(text, "<unk>") || strings.Contains(text, "[unk]") {
 			count++
 		}
+	}
+	return count
+}
+
+// countUnkTokensInSegments подсчитывает <unk> токены в текстах сегментов
+// Это нужно потому что некоторые движки фильтруют <unk> из Words, но оставляют в Text
+func countUnkTokensInSegments(segments []TranscriptSegment) int {
+	count := 0
+	for _, seg := range segments {
+		text := strings.ToLower(seg.Text)
+		// Считаем количество вхождений <unk> в тексте
+		count += strings.Count(text, "<unk>")
+		count += strings.Count(text, "[unk]")
 	}
 	return count
 }
