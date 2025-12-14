@@ -322,23 +322,17 @@ func (h *HybridTranscriber) mergeByConfidence(primary, secondary []TranscriptSeg
 	log.Printf("[HybridTranscriber] MergeByConfidence: primaryAvgConf=%.4f, secondaryAvgConf=%.4f",
 		primaryAvgConf, secondaryAvgConf)
 
-	// КРИТИЧНО: Проверяем наличие <unk> токенов - это явный признак низкого качества
-	// Если модель выдала <unk>, её confidence должен быть сильно понижен
-	// Проверяем и в словах, и в текстах сегментов (некоторые движки фильтруют из Words, но не из Text)
+	// Подсчитываем <unk> токены для информации (но не для выбора модели целиком)
+	// Теперь <unk> обрабатываются пословно в mergeWordsByTimeWithUnkReplacement
 	primaryUnkCount := countUnkTokens(primaryWords) + countUnkTokensInSegments(primary)
 	secondaryUnkCount := countUnkTokens(secondaryWords) + countUnkTokensInSegments(secondary)
 
-	// Штраф за каждый <unk> токен: -15% от confidence
-	primaryUnkPenalty := float32(primaryUnkCount) * 0.15
-	secondaryUnkPenalty := float32(secondaryUnkCount) * 0.15
-
 	if primaryUnkCount > 0 || secondaryUnkCount > 0 {
-		log.Printf("[HybridTranscriber] MergeByConfidence: <unk> tokens - primary=%d (penalty=%.2f), secondary=%d (penalty=%.2f)",
-			primaryUnkCount, primaryUnkPenalty, secondaryUnkCount, secondaryUnkPenalty)
+		log.Printf("[HybridTranscriber] MergeByConfidence: <unk> tokens - primary=%d, secondary=%d (will be replaced word-by-word)",
+			primaryUnkCount, secondaryUnkCount)
 	}
 
-	// ВАЖНО: Применяем калибровку confidence для честного сравнения
-	// GigaAM систематически завышает confidence на ~25% из-за CTC loss
+	// Применяем калибровку confidence для логирования
 	calibrations := h.config.Voting.Calibrations
 	if len(calibrations) == 0 {
 		calibrations = DefaultCalibrations
@@ -346,51 +340,28 @@ func (h *HybridTranscriber) mergeByConfidence(primary, secondary []TranscriptSeg
 	primaryCalFactor := getCalibrationFactor(h.primaryEngine.Name(), calibrations)
 	secondaryCalFactor := getCalibrationFactor(h.secondaryEngine.Name(), calibrations)
 
-	// Применяем калибровку И штраф за <unk>
-	primaryCalibratedConf := (primaryAvgConf * primaryCalFactor) - primaryUnkPenalty
-	secondaryCalibratedConf := (secondaryAvgConf * secondaryCalFactor) - secondaryUnkPenalty
+	primaryCalibratedConf := primaryAvgConf * primaryCalFactor
+	secondaryCalibratedConf := secondaryAvgConf * secondaryCalFactor
 
-	// Не даём confidence уйти в минус
-	if primaryCalibratedConf < 0 {
-		primaryCalibratedConf = 0
-	}
-	if secondaryCalibratedConf < 0 {
-		secondaryCalibratedConf = 0
-	}
+	log.Printf("[HybridTranscriber] MergeByConfidence: calibrated primaryConf=%.4f (factor=%.2f), secondaryConf=%.4f (factor=%.2f)",
+		primaryCalibratedConf, primaryCalFactor, secondaryCalibratedConf, secondaryCalFactor)
 
-	log.Printf("[HybridTranscriber] MergeByConfidence: calibrated primaryConf=%.4f (factor=%.2f, unkPenalty=%.2f), secondaryConf=%.4f (factor=%.2f, unkPenalty=%.2f)",
-		primaryCalibratedConf, primaryCalFactor, primaryUnkPenalty, secondaryCalibratedConf, secondaryCalFactor, secondaryUnkPenalty)
-
-	// Стратегия выбора (на основе КАЛИБРОВАННЫХ confidence):
-	// 1. Если разница в confidence > 10% - берём модель с большим confidence
-	// 2. Иначе - пытаемся объединить по словам
+	// НОВАЯ СТРАТЕГИЯ: Всегда делаем пословное слияние
+	// Берём Primary как базу (лучше пунктуация, заглавные буквы),
+	// но заменяем проблемные слова (<unk>, низкий confidence) из Secondary
 
 	confDiff := primaryCalibratedConf - secondaryCalibratedConf
-	if confDiff < -0.1 {
-		// Вторичная модель значительно лучше
-		log.Printf("[HybridTranscriber] MergeByConfidence: Secondary model significantly better (calibrated diff=%.2f)", confDiff)
-		improvements = append(improvements, TranscriptionImprovement{
-			OriginalText: segmentsToFullText(primary),
-			ImprovedText: segmentsToFullText(secondary),
-			OriginalConf: primaryAvgConf,
-			ImprovedConf: secondaryAvgConf,
-			Source:       "parallel_confidence",
-		})
-		return secondary, improvements
-	} else if confDiff > 0.1 {
-		// Первичная модель значительно лучше
-		log.Printf("[HybridTranscriber] MergeByConfidence: Primary model significantly better (calibrated diff=%.2f)", confDiff)
-		return primary, nil
-	}
+	log.Printf("[HybridTranscriber] MergeByConfidence: confDiff=%.2f, will merge word-by-word", confDiff)
 
-	// Разница небольшая - пытаемся объединить по словам
-	// Выравниваем слова по времени и выбираем лучшие
-	mergedSegments := h.mergeWordsByTime(primary, secondary, primaryWords, secondaryWords)
+	// Всегда делаем пословное слияние, используя Primary как базу
+	// Primary обычно лучше по пунктуации и форматированию
+	mergedSegments := h.mergeWordsByTimeWithUnkReplacement(primary, secondary, primaryWords, secondaryWords)
 
 	// Проверяем были ли улучшения
 	mergedText := segmentsToFullText(mergedSegments)
 	primaryText := segmentsToFullText(primary)
 	if mergedText != primaryText {
+		log.Printf("[HybridTranscriber] MergeByConfidence: Merged text differs from primary")
 		improvements = append(improvements, TranscriptionImprovement{
 			OriginalText: primaryText,
 			ImprovedText: mergedText,
@@ -398,6 +369,8 @@ func (h *HybridTranscriber) mergeByConfidence(primary, secondary []TranscriptSeg
 			ImprovedConf: secondaryAvgConf,
 			Source:       "parallel_word_merge",
 		})
+	} else {
+		log.Printf("[HybridTranscriber] MergeByConfidence: No changes after merge")
 	}
 
 	return mergedSegments, improvements
@@ -650,6 +623,118 @@ func (h *HybridTranscriber) mergeWordsByTime(
 			// Проверяем есть ли замена для этого слова
 			if replacement, ok := replacements[globalWordIdx]; ok {
 				bestWord = replacement
+			}
+
+			newWords = append(newWords, bestWord)
+			newTextParts = append(newTextParts, bestWord.Text)
+			globalWordIdx++
+		}
+
+		result[i].Words = newWords
+		result[i].Text = joinWords(newTextParts)
+	}
+
+	return result
+}
+
+// mergeWordsByTimeWithUnkReplacement объединяет результаты двух моделей,
+// используя Primary как базу и заменяя проблемные слова из Secondary.
+// Проблемные слова: содержащие <unk>, [unk], или с очень низким confidence.
+// Это сохраняет пунктуацию и форматирование Primary, но исправляет ошибки распознавания.
+func (h *HybridTranscriber) mergeWordsByTimeWithUnkReplacement(
+	primarySegs, secondarySegs []TranscriptSegment,
+	primaryWords, secondaryWords []TranscriptWord,
+) []TranscriptSegment {
+	// Если нет слов - возвращаем первичную
+	if len(primaryWords) == 0 {
+		return primarySegs
+	}
+	if len(secondaryWords) == 0 {
+		return primarySegs
+	}
+
+	// Выравниваем слова с помощью Needleman-Wunsch
+	alignment := alignWordsNeedlemanWunsch(primaryWords, secondaryWords)
+
+	log.Printf("[HybridTranscriber] MergeWithUnkReplacement: aligned %d primary words with %d secondary words",
+		len(primaryWords), len(secondaryWords))
+
+	// Создаём карту замен: primaryIdx -> лучшее слово
+	replacements := make(map[int]TranscriptWord)
+	replacementReasons := make(map[int]string)
+
+	for _, align := range alignment {
+		// Пропускаем gaps
+		if align.PrimaryIdx < 0 || align.SecondaryIdx < 0 {
+			continue
+		}
+
+		pw := primaryWords[align.PrimaryIdx]
+		sw := secondaryWords[align.SecondaryIdx]
+		pwLower := strings.ToLower(pw.Text)
+
+		// Проверяем, содержит ли primary слово <unk>
+		hasUnk := strings.Contains(pwLower, "<unk>") || strings.Contains(pwLower, "[unk]")
+
+		// Проверяем, есть ли <unk> в secondary (не заменяем на другой <unk>)
+		swLower := strings.ToLower(sw.Text)
+		secondaryHasUnk := strings.Contains(swLower, "<unk>") || strings.Contains(swLower, "[unk]")
+
+		if hasUnk && !secondaryHasUnk && sw.Text != "" {
+			// Primary содержит <unk>, Secondary нет - заменяем
+			replacements[align.PrimaryIdx] = sw
+			replacementReasons[align.PrimaryIdx] = fmt.Sprintf("<unk> replacement: '%s' -> '%s'", pw.Text, sw.Text)
+			continue
+		}
+
+		// Если слова похожи, проверяем confidence
+		if align.IsSimilar {
+			// Очень низкий confidence в primary (< 0.5) и secondary лучше
+			if pw.P < 0.5 && sw.P > pw.P+0.1 && !secondaryHasUnk {
+				replacements[align.PrimaryIdx] = sw
+				replacementReasons[align.PrimaryIdx] = fmt.Sprintf("low confidence: '%s' (%.2f) -> '%s' (%.2f)",
+					pw.Text, pw.P, sw.Text, sw.P)
+			}
+		}
+	}
+
+	// Логируем замены
+	if len(replacements) > 0 {
+		log.Printf("[HybridTranscriber] MergeWithUnkReplacement: %d replacements:", len(replacements))
+		for idx, reason := range replacementReasons {
+			log.Printf("  [%d] %s", idx, reason)
+		}
+	} else {
+		log.Printf("[HybridTranscriber] MergeWithUnkReplacement: No replacements needed")
+		return primarySegs
+	}
+
+	// Применяем замены к сегментам
+	result := make([]TranscriptSegment, len(primarySegs))
+	globalWordIdx := 0
+
+	for i, seg := range primarySegs {
+		result[i] = TranscriptSegment{
+			Start:   seg.Start,
+			End:     seg.End,
+			Speaker: seg.Speaker,
+		}
+
+		var newWords []TranscriptWord
+		var newTextParts []string
+
+		for _, pw := range seg.Words {
+			bestWord := pw
+
+			// Проверяем есть ли замена для этого слова
+			if replacement, ok := replacements[globalWordIdx]; ok {
+				// Сохраняем timing от primary, но берём текст от secondary
+				bestWord = TranscriptWord{
+					Start: pw.Start,
+					End:   pw.End,
+					Text:  replacement.Text,
+					P:     replacement.P,
+				}
 			}
 
 			newWords = append(newWords, bestWord)

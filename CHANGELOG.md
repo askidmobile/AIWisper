@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.18] - 2025-12-14
+
+### Improved
+- **Hybrid Transcription Word-by-Word Merge**: Полностью переработан алгоритм слияния результатов двух моделей
+  - **Проблема**: Алгоритм выбирал весь текст одной модели вместо слияния лучших частей
+  - **Пример**: Primary "Привет. Слушайте... <unk>лки-палки" vs Secondary "привет а меня слышно... елки-палки"
+    - Раньше: выбирался весь Secondary (хуже пунктуация, числа как "1 2 3" вместо "раз, два, три")
+    - Теперь: берётся Primary как база, только `<unk>лки-палки` заменяется на `елки-палки`
+  
+  - **Новая стратегия**:
+    1. Primary используется как база (лучше пунктуация, заглавные буквы, форматирование)
+    2. Слова с `<unk>` или `[unk]` заменяются на соответствующие слова из Secondary
+    3. Слова с очень низким confidence (< 0.5) также могут быть заменены
+    4. Timing сохраняется от Primary для корректной синхронизации
+
+### Technical
+- `backend/ai/hybrid_transcription.go`:
+  - Добавлена функция `mergeWordsByTimeWithUnkReplacement()`
+  - `mergeByConfidence()` теперь всегда делает пословное слияние
+  - Убран глобальный штраф за `<unk>` (теперь обрабатывается пословно)
+  - Используется Needleman-Wunsch для выравнивания слов между моделями
+
 ## [1.41.17] - 2025-12-14
 
 ### Fixed
