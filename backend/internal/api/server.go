@@ -2048,14 +2048,28 @@ func (s *Server) computeSessionSpeakers(sess *session.Session, sessionID string)
 			localID = -999
 			displayName = speaker
 
-			for _, profile := range profiles {
-				if profile.RecognizedName == speaker {
-					localID = profile.SpeakerID - 1
-					normalizedKey = fmt.Sprintf("speaker_%d", localID)
+			// Сначала проверяем, есть ли уже спикер с таким displayName в speakerMap
+			// Это важно для объединённых спикеров
+			for key, existingSp := range speakerMap {
+				if existingSp.DisplayName == speaker {
+					localID = existingSp.LocalID
+					normalizedKey = key
 					break
 				}
 			}
 
+			// Если не нашли в speakerMap, ищем в профилях
+			if localID == -999 {
+				for _, profile := range profiles {
+					if profile.RecognizedName == speaker {
+						localID = profile.SpeakerID - 1
+						normalizedKey = fmt.Sprintf("speaker_%d", localID)
+						break
+					}
+				}
+			}
+
+			// Если всё ещё не нашли - создаём новый
 			if localID == -999 {
 				existingSpeakerCount := 0
 				for key := range speakerMap {

@@ -2038,20 +2038,7 @@ func (m *Manager) MergeSpeakers(sessionID string, sourceLocalIDs []int, targetLo
 		}
 	}
 
-	// Собираем все возможные имена спикеров для замены
-	oldNames := make(map[string]bool)
-	for _, localID := range sourceLocalIDs {
-		if localID == targetLocalID {
-			continue // Пропускаем target
-		}
-		// Добавляем все возможные варианты имён для этого localID
-		names := getSpeakerNamesForLocalID(localID)
-		for _, name := range names {
-			oldNames[name] = true
-		}
-	}
-
-	// Определяем финальное имя
+	// Определяем финальное имя СНАЧАЛА
 	finalName := newName
 	if finalName == "" {
 		// Берём имя от target спикера
@@ -2069,6 +2056,21 @@ func (m *Manager) MergeSpeakers(sessionID string, sourceLocalIDs []int, targetLo
 			}
 		} else {
 			finalName = fmt.Sprintf("Собеседник %d", targetLocalID+1)
+		}
+	}
+
+	// Собираем все возможные имена спикеров для замены
+	// ВАЖНО: включаем ВСЕ спикеры, включая target, чтобы все сегменты
+	// получили единое имя finalName
+	oldNames := make(map[string]bool)
+	for _, localID := range sourceLocalIDs {
+		// Добавляем все возможные варианты имён для этого localID
+		names := getSpeakerNamesForLocalID(localID)
+		for _, name := range names {
+			// Исключаем finalName чтобы не переименовывать в себя
+			if name != finalName {
+				oldNames[name] = true
+			}
 		}
 	}
 
