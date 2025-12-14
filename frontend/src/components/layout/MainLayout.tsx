@@ -743,7 +743,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             {/* Recording Overlay */}
             <RecordingOverlay onStop={handleStartStop} />
             
-            <div style={{ display: 'flex', flex: 1, overflow: 'hidden', marginTop: isRecording ? '48px' : 0, transition: 'margin-top 0.2s ease' }}>
+            <div style={{ display: 'flex', flex: 1, overflow: 'hidden', marginTop: isRecording ? '48px' : 0, transition: 'margin-top 0.3s cubic-bezier(0.4, 0, 0.2, 1)' }}>
                 <Sidebar onStartRecording={handleStartStop} />
 
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -779,14 +779,12 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                             />
                         </ErrorBoundary>
 
-                        {/* VU Meters Sidebar */}
-                        {(isRecording || isPlaying) && (
-                            <AudioMeterSidebar
-                                micLevel={isPlaying ? playbackMicLevel : micLevel}
-                                sysLevel={isPlaying ? playbackSysLevel : sysLevel}
-                                isActive={isRecording || isPlaying}
-                            />
-                        )}
+                        {/* VU Meters Sidebar - всегда рендерится, анимация внутри компонента */}
+                        <AudioMeterSidebar
+                            micLevel={isPlaying ? playbackMicLevel : micLevel}
+                            sysLevel={isPlaying ? playbackSysLevel : sysLevel}
+                            isActive={isRecording || isPlaying}
+                        />
                     </div>
                 </div>
             </div>

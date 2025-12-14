@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.15] - 2025-12-14
+
+### Improved
+- **Smooth VU Meter Animations**: Добавлены плавные анимации появления/исчезновения VU-метров
+  - VU-метры теперь плавно выезжают при начале записи/воспроизведения
+  - При остановке метры плавно исчезают, а контент плавно занимает освободившееся место
+  - Используется cubic-bezier(0.4, 0, 0.2, 1) для естественного движения
+  - Длительность анимации: 300ms
+
+- **Smooth Recording Overlay**: Плавная анимация панели записи
+  - Панель записи плавно выезжает сверху при начале записи
+  - При остановке плавно уезжает вверх с fade-out эффектом
+  - Контент под панелью плавно сдвигается синхронно с анимацией
+
+### Technical
+- `frontend/src/components/AudioMeterSidebar.tsx`:
+  - Добавлено состояние `shouldRender` и `isAnimating` для управления анимацией
+  - Анимируются: width, opacity, padding, border
+  - Компонент остаётся в DOM на время анимации исчезновения
+
+- `frontend/src/components/RecordingOverlay.tsx`:
+  - Добавлена анимация transform + opacity для slide-in/slide-out эффекта
+  - Синхронизирована с marginTop основного контента
+
+- `frontend/src/components/layout/MainLayout.tsx`:
+  - Обновлён transition для marginTop (0.3s cubic-bezier)
+  - AudioMeterSidebar теперь всегда рендерится (анимация внутри компонента)
+
 ## [1.41.14] - 2025-12-14
 
 ### Fixed

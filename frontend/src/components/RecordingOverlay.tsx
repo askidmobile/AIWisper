@@ -22,6 +22,31 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
     const [waveData, setWaveData] = useState<number[]>(Array(32).fill(0.3));
     const [showStreaming, setShowStreaming] = useState(false);
     const animationRef = useRef<number | null>(null);
+    
+    // Состояние для плавной анимации появления/исчезновения
+    const [shouldRender, setShouldRender] = useState(isRecording);
+    const [isAnimating, setIsAnimating] = useState(false);
+
+    // Управление анимацией появления/исчезновения
+    useEffect(() => {
+        if (isRecording) {
+            setShouldRender(true);
+            // Запускаем анимацию появления после mount
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    setIsAnimating(true);
+                });
+            });
+        } else {
+            // Начинаем анимацию исчезновения
+            setIsAnimating(false);
+            // Убираем из DOM после завершения анимации
+            const timer = setTimeout(() => {
+                setShouldRender(false);
+            }, 300);
+            return () => clearTimeout(timer);
+        }
+    }, [isRecording]);
 
     // Timer
     useEffect(() => {
@@ -59,7 +84,7 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
         };
     }, [isRecording]);
 
-    if (!isRecording) return null;
+    if (!shouldRender) return null;
 
     return (
         <>
@@ -81,6 +106,10 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
                 justifyContent: 'center',
                 gap: '2rem',
                 WebkitAppRegion: 'drag',
+                // Анимация появления/исчезновения
+                opacity: isAnimating ? 1 : 0,
+                transform: isAnimating ? 'translateY(0)' : 'translateY(-100%)',
+                transition: 'opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
             } as React.CSSProperties}
         >
             {/* Left Section - Recording Status */}

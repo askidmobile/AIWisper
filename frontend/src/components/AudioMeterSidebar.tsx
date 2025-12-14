@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 
 interface AudioMeterSidebarProps {
     micLevel: number;  // 0-100
@@ -9,22 +9,51 @@ interface AudioMeterSidebarProps {
 export const AudioMeterSidebar: React.FC<AudioMeterSidebarProps> = ({
     micLevel, sysLevel, isActive
 }) => {
-    // Always show but dim when inactive
-    const opacity = isActive ? 1 : 0.3;
+    // Состояние для отложенного скрытия (чтобы анимация успела проиграться)
+    const [shouldRender, setShouldRender] = useState(isActive);
+    const [isAnimating, setIsAnimating] = useState(false);
+
+    useEffect(() => {
+        if (isActive) {
+            // Показываем сразу
+            setShouldRender(true);
+            // Небольшая задержка для запуска анимации после mount
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    setIsAnimating(true);
+                });
+            });
+        } else {
+            // Начинаем анимацию скрытия
+            setIsAnimating(false);
+            // Убираем из DOM после завершения анимации
+            const timer = setTimeout(() => {
+                setShouldRender(false);
+            }, 300); // Длительность анимации
+            return () => clearTimeout(timer);
+        }
+    }, [isActive]);
+
+    // Не рендерим если не нужно
+    if (!shouldRender) {
+        return null;
+    }
 
     return (
         <div style={{
-            width: '40px',
+            width: isAnimating ? '40px' : '0px',
+            minWidth: isAnimating ? '40px' : '0px',
             height: '100%',
             display: 'flex',
             flexDirection: 'row',
             alignItems: 'stretch',
             gap: '6px',
-            padding: '12px 8px',
+            padding: isAnimating ? '12px 8px' : '12px 0',
             background: 'linear-gradient(180deg, rgba(0,0,0,0.2) 0%, rgba(0,0,0,0.1) 100%)',
-            borderLeft: '1px solid var(--border)',
-            opacity,
-            transition: 'opacity 0.3s ease'
+            borderLeft: isAnimating ? '1px solid var(--border)' : '0px solid transparent',
+            opacity: isAnimating ? 1 : 0,
+            overflow: 'hidden',
+            transition: 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease, padding 0.3s ease, border-left 0.3s ease',
         }}>
             {/* Microphone Level */}
             <div style={{
