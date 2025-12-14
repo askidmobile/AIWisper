@@ -2207,8 +2207,17 @@ func (s *Server) computeSessionSpeakers(sess *session.Session, sessionID string)
 		}
 	}
 
-	// Проверяем распознанные имена
+	// Проверяем распознанные имена и фильтруем "призрачных" спикеров
 	for _, sp := range speakerMap {
+		// Фильтруем спикеров с очень короткой длительностью (< 1.5 сек)
+		// Это обычно артефакты диаризации или остатки после merge
+		// Исключение: mic (пользователь) всегда показывается
+		if !sp.IsMic && sp.TotalDuration < 1.5 {
+			log.Printf("computeSessionSpeakers: filtering out ghost speaker '%s' (duration=%.1fs, segments=%d)",
+				sp.DisplayName, sp.TotalDuration, sp.SegmentCount)
+			continue
+		}
+
 		sp.HasSample = sp.TotalDuration >= 2.0
 
 		if !sp.IsMic && s.TranscriptionService != nil {
