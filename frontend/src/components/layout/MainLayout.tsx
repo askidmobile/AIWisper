@@ -22,7 +22,7 @@ import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData, computeWaveform } from '../../utils/waveform';
 
 // Версия приложения из package.json
-const APP_VERSION = '1.41.10';
+const APP_VERSION = '1.41.19';
 
 interface MainLayoutProps {
     addLog: (msg: string) => void;
@@ -32,7 +32,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     const API_BASE = `http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}`;
     
     // Контексты
-    const { startSession, stopSession, isRecording, selectedSession, micLevel, sysLevel } = useSessionContext();
+    const { startSession, stopSession, isRecording, selectedSession, micLevel, sysLevel, isFullTranscribing } = useSessionContext();
     const { activeModelId, models, fetchOllamaModels, downloadModel, cancelDownload, deleteModel, setActiveModel } = useModelContext();
     const { sendMessage, subscribe } = useWebSocketContext();
 
@@ -428,6 +428,12 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
 
     // Start/Stop Handler
     const handleStartStop = useCallback(async () => {
+        // Block starting new recording during retranscription
+        if (isFullTranscribing && !isRecording) {
+            addLog('Cannot start recording during retranscription');
+            return;
+        }
+        
         if (isRecording) {
             await stopSession();
             addLog('Recording stopped');
@@ -462,7 +468,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                 addLog(`Error starting session: ${e.message}`);
             }
         }
-    }, [isRecording, stopSession, startSession, activeModelId, language, micDevice, captureSystem, useVoiceIsolation, echoCancel, pauseThreshold, hybridTranscription, addLog]);
+    }, [isRecording, isFullTranscribing, stopSession, startSession, activeModelId, language, micDevice, captureSystem, useVoiceIsolation, echoCancel, pauseThreshold, hybridTranscription, addLog]);
 
     // Playback Handlers
     const handlePlayChunk = useCallback((url: string) => {
@@ -477,6 +483,17 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     // Retranscribe all chunks
     const handleRetranscribeAll = useCallback(() => {
         console.log('[handleRetranscribeAll] Called, selectedSession:', selectedSession?.id);
+        
+        // Block if already retranscribing or recording
+        if (isFullTranscribing) {
+            addLog('Retranscription already in progress');
+            return;
+        }
+        
+        if (isRecording) {
+            addLog('Cannot retranscribe during recording');
+            return;
+        }
         
         if (!selectedSession) {
             addLog('No session selected for retranscription');
@@ -520,7 +537,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             hybridOllamaUrl: ollamaUrl,
         });
         addLog(`Starting full retranscription with model: ${activeModel?.name || modelId}, hybrid: ${hybridTranscription.enabled}`);
-    }, [selectedSession, models, activeModelId, language, sendMessage, addLog, hybridTranscription, ollamaModel, ollamaUrl]);
+    }, [selectedSession, models, activeModelId, language, sendMessage, addLog, hybridTranscription, ollamaModel, ollamaUrl, isFullTranscribing, isRecording]);
 
     // Load Ollama models
     const loadOllama = useCallback(() => {

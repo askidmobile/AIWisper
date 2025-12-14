@@ -14,7 +14,10 @@ export const Header: React.FC<HeaderProps> = ({
     onShowHelp,
 }) => {
     const { isConnected } = useWebSocketContext();
-    const { isRecording } = useSessionContext();
+    const { isRecording, isFullTranscribing } = useSessionContext();
+    
+    // Block settings during recording or retranscription
+    const isBlocked = isRecording || isFullTranscribing;
 
     return (
         <header
@@ -83,18 +86,18 @@ export const Header: React.FC<HeaderProps> = ({
                     </button>
                 )}
                 
-                {/* Settings button - disabled during recording */}
+                {/* Settings button - disabled during recording or retranscription */}
                 <button
                     className="btn-icon"
                     onClick={() => setShowSettings(!showSettings)}
-                    title={isRecording ? "Настройки заблокированы во время записи" : "Настройки (⌘,)"}
-                    disabled={isRecording}
+                    title={isBlocked ? "Настройки заблокированы" : "Настройки (⌘,)"}
+                    disabled={isBlocked}
                     style={{
                         width: '36px',
                         height: '36px',
                         background: showSettings ? 'var(--glass-bg-active)' : undefined,
-                        opacity: isRecording ? 0.4 : 1,
-                        pointerEvents: isRecording ? 'none' : 'auto',
+                        opacity: isBlocked ? 0.4 : 1,
+                        pointerEvents: isBlocked ? 'none' : 'auto',
                         transition: 'opacity 0.2s ease',
                     }}
                 >

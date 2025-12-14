@@ -11,6 +11,13 @@ interface SessionContextType {
     micLevel: number;
     sysLevel: number;
 
+    // Full retranscription state
+    isFullTranscribing: boolean;
+    fullTranscriptionProgress: number; // 0-1
+    fullTranscriptionStatus: string | null;
+    fullTranscriptionError: string | null;
+    fullTranscriptionSessionId: string | null;
+
     // Actions
     startSession: (config: any) => void;
     stopSession: () => void;
@@ -18,6 +25,7 @@ interface SessionContextType {
     selectSession: (id: string) => void;
     generateSummary: (sessionId: string, model: string, url: string) => void;
     improveTranscription: (sessionId: string, model: string, url: string) => void;
+    cancelFullTranscription: () => void;
 
     // Setters
     setSelectedSession: (session: Session | null) => void;
@@ -34,6 +42,13 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const [isStopping, setIsStopping] = useState(false);
     const [micLevel, setMicLevel] = useState(0);
     const [sysLevel, setSysLevel] = useState(0);
+
+    // Full retranscription state
+    const [isFullTranscribing, setIsFullTranscribing] = useState(false);
+    const [fullTranscriptionProgress, setFullTranscriptionProgress] = useState(0);
+    const [fullTranscriptionStatus, setFullTranscriptionStatus] = useState<string | null>(null);
+    const [fullTranscriptionError, setFullTranscriptionError] = useState<string | null>(null);
+    const [fullTranscriptionSessionId, setFullTranscriptionSessionId] = useState<string | null>(null);
 
     // Initial fetch
     useEffect(() => {
@@ -116,10 +131,54 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
             ));
         });
 
+        // Full transcription events
+        const unsubFullStarted = subscribe('full_transcription_started', (msg) => {
+            setIsFullTranscribing(true);
+            setFullTranscriptionProgress(0);
+            setFullTranscriptionStatus('Начало полной транскрипции...');
+            setFullTranscriptionError(null);
+            setFullTranscriptionSessionId(msg.sessionId || null);
+        });
+
+        const unsubFullProgress = subscribe('full_transcription_progress', (msg) => {
+            setFullTranscriptionProgress(msg.progress || 0);
+            setFullTranscriptionStatus(msg.data || null);
+        });
+
+        const unsubFullCompleted = subscribe('full_transcription_completed', (msg) => {
+            setIsFullTranscribing(false);
+            setFullTranscriptionProgress(1);
+            setFullTranscriptionStatus(null);
+            setFullTranscriptionError(null);
+            setFullTranscriptionSessionId(null);
+            // Обновляем сессию с новыми данными
+            if (msg.session) {
+                setSelectedSession(msg.session);
+            }
+        });
+
+        const unsubFullError = subscribe('full_transcription_error', (msg) => {
+            setIsFullTranscribing(false);
+            setFullTranscriptionProgress(0);
+            setFullTranscriptionStatus(null);
+            setFullTranscriptionError(msg.error || 'Неизвестная ошибка');
+            setFullTranscriptionSessionId(null);
+        });
+
+        const unsubFullCancelled = subscribe('full_transcription_cancelled', () => {
+            setIsFullTranscribing(false);
+            setFullTranscriptionProgress(0);
+            setFullTranscriptionStatus(null);
+            setFullTranscriptionError(null);
+            setFullTranscriptionSessionId(null);
+        });
+
         return () => {
             unsubList(); unsubStarted(); unsubStopped(); unsubDetails();
             unsubChunkCreated(); unsubChunkTranscribed(); unsubAudioLevel();
             unsubSummary(); unsubImprove(); unsubRenamed();
+            unsubFullStarted(); unsubFullProgress(); unsubFullCompleted();
+            unsubFullError(); unsubFullCancelled();
         };
     }, [subscribe, sendMessage]);
 
@@ -156,12 +215,20 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         sendMessage({ type: 'improve_transcription', sessionId, ollamaModel: model, ollamaUrl: url });
     };
 
+    const cancelFullTranscription = () => {
+        sendMessage({ type: 'cancel_full_transcription' });
+    };
+
     return (
         <SessionContext.Provider value={{
             sessions, currentSession, selectedSession, isRecording, isStopping,
             micLevel, sysLevel,
+            // Full retranscription state
+            isFullTranscribing, fullTranscriptionProgress, fullTranscriptionStatus,
+            fullTranscriptionError, fullTranscriptionSessionId,
+            // Actions
             startSession, stopSession, deleteSession, selectSession,
-            generateSummary, improveTranscription,
+            generateSummary, improveTranscription, cancelFullTranscription,
             setSelectedSession
         }}>
             {children}

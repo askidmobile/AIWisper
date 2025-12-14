@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Session } from '../../types/session';
 import { useExport } from '../../hooks/useExport';
+import { useSessionContext } from '../../context/SessionContext';
 import WaveformDisplay from '../WaveformDisplay';
 import { WaveformData } from '../../utils/waveform';
 
@@ -39,6 +40,20 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
     const [playbackSpeed, setPlaybackSpeed] = useState(1);
     const [showExportMenu, setShowExportMenu] = useState(false);
     const [copySuccess, setCopySuccess] = useState(false);
+    
+    // Full retranscription state from context
+    const {
+        isFullTranscribing,
+        fullTranscriptionProgress,
+        fullTranscriptionStatus,
+        fullTranscriptionError,
+        fullTranscriptionSessionId,
+        cancelFullTranscription,
+        isRecording,
+    } = useSessionContext();
+    
+    // Check if this session is being retranscribed
+    const isThisSessionTranscribing = isFullTranscribing && fullTranscriptionSessionId === session.id;
     
     // Waveform view mode - persist in localStorage
     const [waveformViewMode, setWaveformViewMode] = useState<WaveformViewMode>(() => {
@@ -467,6 +482,100 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                 )}
             </div>
 
+            {/* Retranscription Progress */}
+            {isThisSessionTranscribing && (
+                <div
+                    style={{
+                        marginTop: '1rem',
+                        padding: '1rem',
+                        background: 'var(--glass-bg-elevated)',
+                        borderRadius: 'var(--radius-md)',
+                        border: '1px solid var(--primary-alpha)',
+                    }}
+                >
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <div
+                                style={{
+                                    width: '8px',
+                                    height: '8px',
+                                    borderRadius: '50%',
+                                    background: 'var(--primary)',
+                                    animation: 'pulse 1s infinite',
+                                }}
+                            />
+                            <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                                Ретранскрипция
+                            </span>
+                        </div>
+                        <button
+                            onClick={cancelFullTranscription}
+                            title="Отменить"
+                            style={{
+                                padding: '0.25rem 0.5rem',
+                                fontSize: '0.75rem',
+                                background: 'rgba(239, 68, 68, 0.1)',
+                                border: '1px solid rgba(239, 68, 68, 0.3)',
+                                borderRadius: 'var(--radius-sm)',
+                                color: '#ef4444',
+                                cursor: 'pointer',
+                                transition: 'all 0.2s',
+                            }}
+                        >
+                            Отмена
+                        </button>
+                    </div>
+                    
+                    {/* Progress Bar */}
+                    <div
+                        style={{
+                            height: '6px',
+                            background: 'var(--glass-bg)',
+                            borderRadius: '3px',
+                            overflow: 'hidden',
+                            marginBottom: '0.5rem',
+                        }}
+                    >
+                        <div
+                            style={{
+                                height: '100%',
+                                width: `${fullTranscriptionProgress * 100}%`,
+                                background: 'linear-gradient(90deg, var(--primary), var(--accent))',
+                                borderRadius: '3px',
+                                transition: 'width 0.3s ease',
+                            }}
+                        />
+                    </div>
+                    
+                    {/* Status Text */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                            {fullTranscriptionStatus || 'Обработка...'}
+                        </span>
+                        <span style={{ fontSize: '0.75rem', fontFamily: 'SF Mono, monospace', color: 'var(--text-muted)' }}>
+                            {Math.round(fullTranscriptionProgress * 100)}%
+                        </span>
+                    </div>
+                </div>
+            )}
+
+            {/* Retranscription Error */}
+            {fullTranscriptionError && fullTranscriptionSessionId === session.id && (
+                <div
+                    style={{
+                        marginTop: '1rem',
+                        padding: '0.75rem 1rem',
+                        background: 'rgba(239, 68, 68, 0.1)',
+                        borderRadius: 'var(--radius-md)',
+                        border: '1px solid rgba(239, 68, 68, 0.3)',
+                        color: '#ef4444',
+                        fontSize: '0.85rem',
+                    }}
+                >
+                    <strong>Ошибка:</strong> {fullTranscriptionError}
+                </div>
+            )}
+
             {/* Action Buttons */}
             <div
                 style={{
@@ -481,10 +590,13 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                     className="btn-capsule"
                     onClick={onRetranscribe}
                     title="Ретранскрибировать"
+                    disabled={isFullTranscribing || isRecording}
                     style={{
                         flex: 1,
                         justifyContent: 'center',
                         gap: '0.4rem',
+                        opacity: (isFullTranscribing || isRecording) ? 0.5 : 1,
+                        cursor: (isFullTranscribing || isRecording) ? 'not-allowed' : 'pointer',
                     }}
                 >
                     <svg
@@ -499,7 +611,7 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                         <path d="M1 20v-6h6" />
                         <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
                     </svg>
-                    Ретранскрибировать
+                    {isThisSessionTranscribing ? 'Идёт...' : 'Ретранскрибировать'}
                 </button>
                 <button
                     className="btn-capsule btn-capsule-primary"

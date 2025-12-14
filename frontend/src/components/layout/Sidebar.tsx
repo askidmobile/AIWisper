@@ -27,7 +27,10 @@ const openDataFolder = async () => {
 };
 
 export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
-    const { sessions, selectedSession, selectSession, deleteSession, isRecording } = useSessionContext();
+    const { 
+        sessions, selectedSession, selectSession, deleteSession, isRecording,
+        isFullTranscribing, fullTranscriptionSessionId, fullTranscriptionProgress
+    } = useSessionContext();
     const { sendMessage } = useWebSocketContext();
     const [showStats, setShowStats] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
@@ -417,6 +420,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                                 const isSelected = selectedSession?.id === session.id;
                                 const durationSec = session.totalDuration / 1000;
                                 const isHovered = hoveredSession === session.id;
+                                const isTranscribing = isFullTranscribing && fullTranscriptionSessionId === session.id;
 
                                 return (
                                     <div
@@ -545,6 +549,51 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                                             </svg>
                                             <span>{formatDuration(durationSec)}</span>
                                         </div>
+
+                                        {/* Retranscription Progress Indicator */}
+                                        {isTranscribing && (
+                                            <div style={{ marginTop: '0.5rem' }}>
+                                                <div
+                                                    style={{
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: '0.4rem',
+                                                        marginBottom: '0.25rem',
+                                                    }}
+                                                >
+                                                    <div
+                                                        style={{
+                                                            width: '6px',
+                                                            height: '6px',
+                                                            borderRadius: '50%',
+                                                            background: 'var(--primary)',
+                                                            animation: 'pulse 1s infinite',
+                                                        }}
+                                                    />
+                                                    <span style={{ fontSize: '0.7rem', color: 'var(--primary)' }}>
+                                                        Ретранскрипция {Math.round(fullTranscriptionProgress * 100)}%
+                                                    </span>
+                                                </div>
+                                                <div
+                                                    style={{
+                                                        height: '3px',
+                                                        background: 'var(--glass-bg)',
+                                                        borderRadius: '2px',
+                                                        overflow: 'hidden',
+                                                    }}
+                                                >
+                                                    <div
+                                                        style={{
+                                                            height: '100%',
+                                                            width: `${fullTranscriptionProgress * 100}%`,
+                                                            background: 'var(--primary)',
+                                                            borderRadius: '2px',
+                                                            transition: 'width 0.3s ease',
+                                                        }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 );
                             })}
@@ -563,7 +612,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                 <button
                     className="btn-capsule"
                     onClick={onStartRecording}
-                    disabled={isRecording}
+                    disabled={isRecording || isFullTranscribing}
                     style={{
                         width: '100%',
                         justifyContent: 'center',
@@ -571,10 +620,13 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                         gap: '0.4rem',
                         background: isRecording 
                             ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.8), rgba(220, 38, 38, 0.8))'
-                            : 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
+                            : isFullTranscribing
+                                ? 'linear-gradient(135deg, rgba(100, 100, 100, 0.6), rgba(80, 80, 80, 0.6))'
+                                : 'linear-gradient(135deg, var(--primary), var(--primary-dark))',
                         border: 'none',
                         color: 'white',
-                        cursor: isRecording ? 'default' : 'pointer',
+                        cursor: (isRecording || isFullTranscribing) ? 'not-allowed' : 'pointer',
+                        opacity: isFullTranscribing ? 0.6 : 1,
                     }}
                 >
                     {isRecording ? (
@@ -589,6 +641,15 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                                 }}
                             />
                             Идёт запись...
+                        </>
+                    ) : isFullTranscribing ? (
+                        <>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M23 4v6h-6" />
+                                <path d="M1 20v-6h6" />
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                            </svg>
+                            Ретранскрипция...
                         </>
                     ) : (
                         <>
