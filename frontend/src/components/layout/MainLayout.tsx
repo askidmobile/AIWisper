@@ -22,7 +22,7 @@ import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData, computeWaveform } from '../../utils/waveform';
 
 // Версия приложения из package.json
-const APP_VERSION = '1.41.19';
+const APP_VERSION = '1.41.23';
 
 interface MainLayoutProps {
     addLog: (msg: string) => void;
@@ -238,6 +238,14 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             ));
         });
 
+        const unsubSpeakersMerged = subscribe('speakers_merged', (msg: any) => {
+            console.log('[MainLayout] Speakers merged:', msg);
+            // Запрашиваем обновлённый список спикеров после объединения
+            if (msg.sessionId) {
+                sendMessage({ type: 'get_session_speakers', sessionId: msg.sessionId });
+            }
+        });
+
         const unsubChunkTranscribed = subscribe('chunk_transcribed', (msg: any) => {
             // Запрашиваем обновлённый список спикеров после транскрипции
             if (msg.sessionId) {
@@ -272,6 +280,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
         return () => {
             unsubSpeakers();
             unsubSpeakerRenamed();
+            unsubSpeakersMerged();
             unsubChunkTranscribed();
             unsubDiarizationStatus();
             unsubDiarizationEnabled();
@@ -319,6 +328,27 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             saveAsVoiceprint
         });
         console.log(`[MainLayout] Renaming speaker ${localId} to "${newName}"${saveAsVoiceprint ? ' (saving voiceprint)' : ''}`);
+    }, [selectedSession, sendMessage]);
+
+    // Merge speakers handler
+    const handleMergeSpeakers = useCallback((
+        sourceSpeakerIds: number[],
+        targetSpeakerId: number,
+        newName: string,
+        mergeEmbeddings: boolean,
+        saveAsVoiceprint: boolean
+    ) => {
+        if (!selectedSession) return;
+        sendMessage({
+            type: 'merge_speakers',
+            sessionId: selectedSession.id,
+            sourceSpeakerIds,
+            targetSpeakerId,
+            speakerName: newName,
+            mergeEmbeddings,
+            saveAsVoiceprint
+        });
+        console.log(`[MainLayout] Merging speakers ${sourceSpeakerIds.join(', ')} into ${targetSpeakerId} as "${newName}"`);
     }, [selectedSession, sendMessage]);
 
     // Play speaker sample
@@ -804,6 +834,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                                 sessionSpeakers={sessionSpeakers}
                                 onRetranscribeAll={handleRetranscribeAll}
                                 onRenameSpeaker={handleRenameSpeaker}
+                                onMergeSpeakers={handleMergeSpeakers}
                                 onPlaySpeakerSample={handlePlaySpeakerSample}
                                 onStopSpeakerSample={handleStopSpeakerSample}
                                 playingSpeakerId={playingSpeakerId}

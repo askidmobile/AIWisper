@@ -75,6 +75,12 @@ type Message struct {
 	VoicePrintID     string                      `json:"voiceprintId,omitempty"`
 	Similarity       float32                     `json:"similarity,omitempty"`
 
+	// Merge Speakers
+	SourceSpeakerIDs []int `json:"sourceSpeakerIds,omitempty"` // LocalIDs спикеров для объединения
+	TargetSpeakerID  int   `json:"targetSpeakerId,omitempty"`  // LocalID целевого спикера
+	MergeEmbeddings  bool  `json:"mergeEmbeddings,omitempty"`  // Усреднять embeddings
+	MergedCount      int   `json:"mergedCount,omitempty"`      // Количество объединённых сегментов
+
 	// Streaming Transcription (real-time updates)
 	StreamingText                  string  `json:"streamingText,omitempty"`                  // Текущий текст (volatile или confirmed)
 	StreamingIsConfirmed           bool    `json:"streamingIsConfirmed,omitempty"`           // true = confirmed, false = volatile

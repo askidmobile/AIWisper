@@ -1417,6 +1417,83 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 		if updatedSess, err := s.SessionMgr.GetSession(msg.SessionID); err == nil {
 			s.broadcast(Message{Type: "session_details", Session: updatedSess})
 		}
+
+	case "merge_speakers":
+		// Объединение нескольких спикеров в одного
+		if msg.SessionID == "" {
+			send(Message{Type: "error", Data: "sessionId is required"})
+			return
+		}
+		if len(msg.SourceSpeakerIDs) < 2 {
+			send(Message{Type: "error", Data: "at least 2 speakers required for merge"})
+			return
+		}
+
+		log.Printf("merge_speakers: session=%s, sources=%v, target=%d, name=%s, mergeEmb=%v, saveVP=%v",
+			msg.SessionID[:8], msg.SourceSpeakerIDs, msg.TargetSpeakerID, msg.SpeakerName, msg.MergeEmbeddings, msg.SaveAsVoiceprint)
+
+		// Выполняем объединение в SessionMgr
+		mergedCount, err := s.SessionMgr.MergeSpeakers(msg.SessionID, msg.SourceSpeakerIDs, msg.TargetSpeakerID, msg.SpeakerName)
+		if err != nil {
+			send(Message{Type: "error", Data: err.Error()})
+			return
+		}
+
+		// Определяем финальное имя
+		finalName := msg.SpeakerName
+		if finalName == "" {
+			finalName = fmt.Sprintf("Собеседник %d", msg.TargetSpeakerID+1)
+		}
+
+		// Опционально: объединяем embeddings в TranscriptionService
+		if msg.MergeEmbeddings && s.TranscriptionService != nil {
+			if err := s.TranscriptionService.MergeSpeakerProfiles(msg.SessionID, msg.SourceSpeakerIDs, msg.TargetSpeakerID); err != nil {
+				log.Printf("merge_speakers: failed to merge embeddings: %v", err)
+			} else {
+				log.Printf("merge_speakers: embeddings merged for session %s", msg.SessionID[:8])
+			}
+		}
+
+		// Опционально: сохраняем в глобальную базу voiceprints
+		var voiceprintID string
+		if msg.SaveAsVoiceprint && s.VoicePrintStore != nil {
+			embedding, source, err := s.getSpeakerEmbedding(msg.SessionID, msg.TargetSpeakerID)
+			if err != nil {
+				log.Printf("merge_speakers: failed to get embedding for voiceprint: %v", err)
+			} else if len(embedding) > 0 {
+				vp, err := s.VoicePrintStore.Add(finalName, embedding, source)
+				if err != nil {
+					log.Printf("merge_speakers: failed to save voiceprint: %v", err)
+				} else {
+					voiceprintID = vp.ID
+					log.Printf("merge_speakers: voiceprint saved: %s (%s)", vp.Name, vp.ID[:8])
+				}
+			}
+		}
+
+		// Инвалидируем кэш спикеров
+		s.invalidateSessionSpeakersCache(msg.SessionID)
+
+		// Отправляем ответ
+		send(Message{
+			Type:            "speakers_merged",
+			SessionID:       msg.SessionID,
+			MergedCount:     mergedCount,
+			TargetSpeakerID: msg.TargetSpeakerID,
+			SpeakerName:     finalName,
+			VoicePrintID:    voiceprintID,
+		})
+
+		// Обновляем сессию для всех клиентов
+		if updatedSess, err := s.SessionMgr.GetSession(msg.SessionID); err == nil {
+			s.broadcast(Message{Type: "session_details", Session: updatedSess})
+		}
+
+		// Отправляем обновлённый список спикеров
+		speakers := s.getSessionSpeakers(msg.SessionID)
+		s.broadcast(Message{Type: "session_speakers", SessionID: msg.SessionID, SessionSpeakers: speakers})
+
+		log.Printf("merge_speakers: completed, merged %d segments", mergedCount)
 	}
 }
 

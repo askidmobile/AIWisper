@@ -37,6 +37,7 @@ interface TranscriptionViewProps {
     onRetranscribeAll?: () => void;
     // Speaker management
     onRenameSpeaker?: (localId: number, newName: string, saveAsVoiceprint: boolean) => void;
+    onMergeSpeakers?: (sourceSpeakerIds: number[], targetSpeakerId: number, newName: string, mergeEmbeddings: boolean, saveAsVoiceprint: boolean) => void;
     onPlaySpeakerSample?: (localId: number) => void;
     onStopSpeakerSample?: () => void;
     playingSpeakerId?: number | null;
@@ -52,6 +53,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     sessionSpeakers = [],
     onRetranscribeAll,
     onRenameSpeaker,
+    onMergeSpeakers,
     onPlaySpeakerSample,
     onStopSpeakerSample,
     playingSpeakerId,
@@ -566,6 +568,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                 sessionId={displaySession.id}
                                 speakers={sessionSpeakers}
                                 onRename={onRenameSpeaker}
+                                onMergeSpeakers={onMergeSpeakers}
                                 onPlaySample={onPlaySpeakerSample}
                                 onStopSample={onStopSpeakerSample}
                                 playingSpeakerId={playingSpeakerId}

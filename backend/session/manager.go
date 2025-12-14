@@ -1996,3 +1996,153 @@ func (m *Manager) SearchSessions(params SearchParams) ([]*SearchResult, int) {
 
 	return results, total
 }
+
+// MergeSpeakers объединяет несколько спикеров в одного
+// sourceLocalIDs - список localID спикеров для объединения (минимум 2)
+// targetLocalID - localID целевого спикера (должен быть в sourceLocalIDs)
+// newName - новое имя для объединённого спикера (если пустое - берётся от target)
+// Возвращает количество обновлённых сегментов
+func (m *Manager) MergeSpeakers(sessionID string, sourceLocalIDs []int, targetLocalID int, newName string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return 0, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	// Валидация
+	if len(sourceLocalIDs) < 2 {
+		return 0, fmt.Errorf("at least 2 speakers required for merge")
+	}
+
+	// Проверяем что targetLocalID в списке
+	targetFound := false
+	for _, id := range sourceLocalIDs {
+		if id == targetLocalID {
+			targetFound = true
+			break
+		}
+	}
+	if !targetFound {
+		return 0, fmt.Errorf("target speaker must be in source list")
+	}
+
+	// Проверяем что mic (-1) не в списке
+	for _, id := range sourceLocalIDs {
+		if id == -1 {
+			return 0, fmt.Errorf("cannot merge mic speaker with others")
+		}
+	}
+
+	// Собираем все возможные имена спикеров для замены
+	oldNames := make(map[string]bool)
+	for _, localID := range sourceLocalIDs {
+		if localID == targetLocalID {
+			continue // Пропускаем target
+		}
+		// Добавляем все возможные варианты имён для этого localID
+		names := getSpeakerNamesForLocalID(localID)
+		for _, name := range names {
+			oldNames[name] = true
+		}
+	}
+
+	// Определяем финальное имя
+	finalName := newName
+	if finalName == "" {
+		// Берём имя от target спикера
+		targetNames := getSpeakerNamesForLocalID(targetLocalID)
+		if len(targetNames) > 0 {
+			// Предпочитаем "Собеседник N" формат
+			for _, name := range targetNames {
+				if strings.HasPrefix(name, "Собеседник") {
+					finalName = name
+					break
+				}
+			}
+			if finalName == "" {
+				finalName = targetNames[0]
+			}
+		} else {
+			finalName = fmt.Sprintf("Собеседник %d", targetLocalID+1)
+		}
+	}
+
+	log.Printf("MergeSpeakers: session=%s, sources=%v, target=%d, finalName=%s, oldNames=%v",
+		sessionID[:8], sourceLocalIDs, targetLocalID, finalName, oldNames)
+
+	// Обновляем все сегменты во всех чанках
+	updatedSegments := 0
+	updatedChunks := 0
+
+	for _, chunk := range session.Chunks {
+		chunkModified := false
+
+		// Dialogue
+		for i := range chunk.Dialogue {
+			if oldNames[chunk.Dialogue[i].Speaker] {
+				chunk.Dialogue[i].Speaker = finalName
+				updatedSegments++
+				chunkModified = true
+			}
+			// Также обновляем слова внутри сегмента
+			for j := range chunk.Dialogue[i].Words {
+				if oldNames[chunk.Dialogue[i].Words[j].Speaker] {
+					chunk.Dialogue[i].Words[j].Speaker = finalName
+				}
+			}
+		}
+
+		// SysSegments
+		for i := range chunk.SysSegments {
+			if oldNames[chunk.SysSegments[i].Speaker] {
+				chunk.SysSegments[i].Speaker = finalName
+				updatedSegments++
+				chunkModified = true
+			}
+			for j := range chunk.SysSegments[i].Words {
+				if oldNames[chunk.SysSegments[i].Words[j].Speaker] {
+					chunk.SysSegments[i].Words[j].Speaker = finalName
+				}
+			}
+		}
+
+		// MicSegments (обычно не нужно, но для полноты)
+		for i := range chunk.MicSegments {
+			if oldNames[chunk.MicSegments[i].Speaker] {
+				chunk.MicSegments[i].Speaker = finalName
+				updatedSegments++
+				chunkModified = true
+			}
+		}
+
+		// Сохраняем чанк если был изменён
+		if chunkModified {
+			updatedChunks++
+			chunkMetaPath := filepath.Join(session.DataDir, "chunks", fmt.Sprintf("%03d.json", chunk.Index))
+			data, _ := json.MarshalIndent(chunk, "", "  ")
+			if err := os.WriteFile(chunkMetaPath, data, 0644); err != nil {
+				log.Printf("MergeSpeakers: failed to save chunk %d: %v", chunk.Index, err)
+			}
+		}
+	}
+
+	log.Printf("MergeSpeakers: updated %d segments in %d chunks", updatedSegments, updatedChunks)
+	return updatedSegments, nil
+}
+
+// getSpeakerNamesForLocalID возвращает все возможные имена спикера по localID
+func getSpeakerNamesForLocalID(localID int) []string {
+	if localID == -1 {
+		return []string{"Вы", "mic"}
+	}
+	// Стандартные имена для sys спикеров
+	return []string{
+		fmt.Sprintf("Speaker %d", localID),
+		fmt.Sprintf("Собеседник %d", localID+1),
+	}
+}

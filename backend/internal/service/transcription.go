@@ -1616,6 +1616,117 @@ func (s *TranscriptionService) GetSessionSpeakerProfiles(sessionID string) []Ses
 	return s.sessionSpeakerProfiles[sessionID]
 }
 
+// MergeSpeakerProfiles объединяет профили спикеров в сессии
+// Усредняет embeddings и удаляет профили source спикеров (кроме target)
+func (s *TranscriptionService) MergeSpeakerProfiles(sessionID string, sourceIDs []int, targetID int) error {
+	if s.sessionSpeakerProfiles == nil {
+		return fmt.Errorf("no speaker profiles available")
+	}
+
+	profiles := s.sessionSpeakerProfiles[sessionID]
+	if len(profiles) == 0 {
+		return fmt.Errorf("no profiles for session %s", sessionID)
+	}
+
+	// Собираем embeddings для усреднения
+	var embeddings [][]float32
+	var totalDuration float32
+	var targetProfile *SessionSpeakerProfile
+	var targetIdx int = -1
+
+	for i := range profiles {
+		for _, srcID := range sourceIDs {
+			if profiles[i].SpeakerID == srcID {
+				if len(profiles[i].Embedding) > 0 {
+					embeddings = append(embeddings, profiles[i].Embedding)
+					totalDuration += profiles[i].Duration
+				}
+				if srcID == targetID {
+					targetProfile = &profiles[i]
+					targetIdx = i
+				}
+				break
+			}
+		}
+	}
+
+	if targetProfile == nil {
+		return fmt.Errorf("target speaker %d not found in profiles", targetID)
+	}
+
+	// Усредняем embeddings
+	if len(embeddings) > 1 {
+		avgEmbedding := averageEmbeddings(embeddings)
+		targetProfile.Embedding = avgEmbedding
+		targetProfile.Duration = totalDuration
+		log.Printf("MergeSpeakerProfiles: averaged %d embeddings for speaker %d", len(embeddings), targetID)
+	}
+
+	// Удаляем профили source спикеров (кроме target)
+	newProfiles := make([]SessionSpeakerProfile, 0, len(profiles))
+	for i, p := range profiles {
+		if i == targetIdx {
+			newProfiles = append(newProfiles, *targetProfile)
+			continue
+		}
+		// Проверяем, не является ли этот профиль source (кроме target)
+		isSource := false
+		for _, srcID := range sourceIDs {
+			if p.SpeakerID == srcID && srcID != targetID {
+				isSource = true
+				break
+			}
+		}
+		if !isSource {
+			newProfiles = append(newProfiles, p)
+		}
+	}
+
+	s.sessionSpeakerProfiles[sessionID] = newProfiles
+	log.Printf("MergeSpeakerProfiles: session %s now has %d profiles (was %d)", sessionID, len(newProfiles), len(profiles))
+	return nil
+}
+
+// averageEmbeddings усредняет несколько embeddings и нормализует результат
+func averageEmbeddings(embeddings [][]float32) []float32 {
+	if len(embeddings) == 0 {
+		return nil
+	}
+	if len(embeddings) == 1 {
+		return embeddings[0]
+	}
+
+	dim := len(embeddings[0])
+	result := make([]float32, dim)
+
+	// Суммируем
+	for _, emb := range embeddings {
+		for i := 0; i < dim && i < len(emb); i++ {
+			result[i] += emb[i]
+		}
+	}
+
+	// Усредняем
+	n := float32(len(embeddings))
+	for i := 0; i < dim; i++ {
+		result[i] /= n
+	}
+
+	// L2 нормализация
+	var sumSq float64
+	for _, x := range result {
+		sumSq += float64(x * x)
+	}
+	if sumSq > 1e-10 {
+		norm := float32(1.0 / math.Sqrt(sumSq))
+		for i := range result {
+			result[i] *= norm
+		}
+	}
+
+	return result
+}
+
 // assignSpeakersToSegments присваивает спикеров сегментам без разбиения (fallback)
 func assignSpeakersToSegments(segments []ai.TranscriptSegment, speakerSegs []ai.SpeakerSegment) []ai.TranscriptSegment {
 	result := make([]ai.TranscriptSegment, len(segments))
