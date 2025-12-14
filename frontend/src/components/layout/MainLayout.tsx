@@ -22,7 +22,7 @@ import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData, computeWaveform } from '../../utils/waveform';
 
 // Версия приложения из package.json
-const APP_VERSION = '1.41.7';
+const APP_VERSION = '1.41.9';
 
 interface MainLayoutProps {
     addLog: (msg: string) => void;
@@ -329,7 +329,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             speakerAudioRef.current = null;
         }
         
-        const url = `${API_BASE}/api/sessions/${selectedSession.id}/speaker/${localId}/sample.mp3`;
+        const url = `${API_BASE}/api/speaker-sample/${selectedSession.id}/${localId}`;
         const audio = new Audio(url);
         speakerAudioRef.current = audio;
         setPlayingSpeakerId(localId);

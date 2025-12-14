@@ -144,6 +144,8 @@ func (s *Server) Start() {
 	http.HandleFunc("/api/import", s.handleImportAudio)
 	http.HandleFunc("/api/export/batch", s.handleBatchExport)
 	http.HandleFunc("/api/speaker-sample/", s.handleSpeakerSampleAPI)
+	http.HandleFunc("/api/voiceprints/", s.handleVoiceprintsAPI)
+	http.HandleFunc("/api/voiceprints", s.handleVoiceprintsAPI)
 
 	log.Printf("Backend listening on HTTP :%s and gRPC %s", s.Config.Port, s.Config.GRPCAddr)
 	if err := http.ListenAndServe(":"+s.Config.Port, nil); err != nil {
@@ -2577,4 +2579,93 @@ func (s *Server) getSpeakerNamesForLocalIDInSession(sessionID string, localSpeak
 	}
 
 	return names
+}
+
+// handleVoiceprintsAPI обрабатывает HTTP запросы для управления голосовыми отпечатками
+// GET /api/voiceprints - получить список всех voiceprints
+// GET /api/voiceprints/{id} - получить конкретный voiceprint
+// PATCH /api/voiceprints/{id} - обновить voiceprint (переименовать)
+// DELETE /api/voiceprints/{id} - удалить voiceprint
+func (s *Server) handleVoiceprintsAPI(w http.ResponseWriter, r *http.Request) {
+	// CORS headers
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, PATCH, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Проверяем наличие VoicePrintStore
+	if s.VoicePrintStore == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{"voiceprints": []interface{}{}})
+		return
+	}
+
+	// Парсим путь: /api/voiceprints или /api/voiceprints/{id}
+	path := strings.TrimPrefix(r.URL.Path, "/api/voiceprints")
+	path = strings.TrimPrefix(path, "/")
+
+	switch r.Method {
+	case "GET":
+		if path == "" {
+			// GET /api/voiceprints - список всех
+			voiceprints := s.VoicePrintStore.GetAll()
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"voiceprints": voiceprints})
+		} else {
+			// GET /api/voiceprints/{id} - конкретный voiceprint
+			vp, err := s.VoicePrintStore.Get(path)
+			if err != nil {
+				http.Error(w, "Voiceprint not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(vp)
+		}
+
+	case "PATCH":
+		if path == "" {
+			http.Error(w, "Voiceprint ID required", http.StatusBadRequest)
+			return
+		}
+		// Парсим тело запроса
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		if req.Name == "" {
+			http.Error(w, "Name is required", http.StatusBadRequest)
+			return
+		}
+		// Обновляем имя
+		if err := s.VoicePrintStore.UpdateName(path, req.Name); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		// Возвращаем обновлённый voiceprint
+		vp, _ := s.VoicePrintStore.Get(path)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(vp)
+
+	case "DELETE":
+		if path == "" {
+			http.Error(w, "Voiceprint ID required", http.StatusBadRequest)
+			return
+		}
+		if err := s.VoicePrintStore.Delete(path); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
 }

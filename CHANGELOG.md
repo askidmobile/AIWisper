@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.9] - 2025-12-14
+
+### Fixed
+- **Voiceprints Not Showing in Settings**: Исправлена проблема, когда список сохранённых голосов не отображался в настройках
+  - **Проблема**: Frontend использовал HTTP API `/api/voiceprints`, но такой endpoint не был зарегистрирован в backend
+  - **Решение**: Добавлен HTTP API endpoint `handleVoiceprintsAPI` для управления голосовыми отпечатками
+  - Поддерживаемые методы: GET (список/конкретный), PATCH (переименование), DELETE (удаление)
+
+- **Speaker Sample Playback Not Working**: Исправлена кнопка воспроизведения аудио фрагмента спикера на вкладке "Собеседники"
+  - **Проблема**: Frontend использовал неправильный URL `/api/sessions/{id}/speaker/{localId}/sample.mp3`
+  - **Решение**: Исправлен URL на `/api/speaker-sample/{sessionId}/{localId}` (соответствует backend endpoint)
+
+### Technical
+- `backend/internal/api/server.go`:
+  - Добавлен `http.HandleFunc("/api/voiceprints/", s.handleVoiceprintsAPI)`
+  - Добавлен `http.HandleFunc("/api/voiceprints", s.handleVoiceprintsAPI)`
+  - Реализован метод `handleVoiceprintsAPI` с поддержкой GET/PATCH/DELETE
+- `frontend/src/components/layout/MainLayout.tsx`:
+  - Исправлен URL для speaker sample с `/api/sessions/.../speaker/.../sample.mp3` на `/api/speaker-sample/...`
+  - Обновлена версия приложения на 1.41.9
+
 ## [1.41.8] - 2025-12-14
 
 ### Fixed
