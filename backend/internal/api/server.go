@@ -99,6 +99,17 @@ type Server struct {
 	// Флаг активной полной ретранскрипции (не применять переименования после каждого чанка)
 	fullRetranscribeActive   map[string]bool
 	fullRetranscribeActiveMu sync.RWMutex
+
+	// Кэш спикеров сессии для оптимизации производительности
+	sessionSpeakersCache   map[string]sessionSpeakersCacheEntry
+	sessionSpeakersCacheMu sync.RWMutex
+}
+
+// sessionSpeakersCacheEntry хранит кэшированные данные о спикерах
+type sessionSpeakersCacheEntry struct {
+	speakers   []voiceprint.SessionSpeaker
+	chunkCount int       // Количество чанков на момент кэширования
+	cachedAt   time.Time // Время кэширования
 }
 
 func NewServer(
@@ -130,6 +141,7 @@ func NewServer(
 		retranscribeCancels:           make(map[string]func()),
 		speakerRenamesCache:           make(map[string]map[string]string),
 		fullRetranscribeActive:        make(map[string]bool),
+		sessionSpeakersCache:          make(map[string]sessionSpeakersCacheEntry),
 	}
 	s.setupCallbacks()
 	return s
@@ -421,6 +433,7 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 
 	case "delete_session":
 		s.SessionMgr.DeleteSession(msg.SessionID)
+		s.invalidateSessionSpeakersCache(msg.SessionID)
 		send(Message{Type: "session_deleted", SessionID: msg.SessionID})
 
 	case "rename_session":
@@ -1086,10 +1099,12 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 						log.Printf("Full retranscription: applied rename '%s' -> '%s'", oldName, newName)
 					}
 				}
-				// Очищаем кэш
+				// Очищаем кэш переименований
 				s.speakerRenamesCacheMu.Lock()
 				delete(s.speakerRenamesCache, sessionID)
 				s.speakerRenamesCacheMu.Unlock()
+				// Инвалидируем кэш спикеров
+				s.invalidateSessionSpeakersCache(sessionID)
 			}
 
 			updatedSess, _ := s.SessionMgr.GetSession(sessionID)
@@ -1338,6 +1353,9 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 			send(Message{Type: "error", Data: err.Error()})
 			return
 		}
+
+		// Инвалидируем кэш спикеров после переименования
+		s.invalidateSessionSpeakersCache(msg.SessionID)
 
 		// Если запрошено сохранение в глобальную базу
 		var voiceprintID string
@@ -1831,23 +1849,57 @@ func (s *Server) getSpeakerEmbedding(sessionID string, localSpeakerID int) ([]fl
 	return nil, source, fmt.Errorf("speaker %d not found in session profiles or pipeline", localSpeakerID)
 }
 
-// getSessionSpeakers возвращает список спикеров в сессии
+// getSessionSpeakers возвращает список спикеров в сессии (с кэшированием)
 func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeaker {
-	var speakers []voiceprint.SessionSpeaker
-
 	sess, err := s.SessionMgr.GetSession(sessionID)
 	if err != nil {
-		log.Printf("getSessionSpeakers: failed to get session %s: %v", sessionID, err)
-		return speakers
+		return nil
 	}
 
-	log.Printf("getSessionSpeakers: session %s has %d chunks", sessionID, len(sess.Chunks))
+	chunkCount := len(sess.Chunks)
 
-	// Собираем информацию о спикерах из диалога
-	// Спикеры могут быть в разных форматах:
-	// - "mic" или "Вы" - микрофон пользователя
-	// - "sys", "Speaker 0", "Speaker 1", "Собеседник", "Собеседник 1" - собеседники
+	// Проверяем кэш
+	s.sessionSpeakersCacheMu.RLock()
+	cached, ok := s.sessionSpeakersCache[sessionID]
+	s.sessionSpeakersCacheMu.RUnlock()
+
+	// Кэш валиден если количество чанков не изменилось и прошло менее 5 секунд
+	if ok && cached.chunkCount == chunkCount && time.Since(cached.cachedAt) < 5*time.Second {
+		return cached.speakers
+	}
+
+	// Вычисляем спикеров
+	speakers := s.computeSessionSpeakers(sess, sessionID)
+
+	// Сохраняем в кэш
+	s.sessionSpeakersCacheMu.Lock()
+	s.sessionSpeakersCache[sessionID] = sessionSpeakersCacheEntry{
+		speakers:   speakers,
+		chunkCount: chunkCount,
+		cachedAt:   time.Now(),
+	}
+	s.sessionSpeakersCacheMu.Unlock()
+
+	return speakers
+}
+
+// invalidateSessionSpeakersCache инвалидирует кэш спикеров для сессии
+func (s *Server) invalidateSessionSpeakersCache(sessionID string) {
+	s.sessionSpeakersCacheMu.Lock()
+	delete(s.sessionSpeakersCache, sessionID)
+	s.sessionSpeakersCacheMu.Unlock()
+}
+
+// computeSessionSpeakers вычисляет список спикеров (без кэширования)
+func (s *Server) computeSessionSpeakers(sess *session.Session, sessionID string) []voiceprint.SessionSpeaker {
+	var speakers []voiceprint.SessionSpeaker
 	speakerMap := make(map[string]*voiceprint.SessionSpeaker)
+
+	// Кэшируем профили спикеров один раз
+	var profiles []service.SessionSpeakerProfile
+	if s.TranscriptionService != nil {
+		profiles = s.TranscriptionService.GetSessionSpeakerProfiles(sessionID)
+	}
 
 	// Вспомогательная функция для обработки сегмента
 	processSpeaker := func(speaker string, duration int64) {
@@ -1855,63 +1907,51 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 			return
 		}
 
-		// Определяем localID и нормализуем ключ для группировки
 		localID := 0
 		isMic := false
 		displayName := speaker
 		normalizedKey := speaker
 
-		// Определяем тип спикера и формируем displayName
 		switch {
 		case speaker == "mic" || speaker == "Вы":
 			isMic = true
 			localID = -1
 			displayName = "Вы"
-			normalizedKey = "mic" // Нормализуем ключ
+			normalizedKey = "mic"
 
 		case speaker == "sys" || speaker == "Собеседник":
 			localID = 0
 			displayName = "Собеседник 1"
-			normalizedKey = "speaker_0" // Нормализуем ключ
+			normalizedKey = "speaker_0"
 
 		case strings.HasPrefix(speaker, "Speaker "):
-			// "Speaker 0" -> localID = 0, displayName = "Собеседник 1"
 			var num int
 			fmt.Sscanf(speaker, "Speaker %d", &num)
 			localID = num
 			displayName = fmt.Sprintf("Собеседник %d", num+1)
-			normalizedKey = fmt.Sprintf("speaker_%d", num) // Нормализуем ключ
+			normalizedKey = fmt.Sprintf("speaker_%d", num)
 
 		case strings.HasPrefix(speaker, "Собеседник "):
-			// "Собеседник 1" -> localID = 0
 			var num int
 			fmt.Sscanf(speaker, "Собеседник %d", &num)
 			localID = num - 1
-			displayName = speaker                            // Уже в нужном формате
-			normalizedKey = fmt.Sprintf("speaker_%d", num-1) // Нормализуем ключ
+			displayName = speaker
+			normalizedKey = fmt.Sprintf("speaker_%d", num-1)
 
 		default:
-			// Кастомное имя (уже переименованный спикер)
-			// Пытаемся определить localID из профилей спикеров TranscriptionService
-			localID = -999 // Временное значение, будет обновлено ниже
+			// Кастомное имя - ищем в кэшированных профилях
+			localID = -999
 			displayName = speaker
 
-			// Ищем localID в профилях спикеров по RecognizedName
-			if s.TranscriptionService != nil {
-				profiles := s.TranscriptionService.GetSessionSpeakerProfiles(sessionID)
-				for _, profile := range profiles {
-					if profile.RecognizedName == speaker {
-						localID = profile.SpeakerID - 1 // SpeakerID 1-based -> localID 0-based
-						normalizedKey = fmt.Sprintf("speaker_%d", localID)
-						log.Printf("getSessionSpeakers: found localID %d for custom name '%s' from profiles", localID, speaker)
-						break
-					}
+			for _, profile := range profiles {
+				if profile.RecognizedName == speaker {
+					localID = profile.SpeakerID - 1
+					normalizedKey = fmt.Sprintf("speaker_%d", localID)
+					break
 				}
 			}
 
-			// Если не нашли в профилях, ищем по количеству уже обработанных собеседников
 			if localID == -999 {
-				// Считаем сколько уникальных собеседников (не mic) уже есть
 				existingSpeakerCount := 0
 				for key := range speakerMap {
 					if key != "mic" {
@@ -1919,8 +1959,7 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 					}
 				}
 				localID = existingSpeakerCount
-				normalizedKey = fmt.Sprintf("custom_%s", speaker) // Уникальный ключ для кастомного имени
-				log.Printf("getSessionSpeakers: assigned localID %d for custom name '%s' (fallback)", localID, speaker)
+				normalizedKey = fmt.Sprintf("custom_%s", speaker)
 			}
 		}
 
@@ -1935,53 +1974,41 @@ func (s *Server) getSessionSpeakers(sessionID string) []voiceprint.SessionSpeake
 
 		sp := speakerMap[normalizedKey]
 		sp.SegmentCount++
-		sp.TotalDuration += float32(duration) / 1000.0 // мс -> сек
+		sp.TotalDuration += float32(duration) / 1000.0
 	}
 
-	for i, chunk := range sess.Chunks {
-		// 1. Сначала проверяем Dialogue (объединённый диалог)
+	for _, chunk := range sess.Chunks {
 		if len(chunk.Dialogue) > 0 {
-			log.Printf("getSessionSpeakers: chunk[%d] has %d dialogue segments", i, len(chunk.Dialogue))
-			for j, seg := range chunk.Dialogue {
-				if j < 3 { // Логируем первые 3 сегмента каждого чанка
-					log.Printf("  chunk[%d].dialogue[%d]: speaker='%s'", i, j, seg.Speaker)
-				}
+			for _, seg := range chunk.Dialogue {
 				processSpeaker(seg.Speaker, seg.End-seg.Start)
 			}
 		} else {
-			// 2. Если Dialogue пустой, проверяем MicSegments и SysSegments
-			// Это важно для сессий без диаризации, где есть только раздельные каналы
-			log.Printf("getSessionSpeakers: chunk[%d] has no dialogue, mic=%d sys=%d segments",
-				i, len(chunk.MicSegments), len(chunk.SysSegments))
 			for _, seg := range chunk.MicSegments {
 				speaker := seg.Speaker
 				if speaker == "" {
-					speaker = "mic" // По умолчанию для mic канала
+					speaker = "mic"
 				}
 				processSpeaker(speaker, seg.End-seg.Start)
 			}
 			for _, seg := range chunk.SysSegments {
 				speaker := seg.Speaker
 				if speaker == "" {
-					speaker = "sys" // По умолчанию для sys канала
+					speaker = "sys"
 				}
 				processSpeaker(speaker, seg.End-seg.Start)
 			}
 		}
 	}
 
-	// Проверяем распознанные имена из глобальной базы voiceprints
+	// Проверяем распознанные имена
 	for _, sp := range speakerMap {
-		// Устанавливаем HasSample если есть достаточно аудио (минимум 2 секунды)
 		sp.HasSample = sp.TotalDuration >= 2.0
 
-		// Проверяем, распознан ли спикер из глобальной базы voiceprints
 		if !sp.IsMic && s.TranscriptionService != nil {
 			recognizedName := s.TranscriptionService.GetRecognizedSpeakerName(sessionID, sp.LocalID)
 			if recognizedName != "" {
 				sp.DisplayName = recognizedName
 				sp.IsRecognized = true
-				log.Printf("getSessionSpeakers: speaker %d recognized as '%s' from voiceprints", sp.LocalID, recognizedName)
 			}
 		}
 
@@ -2130,6 +2157,9 @@ func (s *Server) applyExistingSpeakerRenames(sessionID string) {
 			log.Printf("applyExistingSpeakerRenames: applied rename '%s' -> '%s'", oldName, newName)
 		}
 	}
+
+	// Инвалидируем кэш спикеров после применения переименований
+	s.invalidateSessionSpeakersCache(sessionID)
 }
 
 // updatePipelineTranscriber обновляет transcriber в Pipeline после смены модели
