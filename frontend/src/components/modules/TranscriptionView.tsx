@@ -16,7 +16,6 @@ import {
     ScrollbarPositionIndicator, 
     SegmentText 
 } from '../dialogue/DialogueHelpers';
-import WaveformDisplay from '../WaveformDisplay';
 import { WaveformData } from '../../utils/waveform';
 
 interface TranscriptionViewProps {
@@ -282,7 +281,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             {(selectedSession || isRecording) && (
                 <div style={{ flexShrink: 0, backgroundColor: 'var(--app-bg)', borderBottom: '1px solid var(--border)', padding: '0 0' }}>
-                    {/* Controls */}
+                    {/* Controls with integrated Waveform */}
                     {displaySession && !isRecording && (
                         <SessionControls
                             session={displaySession}
@@ -299,24 +298,10 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                             duration={duration || displaySession.totalDuration / 1000} // Fallback to session duration
                             onRetranscribe={() => onRetranscribeAll?.()}
                             onImprove={() => setActiveTab('summary')}
+                            waveformData={waveformData}
+                            waveformLoading={waveformLoading}
+                            waveformError={waveformError}
                         />
-                    )}
-
-                    {/* Waveform Display */}
-                    {displaySession && !isRecording && (
-                        <div style={{ padding: '0 1rem 1rem' }}>
-                            <WaveformDisplay
-                                currentTime={currentTime}
-                                playbackOffset={0}
-                                totalDuration={waveformData?.duration || duration || displaySession.totalDuration / 1_000_000_000}
-                                isPlaying={isPlaying}
-                                waveformData={waveformData}
-                                loading={waveformLoading}
-                                error={waveformError}
-                                channelLabels={['Mic', 'Sys']}
-                                onSeek={onSeek}
-                            />
-                        </div>
                     )}
 
                     {/* SessionTabs */}

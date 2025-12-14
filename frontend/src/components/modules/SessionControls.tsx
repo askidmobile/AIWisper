@@ -1,6 +1,10 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { Session } from '../../types/session';
 import { useExport } from '../../hooks/useExport';
+import WaveformDisplay from '../WaveformDisplay';
+import { WaveformData } from '../../utils/waveform';
+
+type WaveformViewMode = 'simple' | 'detailed';
 
 interface SessionControlsProps {
     session: Session;
@@ -11,6 +15,10 @@ interface SessionControlsProps {
     duration: number;
     onRetranscribe: () => void;
     onImprove: () => void;
+    // Waveform props
+    waveformData?: WaveformData | null;
+    waveformLoading?: boolean;
+    waveformError?: string | null;
 }
 
 export const SessionControls: React.FC<SessionControlsProps> = ({
@@ -22,12 +30,25 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
     duration,
     onRetranscribe,
     onImprove,
+    waveformData,
+    waveformLoading,
+    waveformError,
 }) => {
     const timelineRef = useRef<HTMLDivElement>(null);
     const [hoverTime, setHoverTime] = useState<number | null>(null);
     const [playbackSpeed, setPlaybackSpeed] = useState(1);
     const [showExportMenu, setShowExportMenu] = useState(false);
     const [copySuccess, setCopySuccess] = useState(false);
+    
+    // Waveform view mode - persist in localStorage
+    const [waveformViewMode, setWaveformViewMode] = useState<WaveformViewMode>(() => {
+        const saved = localStorage.getItem('waveformViewMode');
+        return (saved === 'simple' || saved === 'detailed') ? saved : 'simple';
+    });
+    
+    useEffect(() => {
+        localStorage.setItem('waveformViewMode', waveformViewMode);
+    }, [waveformViewMode]);
     
     const { copyToClipboard, exportTXT, exportSRT, exportVTT, exportJSON, exportMarkdown } = useExport();
 
@@ -232,137 +253,216 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                 </button>
             </div>
 
-            {/* Waveform / Timeline */}
-            <div
-                ref={timelineRef}
-                onClick={handleTimelineClick}
-                onMouseMove={handleMouseMove}
-                onMouseLeave={() => setHoverTime(null)}
-                style={{
-                    height: '48px',
-                    background: 'var(--glass-bg)',
-                    borderRadius: 'var(--radius-md)',
-                    position: 'relative',
-                    cursor: 'pointer',
-                    overflow: 'hidden',
+            {/* Waveform Visualization with Mode Toggle */}
+            <div style={{ position: 'relative' }}>
+                {/* View Mode Toggle */}
+                <div style={{
+                    position: 'absolute',
+                    top: '8px',
+                    right: '8px',
+                    zIndex: 10,
+                    display: 'flex',
+                    gap: '2px',
+                    background: 'var(--glass-bg-elevated)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '2px',
                     border: '1px solid var(--glass-border-subtle)',
-                }}
-            >
-                {/* Waveform Bars */}
-                <div
-                    style={{
-                        position: 'absolute',
-                        inset: 0,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '2px',
-                        padding: '0 4px',
-                    }}
-                >
-                    {(session.chunks || []).length > 0
-                        ? (session.chunks || []).filter(c => c).map((c, i, arr) => {
-                              const isPast = (i / arr.length) * 100 < progress;
-                              const height = 30 + ((c.transcription || '').length % 60);
-                              return (
-                                  <div
-                                      key={c.id || i}
-                                      style={{
-                                          flex: 1,
-                                          height: `${height}%`,
-                                          background: isPast
-                                              ? 'linear-gradient(to top, var(--primary), var(--accent))'
-                                              : 'var(--glass-bg-hover)',
-                                          borderRadius: '2px',
-                                          transition: 'background var(--duration-fast)',
-                                      }}
-                                  />
-                              );
-                          })
-                        : // Generate placeholder bars if no chunks
-                          Array.from({ length: 50 }).map((_, i) => {
-                              const isPast = (i / 50) * 100 < progress;
-                              const height = 20 + Math.random() * 60;
-                              return (
-                                  <div
-                                      key={i}
-                                      style={{
-                                          flex: 1,
-                                          height: `${height}%`,
-                                          background: isPast
-                                              ? 'linear-gradient(to top, var(--primary), var(--accent))'
-                                              : 'var(--glass-bg-hover)',
-                                          borderRadius: '2px',
-                                          transition: 'background var(--duration-fast)',
-                                      }}
-                                  />
-                              );
-                          })}
-                </div>
-
-                {/* Progress Indicator */}
-                <div
-                    style={{
-                        position: 'absolute',
-                        top: 0,
-                        bottom: 0,
-                        left: `${progress}%`,
-                        width: '2px',
-                        background: 'white',
-                        boxShadow: '0 0 10px rgba(255, 255, 255, 0.8)',
-                        pointerEvents: 'none',
-                        transition: 'left 0.1s linear',
-                    }}
-                />
-
-                {/* Hover Tooltip */}
-                {hoverTime !== null && (
-                    <div
+                }}>
+                    <button
+                        onClick={() => setWaveformViewMode('simple')}
+                        title="Простой вид"
                         style={{
-                            position: 'absolute',
-                            top: 0,
-                            bottom: 0,
-                            left: `${(hoverTime / displayDuration) * 100}%`,
-                            width: '1px',
-                            background: 'var(--text-muted)',
-                            pointerEvents: 'none',
+                            padding: '4px 8px',
+                            fontSize: '0.7rem',
+                            background: waveformViewMode === 'simple' ? 'var(--primary)' : 'transparent',
+                            color: waveformViewMode === 'simple' ? 'white' : 'var(--text-muted)',
+                            border: 'none',
+                            borderRadius: 'var(--radius-xs)',
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease',
                         }}
                     >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <rect x="3" y="10" width="3" height="4" rx="1" />
+                            <rect x="8" y="7" width="3" height="10" rx="1" />
+                            <rect x="13" y="9" width="3" height="6" rx="1" />
+                            <rect x="18" y="6" width="3" height="12" rx="1" />
+                        </svg>
+                    </button>
+                    <button
+                        onClick={() => setWaveformViewMode('detailed')}
+                        title="Детальный вид (Mic/Sys)"
+                        style={{
+                            padding: '4px 8px',
+                            fontSize: '0.7rem',
+                            background: waveformViewMode === 'detailed' ? 'var(--primary)' : 'transparent',
+                            color: waveformViewMode === 'detailed' ? 'white' : 'var(--text-muted)',
+                            border: 'none',
+                            borderRadius: 'var(--radius-xs)',
+                            cursor: 'pointer',
+                            transition: 'all 0.15s ease',
+                        }}
+                    >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M2 6h20" />
+                            <path d="M4 6v-1a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1z" />
+                            <path d="M10 6v-2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-2z" />
+                            <path d="M2 18h20" />
+                            <path d="M6 18v-1a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-1z" />
+                            <path d="M12 18v-3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-1z" />
+                        </svg>
+                    </button>
+                </div>
+
+                {waveformViewMode === 'simple' ? (
+                    /* Simple Timeline View */
+                    <>
                         <div
+                            ref={timelineRef}
+                            onClick={handleTimelineClick}
+                            onMouseMove={handleMouseMove}
+                            onMouseLeave={() => setHoverTime(null)}
                             style={{
-                                position: 'absolute',
-                                bottom: 'calc(100% + 4px)',
-                                left: '50%',
-                                transform: 'translateX(-50%)',
-                                background: 'var(--glass-bg-elevated)',
-                                backdropFilter: 'blur(10px)',
-                                padding: '2px 6px',
-                                borderRadius: 'var(--radius-xs)',
-                                fontSize: '0.7rem',
-                                fontFamily: 'SF Mono, monospace',
-                                color: 'var(--text-primary)',
-                                whiteSpace: 'nowrap',
-                                border: '1px solid var(--glass-border)',
+                                height: '48px',
+                                background: 'var(--glass-bg)',
+                                borderRadius: 'var(--radius-md)',
+                                position: 'relative',
+                                cursor: 'pointer',
+                                overflow: 'hidden',
+                                border: '1px solid var(--glass-border-subtle)',
                             }}
                         >
-                            {formatTime(hoverTime)}
-                        </div>
-                    </div>
-                )}
-            </div>
+                            {/* Waveform Bars */}
+                            <div
+                                style={{
+                                    position: 'absolute',
+                                    inset: 0,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '2px',
+                                    padding: '0 4px',
+                                }}
+                            >
+                                {(session.chunks || []).length > 0
+                                    ? (session.chunks || []).filter(c => c).map((c, i, arr) => {
+                                          const isPast = (i / arr.length) * 100 < progress;
+                                          const height = 30 + ((c.transcription || '').length % 60);
+                                          return (
+                                              <div
+                                                  key={c.id || i}
+                                                  style={{
+                                                      flex: 1,
+                                                      height: `${height}%`,
+                                                      background: isPast
+                                                          ? 'linear-gradient(to top, var(--primary), var(--accent))'
+                                                          : 'var(--glass-bg-hover)',
+                                                      borderRadius: '2px',
+                                                      transition: 'background var(--duration-fast)',
+                                                  }}
+                                              />
+                                          );
+                                      })
+                                    : // Generate placeholder bars if no chunks
+                                      Array.from({ length: 50 }).map((_, i) => {
+                                          const isPast = (i / 50) * 100 < progress;
+                                          const height = 20 + Math.random() * 60;
+                                          return (
+                                              <div
+                                                  key={i}
+                                                  style={{
+                                                      flex: 1,
+                                                      height: `${height}%`,
+                                                      background: isPast
+                                                          ? 'linear-gradient(to top, var(--primary), var(--accent))'
+                                                          : 'var(--glass-bg-hover)',
+                                                      borderRadius: '2px',
+                                                      transition: 'background var(--duration-fast)',
+                                                  }}
+                                              />
+                                          );
+                                      })}
+                            </div>
 
-            {/* Time Display */}
-            <div
-                style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    marginTop: '0.5rem',
-                    fontSize: '0.75rem',
-                    fontFamily: 'SF Mono, Menlo, monospace',
-                    color: 'var(--text-muted)',
-                }}
-            >
-                <span>{formatTime(currentTime)}</span>
-                <span>{formatTime(displayDuration)}</span>
+                            {/* Progress Indicator */}
+                            <div
+                                style={{
+                                    position: 'absolute',
+                                    top: 0,
+                                    bottom: 0,
+                                    left: `${progress}%`,
+                                    width: '2px',
+                                    background: 'white',
+                                    boxShadow: '0 0 10px rgba(255, 255, 255, 0.8)',
+                                    pointerEvents: 'none',
+                                    transition: 'left 0.1s linear',
+                                }}
+                            />
+
+                            {/* Hover Tooltip */}
+                            {hoverTime !== null && (
+                                <div
+                                    style={{
+                                        position: 'absolute',
+                                        top: 0,
+                                        bottom: 0,
+                                        left: `${(hoverTime / displayDuration) * 100}%`,
+                                        width: '1px',
+                                        background: 'var(--text-muted)',
+                                        pointerEvents: 'none',
+                                    }}
+                                >
+                                    <div
+                                        style={{
+                                            position: 'absolute',
+                                            bottom: 'calc(100% + 4px)',
+                                            left: '50%',
+                                            transform: 'translateX(-50%)',
+                                            background: 'var(--glass-bg-elevated)',
+                                            backdropFilter: 'blur(10px)',
+                                            padding: '2px 6px',
+                                            borderRadius: 'var(--radius-xs)',
+                                            fontSize: '0.7rem',
+                                            fontFamily: 'SF Mono, monospace',
+                                            color: 'var(--text-primary)',
+                                            whiteSpace: 'nowrap',
+                                            border: '1px solid var(--glass-border)',
+                                        }}
+                                    >
+                                        {formatTime(hoverTime)}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Time Display for Simple View */}
+                        <div
+                            style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                marginTop: '0.5rem',
+                                fontSize: '0.75rem',
+                                fontFamily: 'SF Mono, Menlo, monospace',
+                                color: 'var(--text-muted)',
+                            }}
+                        >
+                            <span>{formatTime(currentTime)}</span>
+                            <span>{formatTime(displayDuration)}</span>
+                        </div>
+                    </>
+                ) : (
+                    /* Detailed Waveform View (Mic/Sys) */
+                    <WaveformDisplay
+                        currentTime={currentTime}
+                        playbackOffset={0}
+                        totalDuration={waveformData?.duration || displayDuration}
+                        isPlaying={isPlaying}
+                        waveformData={waveformData}
+                        loading={waveformLoading}
+                        error={waveformError}
+                        channelLabels={['Mic', 'Sys']}
+                        onSeek={onSeek}
+                    />
+                )}
             </div>
 
             {/* Action Buttons */}
