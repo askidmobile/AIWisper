@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 
 export const useAudioPlayer = () => {
     const audioRef = useRef<HTMLAudioElement | null>(null);
+    const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
     const [playingUrl, setPlayingUrl] = useState<string | null>(null);
     const [isCurrentlyPlaying, setIsCurrentlyPlaying] = useState(false);
 
@@ -38,9 +39,11 @@ export const useAudioPlayer = () => {
         };
 
         audioRef.current = audio;
+        setAudioElement(audio); // Сохраняем в состояние для реактивности
         return () => {
             audio.pause();
             audioRef.current = null;
+            setAudioElement(null);
         };
     }, []);
 
@@ -97,6 +100,7 @@ export const useAudioPlayer = () => {
         isPlaying: isCurrentlyPlaying, // Boolean состояние воспроизведения
         playingUrl, 
         currentTime, 
-        duration 
+        duration,
+        audioElement, // Доступ к audio элементу для VU-метров
     };
 };

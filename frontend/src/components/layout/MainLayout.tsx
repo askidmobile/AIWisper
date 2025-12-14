@@ -38,7 +38,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
     const { sendMessage, subscribe } = useWebSocketContext();
 
     // Хуки
-    const { play, pause, playingUrl, seek, currentTime, duration, isPlaying } = useAudioPlayer();
+    const { play, pause, playingUrl, seek, currentTime, duration, isPlaying, audioElement } = useAudioPlayer();
     const {
         settings,
         isLoaded: settingsLoaded,
@@ -208,31 +208,53 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
         };
     }, [waveformData]);
 
-    // Update VU levels during playback
+    // Update VU levels during playback using requestAnimationFrame
+    const playbackRafRef = useRef<number | null>(null);
+    
     useEffect(() => {
-        if (!isPlaying || !playbackLevelSlicesRef.current) {
+        // Cleanup function to cancel animation frame
+        const cleanup = () => {
+            if (playbackRafRef.current !== null) {
+                cancelAnimationFrame(playbackRafRef.current);
+                playbackRafRef.current = null;
+            }
             setPlaybackMicLevel(0);
             setPlaybackSysLevel(0);
+        };
+
+        if (!isPlaying || !playbackLevelSlicesRef.current || !audioElement) {
+            cleanup();
             return;
         }
 
         const updateLevels = () => {
             const slices = playbackLevelSlicesRef.current;
-            if (!slices) return;
+            const audio = audioElement;
+            
+            if (!slices || !audio || audio.paused || audio.ended) {
+                cleanup();
+                return;
+            }
 
-            const sliceIndex = Math.floor(currentTime / slices.sliceDuration);
+            const time = audio.currentTime;
+            const sliceIndex = Math.floor(time / slices.sliceDuration);
             const micLevel = slices.mic[sliceIndex] ?? 0;
             const sysLevel = slices.sys[sliceIndex] ?? 0;
 
-            // Convert to 0-100 scale with some amplification
-            setPlaybackMicLevel(Math.min(100, micLevel * 150));
-            setPlaybackSysLevel(Math.min(100, sysLevel * 150));
+            // Convert to 0-100 scale with amplification for visibility
+            // RMS values are typically 0-0.5 for normal audio
+            setPlaybackMicLevel(Math.min(100, micLevel * 200));
+            setPlaybackSysLevel(Math.min(100, sysLevel * 200));
+
+            // Continue animation loop
+            playbackRafRef.current = requestAnimationFrame(updateLevels);
         };
 
-        updateLevels();
-        const interval = setInterval(updateLevels, 50);
-        return () => clearInterval(interval);
-    }, [isPlaying, currentTime]);
+        // Start animation loop
+        playbackRafRef.current = requestAnimationFrame(updateLevels);
+
+        return cleanup;
+    }, [isPlaying, audioElement]);
 
     // Fetch audio devices
     useEffect(() => {
