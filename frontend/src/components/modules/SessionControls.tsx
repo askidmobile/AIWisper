@@ -251,18 +251,12 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                 >
                     {playbackSpeed}x
                 </button>
-            </div>
 
-            {/* Waveform Visualization with Mode Toggle */}
-            <div style={{ position: 'relative' }}>
-                {/* View Mode Toggle */}
+                {/* Waveform View Mode Toggle */}
                 <div style={{
-                    position: 'absolute',
-                    top: '8px',
-                    right: '8px',
-                    zIndex: 10,
                     display: 'flex',
                     gap: '2px',
+                    marginLeft: '0.75rem',
                     background: 'var(--glass-bg-elevated)',
                     borderRadius: 'var(--radius-sm)',
                     padding: '2px',
@@ -272,17 +266,19 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                         onClick={() => setWaveformViewMode('simple')}
                         title="Простой вид"
                         style={{
-                            padding: '4px 8px',
-                            fontSize: '0.7rem',
+                            padding: '6px 8px',
                             background: waveformViewMode === 'simple' ? 'var(--primary)' : 'transparent',
                             color: waveformViewMode === 'simple' ? 'white' : 'var(--text-muted)',
                             border: 'none',
                             borderRadius: 'var(--radius-xs)',
                             cursor: 'pointer',
                             transition: 'all 0.15s ease',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
                         }}
                     >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                             <rect x="3" y="10" width="3" height="4" rx="1" />
                             <rect x="8" y="7" width="3" height="10" rx="1" />
                             <rect x="13" y="9" width="3" height="6" rx="1" />
@@ -293,17 +289,19 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                         onClick={() => setWaveformViewMode('detailed')}
                         title="Детальный вид (Mic/Sys)"
                         style={{
-                            padding: '4px 8px',
-                            fontSize: '0.7rem',
+                            padding: '6px 8px',
                             background: waveformViewMode === 'detailed' ? 'var(--primary)' : 'transparent',
                             color: waveformViewMode === 'detailed' ? 'white' : 'var(--text-muted)',
                             border: 'none',
                             borderRadius: 'var(--radius-xs)',
                             cursor: 'pointer',
                             transition: 'all 0.15s ease',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
                         }}
                     >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                             <path d="M2 6h20" />
                             <path d="M4 6v-1a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-1z" />
                             <path d="M10 6v-2a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-2z" />
@@ -313,6 +311,10 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                         </svg>
                     </button>
                 </div>
+            </div>
+
+            {/* Waveform Visualization */}
+            <div>
 
                 {waveformViewMode === 'simple' ? (
                     /* Simple Timeline View */
