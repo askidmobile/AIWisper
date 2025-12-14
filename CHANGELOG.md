@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.8] - 2025-12-14
+
+### Fixed
+- **FluidAudio Diarization Not Enabling**: Исправлена критическая ошибка, когда диаризация FluidAudio не включалась ни автоматически при старте, ни по нажатию кнопки
+  - **Проблема 1**: Автовключение диаризации при старте отправляло запрос до того, как backend подтвердил загрузку модели транскрипции
+  - **Проблема 2**: Кнопка "Включить FluidAudio" отправляла неправильные поля WebSocket сообщения (`segmentationModelId` вместо `segmentationModelPath`)
+  - **Проблема 3**: Обработчики WebSocket в MainLayout не обрабатывали сообщения `diarization_enabled` и `diarization_disabled`
+  - **Решение**: 
+    - Добавлен флаг `backendModelConfirmed` в `ModelContext` для отслеживания реальной загрузки модели на backend
+    - `DiarizationContext` теперь ждёт `backendModelConfirmed` перед автовключением
+    - Исправлен `handleEnableDiarization` в `MainLayout` для отправки правильных полей
+    - Добавлены обработчики `diarization_enabled` и `diarization_disabled` в `MainLayout`
+
+### Technical
+- `frontend/src/context/ModelContext.tsx`:
+  - Добавлен state `backendModelConfirmed` для отслеживания подтверждения модели от backend
+  - Флаг устанавливается при получении `models_list` с активной моделью или `active_model_changed`
+  - Флаг сбрасывается при отключении WebSocket
+- `frontend/src/context/DiarizationContext.tsx`:
+  - Добавлена проверка `backendModelConfirmed` перед автовключением диаризации
+  - Сброс `autoEnableAttempted` при отключении WebSocket для корректного переподключения
+- `frontend/src/components/layout/MainLayout.tsx`:
+  - Исправлен `handleEnableDiarization` для отправки `segmentationModelPath`, `embeddingModelPath`, `diarizationProvider`
+  - Добавлены обработчики `diarization_enabled` и `diarization_disabled`
+  - Исправлен обработчик `diarization_status` для использования `diarizationEnabled` вместо `enabled`
+
 ## [1.41.7] - 2025-12-14
 
 ### Fixed

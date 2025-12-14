@@ -245,8 +245,21 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
         });
 
         const unsubDiarizationStatus = subscribe('diarization_status', (msg: any) => {
-            setDiarizationEnabled(msg.enabled);
-            setDiarizationProvider(msg.provider || '');
+            setDiarizationEnabled(msg.diarizationEnabled || false);
+            setDiarizationProvider(msg.diarizationProvider || '');
+            setDiarizationLoading(false);
+        });
+
+        const unsubDiarizationEnabled = subscribe('diarization_enabled', (msg: any) => {
+            setDiarizationEnabled(true);
+            setDiarizationProvider(msg.diarizationProvider || '');
+            setDiarizationLoading(false);
+            setDiarizationError(null);
+        });
+
+        const unsubDiarizationDisabled = subscribe('diarization_disabled', () => {
+            setDiarizationEnabled(false);
+            setDiarizationProvider('');
             setDiarizationLoading(false);
         });
 
@@ -260,6 +273,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             unsubSpeakerRenamed();
             unsubChunkTranscribed();
             unsubDiarizationStatus();
+            unsubDiarizationEnabled();
+            unsubDiarizationDisabled();
             unsubDiarizationError();
         };
     }, [subscribe, sendMessage]);
@@ -361,13 +376,35 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     const handleEnableDiarization = useCallback((segModelId: string, embModelId: string, provider: string) => {
         setDiarizationLoading(true);
         setDiarizationError(null);
+        
+        // Для FluidAudio (coreml) не нужны пути к моделям - они скачиваются автоматически
+        if (provider === 'coreml') {
+            sendMessage({
+                type: 'enable_diarization',
+                segmentationModelPath: '',
+                embeddingModelPath: '',
+                diarizationProvider: 'coreml',
+            });
+            return;
+        }
+        
+        // Для Sherpa-ONNX нужны пути к моделям
+        const segModel = models.find(m => m.id === segModelId);
+        const embModel = models.find(m => m.id === embModelId);
+        
+        if (!segModel?.path || !embModel?.path) {
+            setDiarizationError('Модели диаризации не найдены');
+            setDiarizationLoading(false);
+            return;
+        }
+        
         sendMessage({
             type: 'enable_diarization',
-            segmentationModelId: segModelId,
-            embeddingModelId: embModelId,
-            provider
+            segmentationModelPath: segModel.path,
+            embeddingModelPath: embModel.path,
+            diarizationProvider: provider,
         });
-    }, [sendMessage]);
+    }, [sendMessage, models]);
 
     const handleDisableDiarization = useCallback(() => {
         setDiarizationLoading(true);

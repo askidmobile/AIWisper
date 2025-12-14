@@ -47,6 +47,9 @@ const saveModelId = async (modelId: string) => {
 interface ModelContextType {
     models: ModelState[];
     activeModelId: string | null;
+    // Флаг подтверждения модели от backend (не из localStorage)
+    // Используется для ожидания реальной загрузки модели перед включением диаризации
+    backendModelConfirmed: boolean;
     ollamaModels: OllamaModel[];
     ollamaError: string | null;
     ollamaModelsLoading: boolean;
@@ -65,6 +68,8 @@ export const ModelProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const { sendMessage, subscribe, isConnected } = useWebSocketContext();
     const [models, setModels] = useState<ModelState[]>([]);
     const [activeModelId, setActiveModelId] = useState<string | null>(null);
+    // Флаг подтверждения модели от backend (не из localStorage)
+    const [backendModelConfirmed, setBackendModelConfirmed] = useState(false);
     const [ollamaModels, setOllamaModels] = useState<OllamaModel[]>([]);
     const [ollamaError, setOllamaError] = useState<string | null>(null);
     const [ollamaModelsLoading, setOllamaModelsLoading] = useState(false);
@@ -104,12 +109,21 @@ export const ModelProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
     }, [isConnected, models, sendMessage]);
 
+    // Сброс флага при отключении WebSocket
+    useEffect(() => {
+        if (!isConnected) {
+            setBackendModelConfirmed(false);
+        }
+    }, [isConnected]);
+
     // WebSocket Handlers
     useEffect(() => {
         const unsubList = subscribe('models_list', (msg) => {
             setModels(msg.models || []);
             const active = (msg.models || []).find((m: ModelState) => m.status === 'active');
             if (active) {
+                console.log('[Model] Backend confirmed active model from models_list:', active.id);
+                setBackendModelConfirmed(true);
                 setActiveModelId(active.id);
             }
         });
@@ -123,7 +137,8 @@ export const ModelProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         });
 
         const unsubActive = subscribe('active_model_changed', (msg) => {
-            console.log('[Model] Active model changed:', msg.modelId);
+            console.log('[Model] Backend confirmed active model changed:', msg.modelId);
+            setBackendModelConfirmed(true);
             setActiveModelId(msg.modelId);
             // Сохраняем в настройки
             if (msg.modelId) {
@@ -162,7 +177,7 @@ export const ModelProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     return (
         <ModelContext.Provider value={{
-            models, activeModelId, ollamaModels, ollamaError, ollamaModelsLoading,
+            models, activeModelId, backendModelConfirmed, ollamaModels, ollamaError, ollamaModelsLoading,
             downloadModel, cancelDownload, deleteModel, setActiveModel, fetchOllamaModels
         }}>
             {children}

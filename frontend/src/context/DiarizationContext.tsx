@@ -102,7 +102,7 @@ const saveDiarizationSettings = async (diarSettings: DiarizationSettings) => {
 
 export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const { sendMessage, subscribe, isConnected } = useWebSocketContext();
-    const { models, downloadModel } = useModelContext();
+    const { models, downloadModel, backendModelConfirmed, activeModelId } = useModelContext();
 
     const [status, setStatus] = useState<DiarizationStatus>({
         enabled: false,
@@ -133,10 +133,13 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
         });
     }, []);
 
-    // Запрос статуса при подключении
+    // Запрос статуса при подключении и сброс флагов при отключении
     useEffect(() => {
         if (isConnected) {
             sendMessage({ type: 'get_diarization_status' });
+        } else {
+            // Сбрасываем флаги при отключении для корректного переподключения
+            autoEnableAttempted.current = false;
         }
     }, [isConnected, sendMessage]);
 
@@ -149,7 +152,9 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
             autoEnableAttempted: autoEnableAttempted.current,
             savedSettingsEnabled: savedSettings?.enabled,
             provider: savedSettings?.provider,
-            modelsCount: models.length
+            modelsCount: models.length,
+            backendModelConfirmed,
+            activeModelId
         });
         
         if (!savedSettings.enabled) {
@@ -157,7 +162,14 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
             return;
         }
         
-        // FluidAudio (coreml) не требует моделей - они скачиваются автоматически
+        // Ждём подтверждения от backend, что модель транскрипции действительно загружена
+        // (не просто из localStorage, а реально активна на backend)
+        if (!backendModelConfirmed) {
+            console.log('[Diarization] Auto-enable waiting: backend model not confirmed yet');
+            return;
+        }
+        
+        // FluidAudio (coreml) не требует моделей диаризации - они скачиваются автоматически
         if (savedSettings.provider === 'coreml') {
             autoEnableAttempted.current = true;
             console.log('[Diarization] Auto-enabling FluidAudio (coreml)...');
@@ -219,7 +231,7 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
             embeddingModelPath: embModel.path,
             diarizationProvider: savedSettings.provider,
         });
-    }, [isConnected, savedSettings, models, sendMessage]);
+    }, [isConnected, savedSettings, models, sendMessage, backendModelConfirmed, activeModelId]);
 
     // WebSocket обработчики
     useEffect(() => {
