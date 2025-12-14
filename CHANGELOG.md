@@ -5,6 +5,116 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.41.29] - 2025-12-14
+
+### Fixed
+- **Session Title Not Syncing to Sidebar**: Название сессии теперь обновляется в списке слева после редактирования
+  - **Проблема**: После изменения названия сессии справа, в списке слева оставалось старое название
+  - **Причина**: Frontend не обрабатывал сообщение `session_title_updated` от бэкенда
+  - **Решение**: Добавлен обработчик `session_title_updated` в `SessionContext.tsx`
+
+- **Session Tags Not Syncing to Sidebar**: Теги сессии теперь синхронизируются с боковой панелью
+  - Добавлен обработчик `session_tags_updated` в `SessionContext.tsx`
+
+- **Duplicate Speakers in List**: Исправлены дубликаты спикеров (один спикер показывался несколько раз)
+  - **Проблема**: Один спикер мог быть записан как `Speaker 0` и как `Алексей Ермаков`, создавая две записи
+  - **Решение**: Улучшена логика нормализации спикеров - создаётся маппинг `localID -> recognizedName` из профилей
+
+- **Multiple Speakers Showing Play State**: Несколько спикеров больше не показывают состояние воспроизведения одновременно
+  - Исправлено автоматически после устранения дублей спикеров
+
+- **Waveform Position Not Showing for Chunk Playback**: Индикатор позиции на простом waveform теперь корректно работает
+  - **Проблема**: При воспроизведении отрезка индикатор стоял в начале (currentTime относился к чанку, не к сессии)
+  - **Решение**: Добавлен prop `isPlayingFullSession` - индикатор показывается только при воспроизведении полной сессии
+
+### Technical
+- `frontend/src/context/SessionContext.tsx`:
+  - Добавлены обработчики `session_title_updated` и `session_tags_updated`
+- `backend/internal/api/server.go`:
+  - Улучшена функция `computeSessionSpeakers()` с маппингом `localIDToName` и `nameToLocalID`
+- `frontend/src/components/modules/SessionControls.tsx`:
+  - Добавлен prop `isPlayingFullSession` для корректного отображения прогресса
+- `frontend/src/components/modules/TranscriptionView.tsx`:
+  - Передача `isPlayingFullSession` в SessionControls
+- `frontend/src/components/layout/MainLayout.tsx`:
+  - Вычисление `isPlayingFullSession` по наличию `/full.mp3` в URL
+
+## [1.41.28] - 2025-12-14
+
+### Fixed
+- **Ghost Speakers Filtered**: Спикеры с длительностью < 1.5 сек теперь скрываются из списка
+  - Это убирает артефакты диаризации и остатки после merge операций
+  - Добавлено логирование отфильтрованных спикеров
+
+### Technical
+- `backend/internal/api/server.go`:
+  - Добавлена фильтрация спикеров с `TotalDuration < 1.5` в `computeSessionSpeakers()`
+
+## [1.41.27] - 2025-12-14
+
+### Fixed
+- **Tooltip Position Auto-Correction**: Тултипы автоматически корректируют позицию при выходе за границы окна
+  - **Проблема**: Тултип "Словарь подсказок" выходил за левую границу окна настроек
+  - **Решение**: Добавлена автоматическая коррекция позиции в `HelpTooltip.tsx`
+
+### Technical
+- `frontend/src/components/common/HelpTooltip.tsx`:
+  - Добавлен `useEffect` для коррекции позиции при выходе за viewport
+  - Применяется `adjustedPosition` к стилям тултипа
+
+## [1.41.26] - 2025-12-14
+
+### Improved
+- **Tags UI Polish**: Теги сессии теперь отображаются компактнее
+  - Теги перемещены на одну строку с датой (через разделитель •)
+  - Стилизованы как компактные бейджи (меньший шрифт, padding, скруглённые углы)
+  - Убран символ # перед тегами для компактности
+
+### Technical
+- `frontend/src/components/modules/SessionControls.tsx`:
+  - Объединены дата и теги в один flex-контейнер
+  - Обновлены стили тегов для компактного отображения
+
+## [1.41.25] - 2025-12-14
+
+### Added
+- **Session Title Editing**: Возможность редактирования названия сессии
+  - Клик по названию открывает inline-редактор
+  - Enter для сохранения, Escape для отмены
+  - Синхронизация с бэкендом через WebSocket
+
+- **Session Tags**: Теги для категоризации сессий
+  - Кнопка "+ Добавить тег" для добавления новых тегов
+  - Теги отображаются как бейджи с кнопкой удаления
+  - Сохранение в meta.json сессии
+
+### Technical
+- `backend/session/types.go`: Добавлено поле `Tags []string` в Session
+- `backend/session/manager.go`: Методы `SetSessionTags`, `AddSessionTag`, `RemoveSessionTag`
+- `backend/internal/api/server.go`: WebSocket handlers для тегов
+- `frontend/src/components/modules/SessionControls.tsx`: UI для редактирования названия и тегов
+
+## [1.41.24] - 2025-12-14
+
+### Fixed
+- **Duplicate Speakers After Merge**: Исправлено появление дубликатов спикеров после объединения
+  - **Проблема**: После merge спикеров в списке появлялись дубликаты
+  - **Решение**: Включение имён целевых спикеров в операцию переименования
+
+## [1.41.23] - 2025-12-14
+
+### Added
+- **Merge Speakers Feature**: Возможность объединения нескольких спикеров в одного
+  - Режим выбора спикеров с чекбоксами
+  - Диалог объединения с выбором основного спикера
+  - Опция усреднения голосовых отпечатков
+  - Опция сохранения как voiceprint
+
+### Technical
+- `backend/session/manager.go`: Метод `MergeSpeakers()`
+- `backend/internal/service/transcription.go`: `MergeSpeakerProfiles()` с усреднением embeddings
+- `frontend/src/components/modules/SpeakersTab.tsx`: UI для выбора и объединения спикеров
+
 ## [1.41.22] - 2025-12-14
 
 ### Fixed
