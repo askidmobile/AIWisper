@@ -81,7 +81,7 @@ export const HybridTranscriptionSettingsPanel: React.FC<HybridTranscriptionSetti
                     <span style={{ fontSize: '0.9rem', fontWeight: 500 }}>
                         🔄 Улучшенное распознавание
                     </span>
-                    <HelpTooltip title="Гибридная транскрипция" maxWidth={450}>
+                    <HelpTooltip title="Гибридная транскрипция" maxWidth={520}>
                         <HybridTranscriptionHelp />
                     </HelpTooltip>
                 </div>

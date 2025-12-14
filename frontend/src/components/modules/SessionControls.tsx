@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import { Session } from '../../types/session';
 import { useExport } from '../../hooks/useExport';
 import { useSessionContext } from '../../context/SessionContext';
+import { useWebSocketContext } from '../../context/WebSocketContext';
 import WaveformDisplay from '../WaveformDisplay';
 import { WaveformData } from '../../utils/waveform';
 
@@ -41,6 +42,16 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
     const [showExportMenu, setShowExportMenu] = useState(false);
     const [copySuccess, setCopySuccess] = useState(false);
     
+    // Title editing state
+    const [isEditingTitle, setIsEditingTitle] = useState(false);
+    const [editedTitle, setEditedTitle] = useState(session.title || '');
+    
+    // Tags editing state
+    const [showTagsEditor, setShowTagsEditor] = useState(false);
+    const [newTag, setNewTag] = useState('');
+    
+    const { sendMessage } = useWebSocketContext();
+    
     // Full retranscription state from context
     const {
         isFullTranscribing,
@@ -51,6 +62,11 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
         cancelFullTranscription,
         isRecording,
     } = useSessionContext();
+    
+    // Update edited title when session changes
+    useEffect(() => {
+        setEditedTitle(session.title || '');
+    }, [session.title]);
     
     // Check if this session is being retranscribed
     const isThisSessionTranscribing = isFullTranscribing && fullTranscriptionSessionId === session.id;
@@ -106,6 +122,44 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
     };
 
     const progress = displayDuration > 0 ? (currentTime / displayDuration) * 100 : 0;
+    
+    // Title handlers
+    const handleSaveTitle = () => {
+        if (editedTitle.trim() && editedTitle !== session.title) {
+            sendMessage({
+                type: 'update_session_title',
+                sessionId: session.id,
+                title: editedTitle.trim(),
+            });
+        }
+        setIsEditingTitle(false);
+    };
+    
+    const handleCancelTitleEdit = () => {
+        setEditedTitle(session.title || '');
+        setIsEditingTitle(false);
+    };
+    
+    // Tags handlers
+    const handleAddTag = () => {
+        const tag = newTag.trim();
+        if (tag && !session.tags?.includes(tag)) {
+            sendMessage({
+                type: 'add_session_tag',
+                sessionId: session.id,
+                tag,
+            });
+            setNewTag('');
+        }
+    };
+    
+    const handleRemoveTag = (tag: string) => {
+        sendMessage({
+            type: 'remove_session_tag',
+            sessionId: session.id,
+            tag,
+        });
+    };
 
     return (
         <div
@@ -120,27 +174,103 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                 border: '1px solid var(--glass-border)',
             }}
         >
-            {/* Session Title & Tag */}
+            {/* Session Title & Tags */}
             <div
                 style={{
                     display: 'flex',
                     justifyContent: 'space-between',
                     alignItems: 'flex-start',
                     marginBottom: '1rem',
+                    gap: '1rem',
                 }}
             >
-                <div>
-                    <h3
-                        style={{
-                            margin: 0,
-                            fontSize: '1.1rem',
-                            fontWeight: 'var(--font-weight-semibold)',
-                            color: 'var(--text-primary)',
-                            marginBottom: '0.25rem',
-                        }}
-                    >
-                        {session.title || 'Запись без названия'}
-                    </h3>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                    {/* Editable Title */}
+                    {isEditingTitle ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                            <input
+                                type="text"
+                                value={editedTitle}
+                                onChange={(e) => setEditedTitle(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleSaveTitle();
+                                    if (e.key === 'Escape') handleCancelTitleEdit();
+                                }}
+                                autoFocus
+                                style={{
+                                    flex: 1,
+                                    padding: '0.4rem 0.6rem',
+                                    fontSize: '1.1rem',
+                                    fontWeight: 600,
+                                    background: 'var(--glass-bg)',
+                                    border: '1px solid var(--primary)',
+                                    borderRadius: '8px',
+                                    color: 'var(--text-primary)',
+                                    outline: 'none',
+                                }}
+                            />
+                            <button
+                                onClick={handleSaveTitle}
+                                style={{
+                                    padding: '0.4rem',
+                                    background: 'var(--primary)',
+                                    border: 'none',
+                                    borderRadius: '6px',
+                                    color: 'white',
+                                    cursor: 'pointer',
+                                }}
+                                title="Сохранить"
+                            >
+                                ✓
+                            </button>
+                            <button
+                                onClick={handleCancelTitleEdit}
+                                style={{
+                                    padding: '0.4rem',
+                                    background: 'var(--glass-bg)',
+                                    border: '1px solid var(--border)',
+                                    borderRadius: '6px',
+                                    color: 'var(--text-muted)',
+                                    cursor: 'pointer',
+                                }}
+                                title="Отмена"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                    ) : (
+                        <h3
+                            onClick={() => setIsEditingTitle(true)}
+                            style={{
+                                margin: 0,
+                                fontSize: '1.1rem',
+                                fontWeight: 'var(--font-weight-semibold)',
+                                color: 'var(--text-primary)',
+                                marginBottom: '0.25rem',
+                                cursor: 'pointer',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.5rem',
+                            }}
+                            title="Нажмите для редактирования"
+                        >
+                            {session.title || 'Запись без названия'}
+                            <svg
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                style={{ opacity: 0.4 }}
+                            >
+                                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                            </svg>
+                        </h3>
+                    )}
+                    
+                    {/* Date */}
                     <span
                         style={{
                             fontSize: '0.8rem',
@@ -154,28 +284,140 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                             minute: '2-digit',
                         }) : 'Дата неизвестна'}
                     </span>
+                    
+                    {/* Tags Display */}
+                    {session.tags && session.tags.length > 0 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', marginTop: '0.5rem' }}>
+                            {session.tags.map((tag) => (
+                                <span
+                                    key={tag}
+                                    style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '0.3rem',
+                                        padding: '0.2rem 0.5rem',
+                                        fontSize: '0.75rem',
+                                        background: 'var(--primary-alpha)',
+                                        color: 'var(--primary)',
+                                        borderRadius: '999px',
+                                        border: '1px solid var(--primary-alpha)',
+                                    }}
+                                >
+                                    #{tag}
+                                    <button
+                                        onClick={() => handleRemoveTag(tag)}
+                                        style={{
+                                            background: 'none',
+                                            border: 'none',
+                                            padding: 0,
+                                            cursor: 'pointer',
+                                            color: 'var(--primary)',
+                                            fontSize: '0.7rem',
+                                            lineHeight: 1,
+                                            opacity: 0.7,
+                                        }}
+                                        title="Удалить тег"
+                                    >
+                                        ✕
+                                    </button>
+                                </span>
+                            ))}
+                        </div>
+                    )}
                 </div>
-                <button
-                    className="btn-capsule"
-                    style={{
-                        padding: '0.35rem 0.75rem',
-                        fontSize: '0.8rem',
-                        gap: '0.3rem',
-                    }}
-                >
-                    <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                    >
-                        <line x1="12" y1="5" x2="12" y2="19" />
-                        <line x1="5" y1="12" x2="19" y2="12" />
-                    </svg>
-                    Добавить тег
-                </button>
+                
+                {/* Add Tag Button/Input */}
+                <div style={{ position: 'relative' }}>
+                    {showTagsEditor ? (
+                        <div
+                            style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '0.4rem',
+                            }}
+                        >
+                            <input
+                                type="text"
+                                value={newTag}
+                                onChange={(e) => setNewTag(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleAddTag();
+                                    if (e.key === 'Escape') {
+                                        setShowTagsEditor(false);
+                                        setNewTag('');
+                                    }
+                                }}
+                                placeholder="Новый тег..."
+                                autoFocus
+                                style={{
+                                    width: '120px',
+                                    padding: '0.35rem 0.6rem',
+                                    fontSize: '0.8rem',
+                                    background: 'var(--glass-bg)',
+                                    border: '1px solid var(--primary)',
+                                    borderRadius: '8px',
+                                    color: 'var(--text-primary)',
+                                    outline: 'none',
+                                }}
+                            />
+                            <button
+                                onClick={handleAddTag}
+                                disabled={!newTag.trim()}
+                                style={{
+                                    padding: '0.35rem 0.5rem',
+                                    background: newTag.trim() ? 'var(--primary)' : 'var(--glass-bg)',
+                                    border: 'none',
+                                    borderRadius: '6px',
+                                    color: newTag.trim() ? 'white' : 'var(--text-muted)',
+                                    cursor: newTag.trim() ? 'pointer' : 'not-allowed',
+                                    fontSize: '0.8rem',
+                                }}
+                            >
+                                +
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setShowTagsEditor(false);
+                                    setNewTag('');
+                                }}
+                                style={{
+                                    padding: '0.35rem 0.5rem',
+                                    background: 'var(--glass-bg)',
+                                    border: '1px solid var(--border)',
+                                    borderRadius: '6px',
+                                    color: 'var(--text-muted)',
+                                    cursor: 'pointer',
+                                    fontSize: '0.8rem',
+                                }}
+                            >
+                                ✕
+                            </button>
+                        </div>
+                    ) : (
+                        <button
+                            className="btn-capsule"
+                            onClick={() => setShowTagsEditor(true)}
+                            style={{
+                                padding: '0.35rem 0.75rem',
+                                fontSize: '0.8rem',
+                                gap: '0.3rem',
+                            }}
+                        >
+                            <svg
+                                width="12"
+                                height="12"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                            >
+                                <line x1="12" y1="5" x2="12" y2="19" />
+                                <line x1="5" y1="12" x2="19" y2="12" />
+                            </svg>
+                            Добавить тег
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Playback Controls */}

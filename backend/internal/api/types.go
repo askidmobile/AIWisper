@@ -104,6 +104,11 @@ type Message struct {
 	SearchQuery   string              `json:"searchQuery,omitempty"`   // Текстовый поиск
 	SearchResults []SearchSessionInfo `json:"searchResults,omitempty"` // Результаты поиска
 	TotalCount    int                 `json:"totalCount,omitempty"`    // Всего найдено
+
+	// Session metadata (title, tags)
+	Title string   `json:"title,omitempty"` // Название сессии
+	Tags  []string `json:"tags,omitempty"`  // Теги сессии
+	Tag   string   `json:"tag,omitempty"`   // Отдельный тег (для add/remove)
 }
 
 type OllamaModel struct {

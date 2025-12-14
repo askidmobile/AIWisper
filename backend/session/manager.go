@@ -212,6 +212,81 @@ func (m *Manager) SetSessionTitle(id string, title string) error {
 	return nil
 }
 
+// SetSessionTags устанавливает теги сессии
+func (m *Manager) SetSessionTags(id string, tags []string) error {
+	m.mu.Lock()
+	session, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	session.Tags = tags
+	m.mu.Unlock()
+
+	// Сохраняем метаданные (SaveSessionMeta использует свой лок)
+	if err := m.SaveSessionMeta(session); err != nil {
+		return fmt.Errorf("failed to save session meta: %w", err)
+	}
+
+	return nil
+}
+
+// AddSessionTag добавляет тег к сессии (если его ещё нет)
+func (m *Manager) AddSessionTag(id string, tag string) error {
+	m.mu.Lock()
+	session, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	// Проверяем, нет ли уже такого тега
+	for _, t := range session.Tags {
+		if t == tag {
+			m.mu.Unlock()
+			return nil // Тег уже есть
+		}
+	}
+
+	session.Tags = append(session.Tags, tag)
+	m.mu.Unlock()
+
+	// Сохраняем метаданные
+	if err := m.SaveSessionMeta(session); err != nil {
+		return fmt.Errorf("failed to save session meta: %w", err)
+	}
+
+	return nil
+}
+
+// RemoveSessionTag удаляет тег из сессии
+func (m *Manager) RemoveSessionTag(id string, tag string) error {
+	m.mu.Lock()
+	session, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("session not found: %s", id)
+	}
+
+	// Ищем и удаляем тег
+	newTags := make([]string, 0, len(session.Tags))
+	for _, t := range session.Tags {
+		if t != tag {
+			newTags = append(newTags, t)
+		}
+	}
+	session.Tags = newTags
+	m.mu.Unlock()
+
+	// Сохраняем метаданные
+	if err := m.SaveSessionMeta(session); err != nil {
+		return fmt.Errorf("failed to save session meta: %w", err)
+	}
+
+	return nil
+}
+
 // DeleteSession удаляет сессию и её файлы
 func (m *Manager) DeleteSession(id string) error {
 	m.mu.Lock()
@@ -1140,6 +1215,7 @@ func (m *Manager) LoadSessions() error {
 			Language      string        `json:"language"`
 			Model         string        `json:"model"`
 			Title         string        `json:"title,omitempty"`
+			Tags          []string      `json:"tags,omitempty"`
 			TotalDuration int64         `json:"totalDuration"` // миллисекунды!
 			SampleCount   int64         `json:"sampleCount"`
 			Waveform      *WaveformData `json:"waveform,omitempty"`
@@ -1156,6 +1232,7 @@ func (m *Manager) LoadSessions() error {
 			Language:      meta.Language,
 			Model:         meta.Model,
 			Title:         meta.Title,
+			Tags:          meta.Tags,
 			TotalDuration: time.Duration(meta.TotalDuration) * time.Millisecond, // конвертируем из мс
 			SampleCount:   meta.SampleCount,
 			Waveform:      meta.Waveform,
@@ -1224,6 +1301,7 @@ func (m *Manager) SaveSessionMeta(s *Session) error {
 		Language      string        `json:"language"`
 		Model         string        `json:"model"`
 		Title         string        `json:"title,omitempty"`
+		Tags          []string      `json:"tags,omitempty"`
 		TotalDuration int64         `json:"totalDuration"`
 		SampleCount   int64         `json:"sampleCount"`
 		ChunksCount   int           `json:"chunksCount"`
@@ -1236,6 +1314,7 @@ func (m *Manager) SaveSessionMeta(s *Session) error {
 		Language:      s.Language,
 		Model:         s.Model,
 		Title:         s.Title,
+		Tags:          s.Tags,
 		TotalDuration: int64(s.TotalDuration / time.Millisecond),
 		SampleCount:   s.SampleCount,
 		ChunksCount:   len(s.Chunks),

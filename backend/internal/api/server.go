@@ -1494,6 +1494,94 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 		s.broadcast(Message{Type: "session_speakers", SessionID: msg.SessionID, SessionSpeakers: speakers})
 
 		log.Printf("merge_speakers: completed, merged %d segments", mergedCount)
+
+	case "update_session_title":
+		// Обновление названия сессии
+		if msg.SessionID == "" {
+			send(Message{Type: "error", Data: "sessionId is required"})
+			return
+		}
+		if msg.Title == "" {
+			send(Message{Type: "error", Data: "title is required"})
+			return
+		}
+
+		if err := s.SessionMgr.SetSessionTitle(msg.SessionID, msg.Title); err != nil {
+			send(Message{Type: "error", Data: err.Error()})
+			return
+		}
+
+		log.Printf("update_session_title: session=%s, title=%s", msg.SessionID[:8], msg.Title)
+
+		// Отправляем подтверждение
+		send(Message{Type: "session_title_updated", SessionID: msg.SessionID, Title: msg.Title})
+
+		// Обновляем сессию для всех клиентов
+		if updatedSess, err := s.SessionMgr.GetSession(msg.SessionID); err == nil {
+			s.broadcast(Message{Type: "session_details", Session: updatedSess})
+		}
+
+	case "update_session_tags":
+		// Обновление тегов сессии (полная замена)
+		if msg.SessionID == "" {
+			send(Message{Type: "error", Data: "sessionId is required"})
+			return
+		}
+
+		if err := s.SessionMgr.SetSessionTags(msg.SessionID, msg.Tags); err != nil {
+			send(Message{Type: "error", Data: err.Error()})
+			return
+		}
+
+		log.Printf("update_session_tags: session=%s, tags=%v", msg.SessionID[:8], msg.Tags)
+
+		// Отправляем подтверждение
+		send(Message{Type: "session_tags_updated", SessionID: msg.SessionID, Tags: msg.Tags})
+
+		// Обновляем сессию для всех клиентов
+		if updatedSess, err := s.SessionMgr.GetSession(msg.SessionID); err == nil {
+			s.broadcast(Message{Type: "session_details", Session: updatedSess})
+		}
+
+	case "add_session_tag":
+		// Добавление одного тега
+		if msg.SessionID == "" || msg.Tag == "" {
+			send(Message{Type: "error", Data: "sessionId and tag are required"})
+			return
+		}
+
+		if err := s.SessionMgr.AddSessionTag(msg.SessionID, msg.Tag); err != nil {
+			send(Message{Type: "error", Data: err.Error()})
+			return
+		}
+
+		log.Printf("add_session_tag: session=%s, tag=%s", msg.SessionID[:8], msg.Tag)
+
+		// Получаем обновлённую сессию
+		if updatedSess, err := s.SessionMgr.GetSession(msg.SessionID); err == nil {
+			send(Message{Type: "session_tags_updated", SessionID: msg.SessionID, Tags: updatedSess.Tags})
+			s.broadcast(Message{Type: "session_details", Session: updatedSess})
+		}
+
+	case "remove_session_tag":
+		// Удаление одного тега
+		if msg.SessionID == "" || msg.Tag == "" {
+			send(Message{Type: "error", Data: "sessionId and tag are required"})
+			return
+		}
+
+		if err := s.SessionMgr.RemoveSessionTag(msg.SessionID, msg.Tag); err != nil {
+			send(Message{Type: "error", Data: err.Error()})
+			return
+		}
+
+		log.Printf("remove_session_tag: session=%s, tag=%s", msg.SessionID[:8], msg.Tag)
+
+		// Получаем обновлённую сессию
+		if updatedSess, err := s.SessionMgr.GetSession(msg.SessionID); err == nil {
+			send(Message{Type: "session_tags_updated", SessionID: msg.SessionID, Tags: updatedSess.Tags})
+			s.broadcast(Message{Type: "session_details", Session: updatedSess})
+		}
 	}
 }
 

@@ -143,12 +143,15 @@ export const HelpTooltip: React.FC<HelpTooltipProps> = ({
                 >
                     <div
                         style={{
-                            background: 'var(--surface-strong)',
-                            border: '1px solid var(--border)',
-                            borderRadius: '12px',
-                            padding: '16px',
+                            background: 'rgba(30, 30, 35, 0.85)',
+                            backdropFilter: 'blur(24px) saturate(180%)',
+                            WebkitBackdropFilter: 'blur(24px) saturate(180%)',
+                            border: '1px solid rgba(255, 255, 255, 0.12)',
+                            borderRadius: '16px',
+                            padding: '16px 20px',
                             maxWidth: `${maxWidth}px`,
-                            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.3)',
+                            minWidth: '320px',
+                            boxShadow: '0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08)',
                             animation: 'fadeIn 0.2s ease',
                         }}
                     >
@@ -159,15 +162,15 @@ export const HelpTooltip: React.FC<HelpTooltipProps> = ({
                                 justifyContent: 'space-between',
                                 alignItems: 'center',
                                 marginBottom: '12px',
-                                paddingBottom: '8px',
-                                borderBottom: '1px solid var(--border)',
+                                paddingBottom: '10px',
+                                borderBottom: '1px solid rgba(255, 255, 255, 0.08)',
                             }}
                         >
                             <span
                                 style={{
-                                    fontSize: '0.95rem',
+                                    fontSize: '1rem',
                                     fontWeight: 600,
-                                    color: 'var(--text-primary)',
+                                    color: 'rgba(255, 255, 255, 0.95)',
                                 }}
                             >
                                 {title}
@@ -175,26 +178,36 @@ export const HelpTooltip: React.FC<HelpTooltipProps> = ({
                             <button
                                 onClick={() => setIsOpen(false)}
                                 style={{
-                                    background: 'transparent',
+                                    background: 'rgba(255, 255, 255, 0.1)',
                                     border: 'none',
-                                    color: 'var(--text-muted)',
+                                    color: 'rgba(255, 255, 255, 0.6)',
                                     cursor: 'pointer',
-                                    fontSize: '18px',
-                                    padding: '0 4px',
+                                    fontSize: '16px',
+                                    padding: '4px 8px',
                                     lineHeight: 1,
+                                    borderRadius: '6px',
+                                    transition: 'all 0.15s ease',
+                                }}
+                                onMouseEnter={(e) => {
+                                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.15)';
+                                    e.currentTarget.style.color = 'rgba(255, 255, 255, 0.9)';
+                                }}
+                                onMouseLeave={(e) => {
+                                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.1)';
+                                    e.currentTarget.style.color = 'rgba(255, 255, 255, 0.6)';
                                 }}
                                 aria-label="Закрыть"
                             >
-                                &times;
+                                ✕
                             </button>
                         </div>
 
                         {/* Контент */}
                         <div
                             style={{
-                                fontSize: '0.85rem',
-                                color: 'var(--text-secondary)',
-                                lineHeight: 1.6,
+                                fontSize: '0.875rem',
+                                color: 'rgba(255, 255, 255, 0.8)',
+                                lineHeight: 1.7,
                             }}
                         >
                             {children}

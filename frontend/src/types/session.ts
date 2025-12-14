@@ -53,6 +53,7 @@ export interface Session {
     dataDir: string;
     totalDuration: number;
     title?: string;
+    tags?: string[];   // User-defined tags for categorization
     summary?: string;
     language?: string;
     model?: string;

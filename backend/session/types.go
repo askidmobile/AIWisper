@@ -44,6 +44,7 @@ type Session struct {
 	Language      string        `json:"language"`
 	Model         string        `json:"model"`
 	Title         string        `json:"title,omitempty"`
+	Tags          []string      `json:"tags,omitempty"` // User-defined tags for categorization
 	DataDir       string        `json:"dataDir"`
 	TotalDuration time.Duration `json:"totalDuration"`
 	SampleCount   int64         `json:"sampleCount"`
