@@ -373,7 +373,7 @@ export default function ModelManager({
                 display: 'flex',
                 justifyContent: 'center',
                 alignItems: 'center',
-                zIndex: 1000
+                zIndex: 1100
             }}
             onClick={onClose}
         >

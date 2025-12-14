@@ -512,7 +512,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                     display: 'block',
                                 }}
                             >
-                                Whisper модель
+                                Модель для транскрибации
                             </label>
                             <div
                                 style={{
@@ -532,7 +532,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             onClick={onShowModelManager}
                             style={{ padding: '0.6rem 1rem' }}
                         >
-                            Управление
+                            Выбрать
                         </button>
                     </div>
 
