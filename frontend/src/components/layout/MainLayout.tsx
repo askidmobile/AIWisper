@@ -3,7 +3,7 @@ import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { SettingsModal } from '../SettingsModal';
 import { TranscriptionView } from '../modules/TranscriptionView';
-import { ConsoleFooter } from '../modules/ConsoleFooter';
+
 import { RecordingOverlay } from '../RecordingOverlay';
 import { HelpModal } from '../HelpModal';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
@@ -22,14 +22,13 @@ import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData, computeWaveform } from '../../utils/waveform';
 
 // Версия приложения из package.json
-const APP_VERSION = '1.41.5';
+const APP_VERSION = '1.41.6';
 
 interface MainLayoutProps {
-    logs: string[];
     addLog: (msg: string) => void;
 }
 
-export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
+export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     const API_BASE = `http://localhost:${process.env.AIWISPER_HTTP_PORT || 18080}`;
     
     // Контексты
@@ -754,9 +753,6 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ logs, addLog }) => {
                     </div>
                 </div>
             </div>
-
-            {/* Console Footer */}
-            <ConsoleFooter logs={logs} />
 
             {/* Model Manager Modal */}
             {showModelManager && (

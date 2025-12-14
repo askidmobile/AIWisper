@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useCallback } from 'react';
 import { WebSocketProvider } from './context/WebSocketContext';
 import { SessionProvider } from './context/SessionContext';
 import { ModelProvider } from './context/ModelContext';
@@ -20,11 +20,9 @@ import { MainLayout } from './components/layout/MainLayout';
  * 6. AudioProvider - VU-метры и звуковые сигналы
  */
 export const AppWithProviders: React.FC = () => {
-    const [logs, setLogs] = useState<string[]>([]);
-
+    // Логирование в консоль разработчика (без UI консоли)
     const addLog = useCallback((msg: string) => {
-        const time = new Date().toLocaleTimeString();
-        setLogs(prev => [`[${time}] ${msg}`, ...prev].slice(0, 100));
+        console.log(`[AIWisper] ${msg}`);
     }, []);
 
     return (
@@ -34,7 +32,7 @@ export const AppWithProviders: React.FC = () => {
                     <SettingsProvider>
                         <DiarizationProvider>
                             <AudioProvider>
-                                <MainLayout logs={logs} addLog={addLog} />
+                                <MainLayout addLog={addLog} />
                             </AudioProvider>
                         </DiarizationProvider>
                     </SettingsProvider>

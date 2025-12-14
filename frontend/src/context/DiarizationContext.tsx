@@ -3,8 +3,12 @@ import { useWebSocketContext } from './WebSocketContext';
 import { useModelContext } from './ModelContext';
 import { DiarizationStatus, ModelState } from '../types/models';
 
-// Ключ для localStorage
-const DIARIZATION_SETTINGS_KEY = 'aiwisper_diarization';
+// Electron IPC для настроек
+const electron = typeof window !== 'undefined' && (window as any).require ? (window as any).require('electron') : null;
+const ipcRenderer = electron?.ipcRenderer;
+
+// Ключ для localStorage (fallback)
+const SETTINGS_KEY = 'aiwisper_settings';
 
 interface DiarizationSettings {
     enabled: boolean;
@@ -34,12 +38,27 @@ interface DiarizationContextType {
 
 const DiarizationContext = createContext<DiarizationContextType | null>(null);
 
-// Загрузка настроек из localStorage
-const loadSettings = (): DiarizationSettings | null => {
+// Загрузка настроек диаризации из общих настроек приложения
+const loadDiarizationSettings = async (): Promise<DiarizationSettings | null> => {
     try {
-        const saved = localStorage.getItem(DIARIZATION_SETTINGS_KEY);
-        if (saved) {
-            return JSON.parse(saved);
+        let settings: any = null;
+        
+        if (ipcRenderer) {
+            settings = await ipcRenderer.invoke('load-settings');
+        } else {
+            const saved = localStorage.getItem(SETTINGS_KEY);
+            if (saved) {
+                settings = JSON.parse(saved);
+            }
+        }
+        
+        if (settings && settings.diarizationEnabled !== undefined) {
+            return {
+                enabled: settings.diarizationEnabled,
+                segModelId: settings.diarizationSegModelId || '',
+                embModelId: settings.diarizationEmbModelId || '',
+                provider: settings.diarizationProvider || 'auto',
+            };
         }
     } catch (e) {
         console.error('Failed to load diarization settings:', e);
@@ -47,10 +66,35 @@ const loadSettings = (): DiarizationSettings | null => {
     return null;
 };
 
-// Сохранение настроек в localStorage
-const saveSettings = (settings: DiarizationSettings) => {
+// Сохранение настроек диаризации в общие настройки приложения
+const saveDiarizationSettings = async (diarSettings: DiarizationSettings) => {
     try {
-        localStorage.setItem(DIARIZATION_SETTINGS_KEY, JSON.stringify(settings));
+        let currentSettings: any = {};
+        
+        if (ipcRenderer) {
+            currentSettings = await ipcRenderer.invoke('load-settings') || {};
+            const updated = {
+                ...currentSettings,
+                diarizationEnabled: diarSettings.enabled,
+                diarizationSegModelId: diarSettings.segModelId,
+                diarizationEmbModelId: diarSettings.embModelId,
+                diarizationProvider: diarSettings.provider,
+            };
+            await ipcRenderer.invoke('save-settings', updated);
+        } else {
+            const saved = localStorage.getItem(SETTINGS_KEY);
+            if (saved) {
+                currentSettings = JSON.parse(saved);
+            }
+            const updated = {
+                ...currentSettings,
+                diarizationEnabled: diarSettings.enabled,
+                diarizationSegModelId: diarSettings.segModelId,
+                diarizationEmbModelId: diarSettings.embModelId,
+                diarizationProvider: diarSettings.provider,
+            };
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify(updated));
+        }
     } catch (e) {
         console.error('Failed to save diarization settings:', e);
     }
@@ -66,8 +110,9 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
     });
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [savedSettings, setSavedSettings] = useState<DiarizationSettings | null>(loadSettings);
+    const [savedSettings, setSavedSettings] = useState<DiarizationSettings | null>(null);
     const autoEnableAttempted = useRef(false);
+    const settingsLoaded = useRef(false);
 
     // Фильтруем модели диаризации
     const segmentationModels = models.filter(
@@ -76,6 +121,17 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const embeddingModels = models.filter(
         (m) => m.engine === 'diarization' && m.diarizationType === 'embedding'
     );
+
+    // Загрузка настроек при старте
+    useEffect(() => {
+        if (settingsLoaded.current) return;
+        settingsLoaded.current = true;
+        
+        loadDiarizationSettings().then(settings => {
+            console.log('[Diarization] Loaded settings:', settings);
+            setSavedSettings(settings);
+        });
+    }, []);
 
     // Запрос статуса при подключении
     useEffect(() => {
@@ -86,7 +142,8 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     // Автоматическое включение диаризации при старте, если была включена
     useEffect(() => {
-        // Детальная диагностика
+        if (!isConnected || autoEnableAttempted.current || !savedSettings) return;
+        
         console.log('[Diarization] Auto-enable check:', {
             isConnected,
             autoEnableAttempted: autoEnableAttempted.current,
@@ -94,8 +151,7 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
             modelsCount: models.length
         });
         
-        if (!isConnected || autoEnableAttempted.current) return;
-        if (!savedSettings?.enabled) {
+        if (!savedSettings.enabled) {
             console.log('[Diarization] Auto-enable skipped: savedSettings.enabled is false');
             return;
         }
@@ -217,14 +273,14 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
             setIsLoading(true);
             setError(null);
             
-            // Сохраняем настройки в localStorage
+            // Сохраняем настройки
             const settings: DiarizationSettings = {
                 enabled: true,
                 segModelId,
                 embModelId,
                 provider,
             };
-            saveSettings(settings);
+            saveDiarizationSettings(settings);
             setSavedSettings(settings);
 
             sendMessage({
@@ -246,7 +302,7 @@ export const DiarizationProvider: React.FC<{ children: React.ReactNode }> = ({ c
                 ...savedSettings,
                 enabled: false,
             };
-            saveSettings(settings);
+            saveDiarizationSettings(settings);
             setSavedSettings(settings);
         }
         
