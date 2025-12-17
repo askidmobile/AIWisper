@@ -415,7 +415,7 @@ fn recording_thread(
 
     // Emit session_started event with full session info
     let _ = app_handle.emit(
-        "session-started",
+        "session_started",
         serde_json::json!({
             "sessionId": session_id.clone(),
             "session": {
@@ -624,7 +624,7 @@ fn recording_thread(
         }
 
         let _ = app_handle.emit(
-            "audio-level",
+            "audio_level",
             serde_json::json!({
                 "micLevel": mic_level,
                 "sysLevel": sys_level,
@@ -746,7 +746,7 @@ fn recording_thread(
 
     // Emit session_stopped event
     let _ = app_handle.emit(
-        "session-stopped",
+        "session_stopped",
         serde_json::json!({
             "sessionId": session_id,
         }),

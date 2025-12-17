@@ -78,20 +78,27 @@ const EVENT_TO_MESSAGE: Record<string, string> = {
     'transcript-segment': 'chunk_transcribed',
     'recording-state': 'audio_level',
     'audio-level': 'audio_level',
+    'audio_level': 'audio_level',
     'session-started': 'session_started',
     'session-stopped': 'session_stopped',
+    'session_started': 'session_started',
+    'session_stopped': 'session_stopped',
     'model-download-progress': 'model_download_progress',
     'model-loading': 'model_loading',
     'model-loaded': 'model_loaded',
     'model-load-error': 'model_load_error',
     'active-model-changed': 'active_model_changed',
     'error': 'error',
+    // Chunk events
+    'chunk_created': 'chunk_created',
+    'chunk_transcribed': 'chunk_transcribed',
+    'chunk_transcribing': 'chunk_transcribing',
     // Retranscription events
     'full_transcription_started': 'full_transcription_started',
     'full_transcription_progress': 'full_transcription_progress',
     'full_transcription_completed': 'full_transcription_completed',
     'full_transcription_cancelled': 'full_transcription_cancelled',
-    'chunk_transcribed': 'chunk_transcribed',
+    'full_transcription_error': 'full_transcription_error',
     // Summary events
     'summary_started': 'summary_started',
     'summary_completed': 'summary_completed',
@@ -272,10 +279,12 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             // Map result back to WebSocket response format
             switch (msgType) {
                 case 'start_session':
-                    notify('session_started', { session: result });
+                    // Session started event is emitted from backend via Tauri events
+                    // Don't notify here - wait for the event
                     break;
                 case 'stop_session':
-                    notify('session_stopped', { session: result });
+                    // Session stopped event is emitted from backend via Tauri events
+                    // Don't notify here - wait for the event
                     break;
                 case 'get_sessions':
                     notify('sessions_list', { sessions: result });

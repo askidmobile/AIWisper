@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.12] - 2025-01-28
+
+### Fixed
+- **Real-time Transcription Not Showing**: Fixed Tauri event naming mismatch (kebab-case → snake_case)
+  - `session-started` → `session_started`
+  - `session-stopped` → `session_stopped`  
+  - `audio-level` → `audio_level`
+  
+- **Missing Chunk Events**: Added missing event mappings in TauriContext
+  - Added `chunk_created`, `chunk_transcribing`, `full_transcription_error` to EVENT_TO_MESSAGE
+  
+- **Session Not Selected After Stop**: Fixed session selection after recording stops
+  - Backend sends `sessionId` in session_stopped event
+  - Frontend now requests session details using sessionId from currentSession or event
+  - Removed incorrect notify from TauriContext command results (events come from backend)
+
+### Technical
+**Backend (Rust):**
+- `recording.rs`: Changed event names from kebab-case to snake_case for consistency
+
+**Frontend (TypeScript):**
+- `TauriContext.tsx`: Added snake_case event mappings, removed incorrect notify for start/stop
+- `SessionContext.tsx`: Improved session_stopped handler to use currentSession.id or msg.sessionId
+
+---
+
 ## [2.0.11] - 2025-01-28
 
 ### Fixed

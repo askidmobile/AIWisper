@@ -79,9 +79,16 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const unsubStopped = subscribe('session_stopped', (msg: any) => {
             setIsRecording(false);
             setIsStopping(false);
+            const stoppedSessionId = currentSession?.id || msg.sessionId;
             setCurrentSession(null);
             sendMessage({ type: 'get_sessions' });
-            if (msg.session) setSelectedSession(msg.session);
+            // Если есть session в сообщении - используем его
+            if (msg.session) {
+                setSelectedSession(msg.session);
+            } else if (stoppedSessionId) {
+                // Иначе запрашиваем детали сессии по ID
+                sendMessage({ type: 'get_session', sessionId: stoppedSessionId });
+            }
         });
 
         const unsubDetails = subscribe('session_details', (msg: any) => setSelectedSession(msg.session));
