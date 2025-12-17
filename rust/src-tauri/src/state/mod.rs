@@ -619,11 +619,24 @@ impl AppState {
             })
             .collect();
 
-        let title = format!(
-            "Запись {} · {} мин",
-            now.format("%d.%m %H:%M"),
-            result.duration_ms / 60000
-        );
+        // Формируем title с учётом длительности в минутах и секундах
+        let total_secs = result.duration_ms / 1000;
+        let mins = total_secs / 60;
+        let secs = total_secs % 60;
+        let title = if mins > 0 {
+            format!(
+                "Запись {} · {} мин {} сек",
+                now.format("%d.%m %H:%M"),
+                mins,
+                secs
+            )
+        } else {
+            format!(
+                "Запись {} · {} сек",
+                now.format("%d.%m %H:%M"),
+                secs
+            )
+        };
 
         let session = Session {
             id: result.session_id.clone(),
@@ -1639,24 +1652,72 @@ impl AppState {
         Ok(())
     }
 
-    /// Rename a session (in-memory)
+    /// Rename a session (in-memory and persist to meta.json)
     pub async fn rename_session(&self, session_id: &str, new_title: &str) -> Result<()> {
-        let mut sessions = self.inner.sessions.write();
-        if let Some(s) = sessions.iter_mut().find(|s| s.id == session_id) {
-            s.title = Some(new_title.to_string());
-            return Ok(());
+        // Update in-memory
+        {
+            let mut sessions = self.inner.sessions.write();
+            if let Some(s) = sessions.iter_mut().find(|s| s.id == session_id) {
+                s.title = Some(new_title.to_string());
+            } else {
+                anyhow::bail!("Session not found");
+            }
         }
-        anyhow::bail!("Session not found")
+
+        // Persist to meta.json
+        if let Some(sessions_dir) = get_sessions_dir() {
+            let meta_path = sessions_dir.join(session_id).join("meta.json");
+            if meta_path.exists() {
+                // Read existing meta
+                let content = std::fs::read_to_string(&meta_path)?;
+                let mut meta: serde_json::Value = serde_json::from_str(&content)?;
+
+                // Update title field
+                meta["title"] = serde_json::Value::String(new_title.to_string());
+
+                // Write back
+                let updated = serde_json::to_string_pretty(&meta)?;
+                std::fs::write(&meta_path, updated)?;
+
+                tracing::info!("Saved title '{}' to {:?}", new_title, meta_path);
+            }
+        }
+
+        Ok(())
     }
 
-    /// Update session tags (in-memory)
+    /// Update session tags (in-memory and persist to meta.json)
     pub async fn update_session_tags(&self, session_id: &str, tags: Vec<String>) -> Result<()> {
-        let mut sessions = self.inner.sessions.write();
-        if let Some(s) = sessions.iter_mut().find(|s| s.id == session_id) {
-            s.tags = tags;
-            return Ok(());
+        // Update in-memory
+        {
+            let mut sessions = self.inner.sessions.write();
+            if let Some(s) = sessions.iter_mut().find(|s| s.id == session_id) {
+                s.tags = tags.clone();
+            } else {
+                anyhow::bail!("Session not found");
+            }
         }
-        anyhow::bail!("Session not found")
+
+        // Persist to meta.json
+        if let Some(sessions_dir) = get_sessions_dir() {
+            let meta_path = sessions_dir.join(session_id).join("meta.json");
+            if meta_path.exists() {
+                // Read existing meta
+                let content = std::fs::read_to_string(&meta_path)?;
+                let mut meta: serde_json::Value = serde_json::from_str(&content)?;
+
+                // Update tags field
+                meta["tags"] = serde_json::json!(tags);
+
+                // Write back
+                let updated = serde_json::to_string_pretty(&meta)?;
+                std::fs::write(&meta_path, updated)?;
+
+                tracing::info!("Saved tags {:?} to {:?}", tags, meta_path);
+            }
+        }
+
+        Ok(())
     }
 
     /// Set session summary (in-memory and persist to meta.json)

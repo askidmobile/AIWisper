@@ -42,3 +42,17 @@ pub async fn get_audio_devices(state: State<'_, AppState>) -> Result<Vec<AudioDe
 
     state.get_audio_devices().await.map_err(|e| e.to_string())
 }
+
+/// Force request microphone permission by opening a stream
+#[tauri::command]
+pub async fn request_microphone_access() -> Result<bool, String> {
+    tracing::info!("Requesting microphone access via audio subsystem");
+    
+    // Run in blocking thread as cpal might block
+    tauri::async_runtime::spawn_blocking(|| {
+        aiwisper_audio::capture::request_microphone_access()
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}

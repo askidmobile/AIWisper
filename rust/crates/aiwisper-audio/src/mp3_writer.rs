@@ -187,7 +187,7 @@ impl Drop for Mp3Writer {
 /// Find FFmpeg binary
 ///
 /// Search order:
-/// 1. App bundle Resources directory (macOS)
+/// 1. App bundle Resources directory (macOS) - Tauri bundled resources
 /// 2. Next to executable
 /// 3. Current working directory
 /// 4. System PATH
@@ -198,7 +198,10 @@ fn find_ffmpeg() -> Result<PathBuf> {
     if let Ok(exe_path) = std::env::current_exe() {
         let exe_dir = exe_path.parent().unwrap_or(Path::new("."));
 
-        // macOS app bundle: Contents/MacOS/../Resources/ffmpeg
+        // macOS app bundle: Contents/MacOS/../Resources/resources/ffmpeg (Tauri bundled)
+        search_paths.push(exe_dir.join("../Resources/resources/ffmpeg"));
+        
+        // Also check Contents/MacOS/../Resources/ffmpeg (legacy path)
         search_paths.push(exe_dir.join("../Resources/ffmpeg"));
 
         // Next to executable
@@ -209,7 +212,12 @@ fn find_ffmpeg() -> Result<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         search_paths.push(cwd.join("ffmpeg"));
         search_paths.push(cwd.join("vendor/ffmpeg/ffmpeg"));
+        // Also check src-tauri resources for dev mode
+        search_paths.push(cwd.join("src-tauri/resources/ffmpeg"));
     }
+
+    // Log all search paths for debugging
+    tracing::debug!("FFmpeg search paths: {:?}", search_paths);
 
     // Check all paths
     for path in &search_paths {
@@ -226,7 +234,7 @@ fn find_ffmpeg() -> Result<PathBuf> {
     }
 
     // Fallback: try "ffmpeg" and hope it works
-    tracing::warn!("FFmpeg not found, trying 'ffmpeg' command");
+    tracing::warn!("FFmpeg not found in bundle or PATH, trying 'ffmpeg' command");
     Ok(PathBuf::from("ffmpeg"))
 }
 

@@ -16,15 +16,33 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Initialize and run the Tauri application
 pub fn run() {
+    // Set up file appender for logging
+    let file_appender = tracing_appender::rolling::daily(
+        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
+        "aiwisper.log",
+    );
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
     // Initialize tracing
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info,aiwisper=debug".into()),
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "info,aiwisper=debug,aiwisper_audio=debug".into()),
         ))
-        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stdout)
+                .with_ansi(true)
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false)
+        )
         .init();
 
     tracing::info!("Starting AIWisper application");
+    tracing::info!("Logging initialized to file in home directory");
+    tracing::info!("Logging initialized to file in home directory");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -37,6 +55,7 @@ pub fn run() {
             commands::audio::start_recording,
             commands::audio::stop_recording,
             commands::audio::get_audio_devices,
+            commands::audio::request_microphone_access,
             // Transcription
             commands::transcription::transcribe_file,
             commands::transcription::get_transcript_stream,

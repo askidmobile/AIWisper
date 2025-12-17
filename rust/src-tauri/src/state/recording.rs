@@ -109,11 +109,29 @@ impl RecordingSession {
         duration_ms: u64,
         chunks_count: usize,
     ) -> Result<()> {
-        let title = format!(
-            "Запись {} · {} мин",
-            self.start_time.format("%d.%m %H:%M"),
-            duration_ms / 60000
-        );
+        // При записи (end_time = None) используем простой формат без длительности
+        // При завершении показываем длительность в минутах/секундах
+        let title = if end_time.is_none() {
+            format!("Запись {}", self.start_time.format("%d.%m %H:%M"))
+        } else {
+            let total_secs = duration_ms / 1000;
+            let mins = total_secs / 60;
+            let secs = total_secs % 60;
+            if mins > 0 {
+                format!(
+                    "Запись {} · {} мин {} сек",
+                    self.start_time.format("%d.%m %H:%M"),
+                    mins,
+                    secs
+                )
+            } else {
+                format!(
+                    "Запись {} · {} сек",
+                    self.start_time.format("%d.%m %H:%M"),
+                    secs
+                )
+            }
+        };
 
         let meta = serde_json::json!({
             "id": self.id,
@@ -509,16 +527,21 @@ fn recording_thread(
 
         // Check for completed chunks
         while let Some(event) = chunk_buffer.try_recv() {
+            // При получении stop_flag пропускаем транскрипцию для быстрого выхода
+            // Чанк всё равно сохраним со статусом pending для последующей обработки
+            let is_stopping = stop_flag.load(Ordering::SeqCst);
+            
             let mut chunk_meta = ChunkMeta::from_event(&event, &session_id);
             let chunk_path = data_dir
                 .join("chunks")
                 .join(format!("chunk_{:04}.json", event.index));
 
             tracing::info!(
-                "Chunk created: {} ({}-{} ms)",
+                "Chunk created: {} ({}-{} ms){}",
                 event.index,
                 event.start_ms,
-                event.end_ms
+                event.end_ms,
+                if is_stopping { " [stopping, skipping transcription]" } else { "" }
             );
 
             // Emit chunk_created event (status: pending)
@@ -536,35 +559,38 @@ fn recording_thread(
                 }),
             );
 
-            // Auto-transcribe chunk if model is available
-            if chunk_buffer.has_separate_channels() {
-                // Stereo mode: transcribe each channel separately
-                let mic_samples = chunk_buffer.get_mic_samples_range(event.start_ms, event.end_ms);
-                let sys_samples = chunk_buffer.get_sys_samples_range(event.start_ms, event.end_ms);
-                
-                if !mic_samples.is_empty() || !sys_samples.is_empty() {
-                    chunk_meta = transcribe_chunk_stereo(
-                        chunk_meta,
-                        &mic_samples,
-                        &sys_samples,
-                        chunk_buffer.sample_rate(),
-                        &transcription_config,
-                        &session_id,
-                        &app_handle,
-                    );
-                }
-            } else {
-                // Mono mode
-                let chunk_samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
-                if !chunk_samples.is_empty() {
-                    chunk_meta = transcribe_chunk_samples(
-                        chunk_meta,
-                        &chunk_samples,
-                        chunk_buffer.sample_rate(),
-                        &transcription_config,
-                        &session_id,
-                        &app_handle,
-                    );
+            // Auto-transcribe chunk if model is available AND not stopping
+            // При остановке пропускаем транскрипцию для быстрого выхода
+            if !is_stopping {
+                if chunk_buffer.has_separate_channels() {
+                    // Stereo mode: transcribe each channel separately
+                    let mic_samples = chunk_buffer.get_mic_samples_range(event.start_ms, event.end_ms);
+                    let sys_samples = chunk_buffer.get_sys_samples_range(event.start_ms, event.end_ms);
+                    
+                    if !mic_samples.is_empty() || !sys_samples.is_empty() {
+                        chunk_meta = transcribe_chunk_stereo(
+                            chunk_meta,
+                            &mic_samples,
+                            &sys_samples,
+                            chunk_buffer.sample_rate(),
+                            &transcription_config,
+                            &session_id,
+                            &app_handle,
+                        );
+                    }
+                } else {
+                    // Mono mode
+                    let chunk_samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
+                    if !chunk_samples.is_empty() {
+                        chunk_meta = transcribe_chunk_samples(
+                            chunk_meta,
+                            &chunk_samples,
+                            chunk_buffer.sample_rate(),
+                            &transcription_config,
+                            &session_id,
+                            &app_handle,
+                        );
+                    }
                 }
             }
 
@@ -608,44 +634,92 @@ fn recording_thread(
     }
 
     // Flush remaining audio as final chunk
+    // При остановке не блокируем на транскрипции - запускаем в фоне
     if let Some(event) = chunk_buffer.flush_all() {
-        let mut chunk_meta = ChunkMeta::from_event(&event, &session_id);
+        let chunk_meta = ChunkMeta::from_event(&event, &session_id);
         let chunk_path = data_dir
             .join("chunks")
             .join(format!("chunk_{:04}.json", event.index));
 
-        // Auto-transcribe final chunk
+        tracing::info!(
+            "Final chunk created: {} ({}-{} ms), starting background transcription",
+            event.index,
+            event.start_ms,
+            event.end_ms
+        );
+
+        // Emit chunk_created event (status: pending)
+        let _ = app_handle.emit(
+            "chunk_created",
+            serde_json::json!({
+                "sessionId": session_id,
+                "chunk": {
+                    "id": chunk_meta.id,
+                    "index": chunk_meta.index,
+                    "startMs": chunk_meta.start_ms,
+                    "endMs": chunk_meta.end_ms,
+                    "status": "pending",
+                }
+            }),
+        );
+
+        // Запускаем транскрипцию финального чанка в фоновом потоке
+        // чтобы не блокировать остановку записи
+        let bg_chunk_meta = chunk_meta.clone();
+        let bg_chunk_path = chunk_path.clone();
+        let bg_session_id = session_id.clone();
+        let bg_app_handle = app_handle.clone();
+        let bg_transcription_config = transcription_config.clone();
+        
+        // Отправляем событие о начале фоновой транскрипции
+        let _ = app_handle.emit(
+            "chunk_transcribing",
+            serde_json::json!({
+                "sessionId": session_id,
+                "chunkId": chunk_meta.id,
+                "chunkIndex": chunk_meta.index,
+            }),
+        );
+        
         if chunk_buffer.has_separate_channels() {
-            // Stereo mode: transcribe each channel separately
             let mic_samples = chunk_buffer.get_mic_samples_range(event.start_ms, event.end_ms);
             let sys_samples = chunk_buffer.get_sys_samples_range(event.start_ms, event.end_ms);
+            let sample_rate = chunk_buffer.sample_rate();
             
             if !mic_samples.is_empty() || !sys_samples.is_empty() {
-                chunk_meta = transcribe_chunk_stereo(
-                    chunk_meta,
-                    &mic_samples,
-                    &sys_samples,
-                    chunk_buffer.sample_rate(),
-                    &transcription_config,
-                    &session_id,
-                    &app_handle,
-                );
+                std::thread::spawn(move || {
+                    let transcribed = transcribe_chunk_stereo(
+                        bg_chunk_meta,
+                        &mic_samples,
+                        &sys_samples,
+                        sample_rate,
+                        &bg_transcription_config,
+                        &bg_session_id,
+                        &bg_app_handle,
+                    );
+                    let _ = transcribed.save(&bg_chunk_path);
+                });
             }
         } else {
-            // Mono mode
             let chunk_samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
+            let sample_rate = chunk_buffer.sample_rate();
+            
             if !chunk_samples.is_empty() {
-                chunk_meta = transcribe_chunk_samples(
-                    chunk_meta,
-                    &chunk_samples,
-                    chunk_buffer.sample_rate(),
-                    &transcription_config,
-                    &session_id,
-                    &app_handle,
-                );
+                std::thread::spawn(move || {
+                    let transcribed = transcribe_chunk_samples(
+                        bg_chunk_meta,
+                        &chunk_samples,
+                        sample_rate,
+                        &bg_transcription_config,
+                        &bg_session_id,
+                        &bg_app_handle,
+                    );
+                    let _ = transcribed.save(&bg_chunk_path);
+                });
             }
         }
 
+        // Сохраняем чанк со статусом pending (транскрипция в фоне обновит файл)
         let _ = chunk_meta.save(&chunk_path);
         chunks.push(chunk_meta);
     }

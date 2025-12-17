@@ -39,7 +39,20 @@ export const RecordingView: React.FC = () => {
         return (
             <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
                 <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🔴</div>
-                <div>Идёт запись... Транскрипция появится после остановки</div>
+                <div>Инициализация записи...</div>
+            </div>
+        );
+    }
+
+    // Если нет чанков, показываем ожидание первого чанка
+    if (chunks.length === 0) {
+        return (
+            <div style={{ color: 'var(--text-muted)', textAlign: 'center', marginTop: '3rem' }}>
+                <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🎙️</div>
+                <div>Идёт запись... Ожидание первого фрагмента</div>
+                <div style={{ fontSize: '0.85rem', marginTop: '0.5rem', opacity: 0.7 }}>
+                    Транскрипция появится автоматически
+                </div>
             </div>
         );
     }

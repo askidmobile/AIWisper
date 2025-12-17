@@ -25,7 +25,7 @@ import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData } from '../../utils/waveform';
 
 // Версия приложения
-const APP_VERSION = '2.0.6';
+const APP_VERSION = '2.0.11';
 
 interface MainLayoutProps {
     addLog: (msg: string) => void;
@@ -36,7 +36,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     const API_BASE = `http://localhost:${(typeof process !== 'undefined' && process.env?.AIWISPER_HTTP_PORT) || 18080}`;
     
     // Контексты
-    const { startSession, stopSession, isRecording, selectedSession, micLevel, sysLevel, isFullTranscribing } = useSessionContext();
+    const { startSession, stopSession, isRecording, isStopping, isProcessingFinalChunks, selectedSession, micLevel, sysLevel, isFullTranscribing } = useSessionContext();
     const { activeModelId, models, fetchOllamaModels, downloadModel, cancelDownload, deleteModel, setActiveModel, ollamaModels, ollamaModelsLoading, ollamaError } = useModelContext();
     const { sendMessage, subscribe, isTauri } = useBackendContext();
     const { 
@@ -814,7 +814,51 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             {/* Recording Overlay */}
             <RecordingOverlay onStop={handleStartStop} />
             
-            <div style={{ display: 'flex', flex: 1, overflow: 'hidden', marginTop: isRecording ? '48px' : 0, transition: 'margin-top 0.3s cubic-bezier(0.4, 0, 0.2, 1)' }}>
+            {/* Processing Final Chunk Overlay - показывается когда запись остановлена, но ещё идёт фоновая транскрипция */}
+            {isStopping && isProcessingFinalChunks && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        zIndex: 100,
+                        background: 'linear-gradient(180deg, rgba(245, 158, 11, 0.15) 0%, transparent 100%)',
+                        backdropFilter: 'blur(8px)',
+                        WebkitBackdropFilter: 'blur(8px)',
+                        borderBottom: '1px solid rgba(245, 158, 11, 0.2)',
+                        padding: '0.5rem 1.5rem',
+                        paddingTop: '0.75rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '1rem',
+                        WebkitAppRegion: 'drag',
+                    } as React.CSSProperties}
+                >
+                    {/* Spinner */}
+                    <div
+                        style={{
+                            width: '16px',
+                            height: '16px',
+                            border: '2px solid rgba(245, 158, 11, 0.3)',
+                            borderTopColor: '#f59e0b',
+                            borderRadius: '50%',
+                            animation: 'spin 1s linear infinite',
+                        }}
+                    />
+                    <span style={{ 
+                        fontSize: '0.85rem', 
+                        fontWeight: 600, 
+                        color: '#f59e0b',
+                        letterSpacing: '0.02em' 
+                    }}>
+                        Обрабатывается последний фрагмент...
+                    </span>
+                </div>
+            )}
+            
+            <div style={{ display: 'flex', flex: 1, overflow: 'hidden', marginTop: isRecording || (isStopping && isProcessingFinalChunks) ? '48px' : 0, transition: 'margin-top 0.3s cubic-bezier(0.4, 0, 0.2, 1)' }}>
                 <Sidebar onStartRecording={handleStartStop} />
 
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

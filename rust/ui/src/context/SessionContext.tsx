@@ -11,6 +11,10 @@ interface SessionContextType {
     micLevel: number;
     sysLevel: number;
 
+    // Pending background transcription (after stop)
+    pendingTranscriptionChunks: Set<string>;
+    isProcessingFinalChunks: boolean;
+
     // Full retranscription state
     isFullTranscribing: boolean;
     fullTranscriptionProgress: number; // 0-1
@@ -43,6 +47,10 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const [micLevel, setMicLevel] = useState(0);
     const [sysLevel, setSysLevel] = useState(0);
 
+    // Pending background transcription tracking
+    const [pendingTranscriptionChunks, setPendingTranscriptionChunks] = useState<Set<string>>(new Set());
+    const isProcessingFinalChunks = pendingTranscriptionChunks.size > 0;
+
     // Full retranscription state
     const [isFullTranscribing, setIsFullTranscribing] = useState(false);
     const [fullTranscriptionProgress, setFullTranscriptionProgress] = useState(0);
@@ -64,6 +72,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const unsubStarted = subscribe('session_started', (msg: any) => {
             setCurrentSession(msg.session);
             setIsRecording(true);
+            setPendingTranscriptionChunks(new Set()); // Clear pending on new session
             // Optional: Beep sound logic moved to UI component or hook
         });
 
@@ -99,6 +108,17 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
             };
             setCurrentSession(prev => updateChunks(prev));
             setSelectedSession(prev => updateChunks(prev));
+            // Удаляем из pending transcriptions
+            setPendingTranscriptionChunks(prev => {
+                const next = new Set(prev);
+                next.delete(msg.chunk.id);
+                return next;
+            });
+        });
+
+        // Обработчик начала фоновой транскрипции (финальный чанк после stop)
+        const unsubChunkTranscribing = subscribe('chunk_transcribing', (msg: any) => {
+            setPendingTranscriptionChunks(prev => new Set(prev).add(msg.chunkId));
         });
 
         const unsubAudioLevel = subscribe('audio_level', (msg: any) => {
@@ -206,8 +226,8 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
         return () => {
             unsubList(); unsubStarted(); unsubStopped(); unsubDetails();
-            unsubChunkCreated(); unsubChunkTranscribed(); unsubAudioLevel();
-            unsubSummary(); unsubImprove(); unsubRenamed();
+            unsubChunkCreated(); unsubChunkTranscribed(); unsubChunkTranscribing();
+            unsubAudioLevel(); unsubSummary(); unsubImprove(); unsubRenamed();
             unsubTitleUpdated(); unsubTagsUpdated();
             unsubFullStarted(); unsubFullProgress(); unsubFullCompleted();
             unsubFullError(); unsubFullCancelled();
@@ -272,6 +292,8 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         <SessionContext.Provider value={{
             sessions, currentSession, selectedSession, isRecording, isStopping,
             micLevel, sysLevel,
+            // Pending background transcription state
+            pendingTranscriptionChunks, isProcessingFinalChunks,
             // Full retranscription state
             isFullTranscribing, fullTranscriptionProgress, fullTranscriptionStatus,
             fullTranscriptionError, fullTranscriptionSessionId,

@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.6"
+version = "2.0.11"
 edition = "2021"
 authors = ["AIWisper Team"]
 license = "MIT"

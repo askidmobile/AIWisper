@@ -17,6 +17,19 @@ impl AudioCapture {
     /// Create new audio capture
     pub fn new(device_name: Option<&str>) -> Result<Self> {
         let host = cpal::default_host();
+        
+        // Log all available devices for debugging
+        match host.input_devices() {
+            Ok(devices) => {
+                tracing::info!("Available audio input devices:");
+                for d in devices {
+                    if let Ok(n) = d.name() {
+                        tracing::info!(" - {}", n);
+                    }
+                }
+            }
+            Err(e) => tracing::error!("Failed to enumerate input devices: {}", e),
+        }
 
         let device = if let Some(name) = device_name {
             host.input_devices()?
@@ -143,4 +156,46 @@ pub fn list_input_devices() -> Result<Vec<AudioDevice>> {
         .collect();
 
     Ok(devices)
+}
+
+/// Force request microphone access by attempting to open a stream
+pub fn request_microphone_access() -> Result<bool> {
+    tracing::info!("Forcing microphone access request via cpal");
+    
+    let host = cpal::default_host();
+    let device = host.default_input_device().context("No default input device")?;
+    let config = device.default_input_config()?;
+    
+    // Try to build stream - this triggers the OS prompt
+    let stream = device.build_input_stream(
+        &config.into(),
+        move |_data: &[f32], _: &cpal::InputCallbackInfo| {},
+        move |err| { tracing::error!("Access check stream error: {}", err); },
+        None
+    );
+
+    match stream {
+        Ok(s) => {
+            // If we got here, we might have access or the prompt is showing
+            // Start playing briefly to ensure it's active
+            if let Err(e) = s.play() {
+                tracing::error!("Failed to play access check stream: {}", e);
+                return Ok(false);
+            }
+            
+            // Wait a tiny bit
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            
+            // Drop stream to close it
+            drop(s);
+            
+            tracing::info!("Microphone access check stream created successfully");
+            Ok(true)
+        },
+        Err(e) => {
+            tracing::error!("Failed to create access check stream: {}", e);
+            // This usually means access denied
+            Ok(false)
+        }
+    }
 }

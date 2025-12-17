@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.11] - 2025-01-28
+
+### Fixed
+- **Real-time Transcription Display**: Transcription now shows during recording even when chunks exist
+  - Changed condition to always show `RecordingView` when `isRecording`
+  - Improved empty state messages in RecordingView
+  
+- **Stop Button Responsiveness**: Stop button now responds immediately instead of blocking on final chunk transcription
+  - Final chunk transcription moved to background thread using `std::thread::spawn`
+  - Added `stop_flag` check before transcription in recording loop
+  
+- **Session Title Duration**: Title now shows correct duration instead of "0 мин"
+  - Duration calculated only when `end_time` is Some
+  - Fixed in both `save_meta()` and `stop_recording()` functions
+  
+- **Processing Status Indicator**: New overlay shows "Обрабатывается последний фрагмент..." when final chunk is being transcribed after stop
+
+### Added
+- **Chunk Transcribing Event**: New `chunk_transcribing` event emitted before background transcription starts
+- **Processing State Management**: 
+  - Added `pendingTranscriptionChunks` state in SessionContext
+  - Added `isProcessingFinalChunks` computed value
+- **Processing Overlay**: Orange gradient overlay with spinner in MainLayout during final chunk processing
+
+### Technical
+**Backend (Rust):**
+- `recording.rs`: Background thread for final chunk transcription, stop_flag checks
+- New `chunk_transcribing` event emission before background transcription
+- `save_meta()` and `stop_recording()`: Duration calculated only when end_time exists
+
+**Frontend (TypeScript):**
+- `SessionContext.tsx`: Added `pendingTranscriptionChunks` Set state and `isProcessingFinalChunks` computed
+- `MainLayout.tsx`: Processing overlay with orange gradient when final chunk processing
+- `TranscriptionView.tsx`: Always show RecordingView when isRecording
+- `RecordingView.tsx`: Better empty state messages
+
+---
+
 ## [2.0.7] - 2025-12-17
 
 ### Added

@@ -382,7 +382,8 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                 {/* Empty State - Welcome Screen */}
                 {chunks.length === 0 && !isRecording && !selectedSession ? (
                     <WelcomeViewSimple />
-                ) : chunks.length === 0 && isRecording ? (
+                ) : isRecording ? (
+                    // Во время записи всегда показываем RecordingView (даже если уже есть чанки)
                     <RecordingView />
                 ) : (
                     <>
