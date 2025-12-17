@@ -1241,6 +1241,14 @@ func (m *Manager) LoadSessions() error {
 		// Устанавливаем DataDir (не сохраняется в JSON)
 		session.DataDir = filepath.Join(m.dataDir, entry.Name())
 
+		// Fallback: если totalDuration == 0, но есть waveform с длительностью,
+		// используем длительность из waveform (для незавершённых сессий)
+		if session.TotalDuration == 0 && session.Waveform != nil && session.Waveform.Duration > 0 {
+			session.TotalDuration = time.Duration(session.Waveform.Duration * float64(time.Second))
+			log.Printf("LoadSessions: session %s has no totalDuration, using waveform duration %.2f sec",
+				session.ID, session.Waveform.Duration)
+		}
+
 		// Автогенерация названия, если отсутствует (для старых записей)
 		if session.Title == "" {
 			session.Title = generateSessionTitle(session.StartTime, session.TotalDuration)
@@ -1257,8 +1265,11 @@ func (m *Manager) LoadSessions() error {
 
 		// Загружаем чанки
 		chunksDir := filepath.Join(m.dataDir, entry.Name(), "chunks")
-		chunkFiles, _ := filepath.Glob(filepath.Join(chunksDir, "*.json"))
-		log.Printf("LoadSessions: session %s found %d chunk files in %s", session.ID, len(chunkFiles), chunksDir)
+		// Поддерживаем оба формата: chunk_*.json (старый) и *.json (новый)
+		chunkFiles1, _ := filepath.Glob(filepath.Join(chunksDir, "chunk_*.json"))
+		chunkFiles2, _ := filepath.Glob(filepath.Join(chunksDir, "[0-9]*.json"))
+		chunkFiles := append(chunkFiles1, chunkFiles2...)
+		log.Printf("LoadSessions: session %s found %d chunk files in %s (formats: chunk_*.json + [0-9]*.json)", session.ID, len(chunkFiles), chunksDir)
 		for _, chunkFile := range chunkFiles {
 			chunkData, err := os.ReadFile(chunkFile)
 			if err != nil {

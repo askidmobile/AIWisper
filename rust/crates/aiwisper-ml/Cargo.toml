@@ -1,0 +1,37 @@
+[package]
+name = "aiwisper-ml"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# ML inference
+whisper-rs = { workspace = true }
+ort = { workspace = true }
+
+# Tensor operations
+ndarray = "0.15"
+
+# Core
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+# Engine manager and hybrid transcription
+parking_lot = "0.12"
+regex = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# HTTP client for LLM API
+reqwest = { version = "0.12", features = ["json"] }
+tokio = { workspace = true }
+
+# Types
+aiwisper-types = { path = "../aiwisper-types" }
+
+[features]
+default = []
+cuda = ["ort/cuda"]
+coreml = ["ort/coreml"]
+directml = ["ort/directml"]

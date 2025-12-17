@@ -4,6 +4,7 @@ import { useWebSocketContext } from '../context/WebSocketContext';
 interface StreamingTranscriptionProps {
     enabled: boolean;
     className?: string;
+    compact?: boolean; // Компактный режим для встраивания в чанк
 }
 
 interface StreamingUpdate {
@@ -25,7 +26,8 @@ interface StreamingUpdate {
  */
 export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
     enabled,
-    className = ''
+    className = '',
+    compact = false
 }) => {
     const { subscribe } = useWebSocketContext();
     const [confirmedText, setConfirmedText] = useState('');
@@ -119,6 +121,88 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
     const confidencePercent = Math.round(confidence * 100);
     const confidenceColor = confidence >= 0.85 ? '#10b981' : confidence >= 0.7 ? '#f59e0b' : '#ef4444';
 
+    // Компактный режим - только текст без обёрток
+    if (compact) {
+        return (
+            <div
+                className={`streaming-transcription-compact ${className}`}
+                style={{
+                    padding: '0.5rem 0',
+                    fontSize: '0.875rem',
+                    lineHeight: '1.6',
+                    color: 'var(--text-primary)'
+                }}
+            >
+                {!hasContent ? (
+                    <div style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.8rem' }}>
+                        Ожидание аудио...
+                    </div>
+                ) : (
+                    <div>
+                        {/* Confirmed text */}
+                        {confirmedText && (
+                            <span
+                                style={{
+                                    color: 'var(--text-primary)',
+                                    fontWeight: 400
+                                }}
+                            >
+                                {confirmedText}
+                            </span>
+                        )}
+
+                        {/* Separator */}
+                        {confirmedText && volatileText && ' '}
+
+                        {/* Volatile text */}
+                        {volatileText && (
+                            <span
+                                style={{
+                                    color: 'var(--text-muted)',
+                                    fontStyle: 'italic',
+                                    fontWeight: 300,
+                                    opacity: 0.8,
+                                    animation: 'fadeIn 0.3s ease-in-out'
+                                }}
+                            >
+                                {volatileText}
+                            </span>
+                        )}
+
+                        {/* Mini confidence indicator */}
+                        {volatileText && (
+                            <span
+                                style={{
+                                    marginLeft: '0.5rem',
+                                    fontSize: '0.7rem',
+                                    color: confidenceColor,
+                                    fontWeight: 600
+                                }}
+                            >
+                                {confidencePercent}%
+                            </span>
+                        )}
+                    </div>
+                )}
+
+                {/* CSS animations */}
+                <style>{`
+                    @keyframes fadeIn {
+                        from {
+                            opacity: 0;
+                            transform: translateY(-2px);
+                        }
+                        to {
+                            opacity: 0.8;
+                            transform: translateY(0);
+                        }
+                    }
+                `}</style>
+            </div>
+        );
+    }
+
+    // Полный режим с header и footer
     return (
         <div
             className={`streaming-transcription ${className}`}

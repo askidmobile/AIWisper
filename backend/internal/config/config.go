@@ -31,7 +31,7 @@ func Load() *Config {
 
 	// LLM настройки
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama API URL")
-	ollamaModel := flag.String("ollama-model", "llama3.2", "Ollama model for transcription improvement")
+	ollamaModel := flag.String("ollama-model", "", "Ollama model for transcription improvement (from UI settings)")
 	autoImprove := flag.Bool("auto-improve", false, "Auto-improve transcription with LLM")
 
 	flag.Parse()

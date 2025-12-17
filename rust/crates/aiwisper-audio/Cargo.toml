@@ -1,0 +1,29 @@
+[package]
+name = "aiwisper-audio"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Audio I/O
+cpal = { workspace = true }
+rubato = { workspace = true }
+hound = { workspace = true }
+symphonia = { workspace = true }
+
+# Core
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Utilities
+which = "6"
+
+# Types
+aiwisper-types = { path = "../aiwisper-types" }
+
+# Platform-specific
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.27", features = ["signal"] }
+
+[dev-dependencies]
+tempfile = "3"

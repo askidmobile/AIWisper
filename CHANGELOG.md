@@ -5,6 +5,240 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.7] - 2025-12-17
+
+### Added
+- **Enhanced Hybrid Transcription**: Major refactoring of dual-model transcription system
+  - Improved `HybridTranscriber` with better voting merge algorithm (~1500 lines in `hybrid.rs`)
+  - Enhanced confidence calibration for GigaAM and Whisper engines
+  - Word-level voting with Latin detection and hotword matching
+
+- **Improved Engine Manager**: Better dynamic engine switching
+  - Refactored `EngineManager` with concurrent model support (~200 lines changes)
+  - Enhanced engine type auto-detection
+
+- **Recording State Improvements**: Complete rework of recording infrastructure
+  - Major refactoring of `state/mod.rs` (~2000+ lines) and `recording.rs` (~700+ lines)
+  - Better chunk transcription during recording
+  - Improved stereo recording support (mic + system audio)
+
+- **VAD Enhancements**: Improved voice activity detection
+  - Updated `vad.rs` with better speech segment detection (~180 lines)
+  - Enhanced Silero VAD wrapper integration
+
+### Changed
+- **Audio Processing**: Improved audio capture and buffering
+  - Refactored `chunk_buffer.rs` with better sample extraction (~200 lines)
+  - Enhanced MP3 writer with stereo support (~100 lines)
+  - Updated system audio capture for macOS/Windows/Linux
+
+- **ML Crates**: Major updates to machine learning modules
+  - `whisper.rs`: Enhanced transcription pipeline (~350 lines)
+  - `gigaam.rs`: Improved Russian transcription (~600 lines)
+  - `traits.rs`: Updated transcriber traits
+
+- **Tauri Commands**: Updated command handlers
+  - Session, settings, transcription, voiceprints commands refactored
+  - Better error handling and async operations
+
+- **Frontend Components**: UI improvements for recording
+  - `RecordingOverlay.tsx`: Enhanced overlay display
+  - `StreamingTranscription.tsx`: Better real-time transcription view
+  - `RecordingView.tsx`: Improved recording controls
+
+### Fixed
+- Various compiler warnings resolved across Rust crates
+- Improved error handling in transcription pipeline
+- Better resource cleanup in recording state
+
+## [2.0.6] - 2025-12-15
+
+### Fixed
+- **System Audio Capture**: Fixed path resolution for Swift capture binaries (coreaudio-tap, screencapture-audio) in development mode
+- **Settings Modal**: Fixed blank screen when opening settings
+  - Added default `data-theme="dark"` to HTML to ensure CSS variables are defined on load
+  - Added support for 'system' theme preference with automatic dark/light detection
+  - Fixed `setTheme` and `setLanguage` prop passing in MainLayout
+
+### Changed
+- Theme type now supports 'light' | 'dark' | 'system' values
+- System theme auto-detects user's OS preference via `prefers-color-scheme`
+
+## [2.0.5] - 2025-12-15
+
+### Added
+- **Hybrid Transcription Engine**: Full voting merge system for dual-model transcription
+  - `rust/crates/aiwisper-ml/src/hybrid.rs`: Parallel mode with voting merge (Whisper + GigaAM)
+  - 4 voting criteria: Calibrated confidence, Latin detection, Hotwords matching, Grammar check
+  - Confidence calibration (GigaAM scales by 0.75)
+  - Word-level voting and selection from both models
+
+- **Engine Manager**: Dynamic engine switching and management
+  - `rust/crates/aiwisper-ml/src/engine_manager.rs`: Whisper/GigaAM/FluidASR support
+  - Auto-detection of engine type by model ID
+  - Concurrent model loading support
+
+- **Auto-Transcription During Recording**: Chunks transcribed as they are created
+  - VAD-based chunk detection triggers transcription immediately
+  - Supports hybrid transcription mode (dual-model with voting)
+  - Emits `chunk_transcribed` event with dialogue segments
+  - Transcription runs in recording thread for low latency
+
+- **System Audio Capture Support**: Full stereo recording (microphone + system audio)
+  - Stereo MP3 recording: Left channel = microphone, Right channel = system audio
+  - Automatic platform detection and best capture method selection
+  - macOS: Core Audio Process Tap (14.2+) or ScreenCaptureKit (13+)
+  - Windows: WASAPI Loopback (planned)
+  - Linux: PipeWire/PulseAudio (planned)
+
+- **Diarization Commands**: IPC commands for speaker diarization
+  - `rust/src-tauri/src/commands/diarization.rs`: Tauri commands for diarization
+
+### Technical
+**Backend (Rust):**
+- `rust/crates/aiwisper-ml/src/hybrid.rs`: ~1000 lines
+  - `HybridTranscriber` with parallel transcription
+  - `VotingConfig` for configuring voting criteria weights
+  - Word-level merge with calibrated confidence comparison
+  - Latin detection and hotword matching
+
+- `rust/crates/aiwisper-ml/src/engine_manager.rs`: ~300 lines
+  - `EngineManager` for loading/switching engines
+  - `EngineType` enum: Whisper, GigaAM, FluidASR
+  - Thread-safe with `parking_lot::RwLock`
+
+- `rust/src-tauri/src/state/recording.rs`: Complete rewrite with transcription support
+  - `TranscriptionConfig` struct for transcription settings
+  - `transcribe_chunk_samples()` for chunk transcription
+  - `transcribe_samples_sync()` with hybrid mode support
+  - `resample_audio()` for 24kHz → 16kHz conversion
+  - Integrated `SystemAudioCapture` for stereo recording
+
+- `rust/crates/aiwisper-audio/src/chunk_buffer.rs`: Added audio extraction methods
+  - `get_samples_range(start_ms, end_ms)` - extract samples for specific time range
+  - `get_all_samples()` - get all accumulated samples
+
+- `rust/crates/aiwisper-types/src/lib.rs`: Extended Settings
+  - Added `hybrid_enabled: bool`
+  - Added `hybrid_secondary_model_id: String`
+
+### Fixed
+- Cleaned up all compiler warnings in recording module
+
+---
+
+## [2.0.2] - 2025-12-15
+
+### Changed
+- **🚀 MAJOR: Rust/Tauri Migration Complete (Phase 2)**: Завершена миграция критичных HTTP endpoints на Tauri IPC
+  - **Проблема v2.0.1**: DMG сборка показывала пустые списки, ошибки `ERR_CONNECTION_REFUSED` из-за отсутствия HTTP сервера на порту 18080
+  - **Решение**: Все критичные компоненты UI теперь используют Tauri IPC вместо HTTP
+
+### Added
+- **Audio Playback через IPC**: Воспроизведение аудио теперь работает в DMG без HTTP сервера
+  - Новые Tauri команды: `get_full_audio`, `get_chunk_audio`
+  - Audio возвращается как base64-encoded WAV data URLs
+  - Lazy loading + in-memory кэширование для оптимальной производительности
+  - Работает для full session audio и individual chunks
+  - Unified interface для Tauri (IPC) и Electron (HTTP fallback)
+
+- **Voiceprints Management через IPC**: Управление голосовыми профилями без HTTP
+  - Новые Tauri команды: `list_voiceprints`, `create_voiceprint`, `rename_voiceprint`, `delete_voiceprint`, `get_speaker_sample`
+  - Stub реализация (возвращает пустые списки, готово к интеграции с ML)
+  - UI для переименования и удаления voiceprints в настройках
+
+- **Import/Export заглушка**: Предотвращение HTTP ошибок при drag-and-drop
+  - Import временно показывает "Not yet implemented in Tauri"
+  - Export (TXT, SRT, VTT, JSON, MD) работает через browser download API
+
+### Technical
+**Backend (Rust):**
+- `rust/src-tauri/src/state/mod.rs`: +177 строк (audio, voiceprints методы)
+- `rust/src-tauri/src/commands/transcription.rs`: +38 строк (audio commands)
+- `rust/src-tauri/src/commands/voiceprints.rs`: +98 строк (NEW FILE)
+- `rust/src-tauri/Cargo.toml`: добавлена зависимость `base64 = "0.22"`
+
+**Frontend (TypeScript):**
+- `rust/ui/src/context/BackendContext.tsx`: `sendMessage` → `Promise<any>`
+- `rust/ui/src/context/TauriContext.tsx`: +50 строк (mappings, audio logic)
+- `rust/ui/src/context/WebSocketContext.tsx`: async `sendMessage`
+- `rust/ui/src/components/chunks/ChunksViewSimple.tsx`: +120 строк (IPC audio, lazy loading, cache)
+- `rust/ui/src/components/layout/MainLayout.tsx`: +50 строк (IPC handlers)
+
+**Архитектура:**
+- Unified Backend Context для Tauri и Electron
+- Message-to-Command маппинг в TauriContext
+- Base64 WAV data URLs для audio (16kHz mono PCM)
+- In-memory cache для audio chunks
+- Stub voiceprint storage (готово к интеграции)
+
+### Fixed
+- ✅ **Нет больше `ERR_CONNECTION_REFUSED`**: Все HTTP запросы заменены на IPC
+- ✅ **Audio playback работает**: Воспроизведение тишины (stub), но без ошибок
+- ✅ **Voiceprints не ломают UI**: Возвращают пустые списки вместо HTTP 404
+- ✅ **Import не падает**: Показывает понятное сообщение вместо ошибки
+
+### Known Limitations (не критично для DMG)
+- Audio playback воспроизводит тишину (нет real audio data yet)
+- Waveform - fake peaks (работает, но не реальные данные)
+- Transcription - stubs (нет whisper.cpp integration yet)
+- Storage - in-memory sessions (нет SQLite persistence yet)
+- Models - empty list (нет model management yet)
+- Voiceprints - empty list (нет voiceprint storage yet)
+- Import - заглушка (можно добавить через Tauri file dialog)
+
+### Documentation
+- Создан `docs/migration_phase2_audio_ipc_complete_2025-12-15.md` с полной документацией изменений
+
+### Next Steps (Phase 3)
+1. Собрать DMG и протестировать базовый функционал
+2. Интегрировать whisper.cpp для real transcription
+3. Добавить SQLite для persistent storage
+4. Реализовать real audio capture → playback pipeline
+
+---
+
+## [2.0.1] - 2025-12-15
+
+### Added
+- **🚀 MAJOR: Rust/Tauri Migration (Phase 1)**: Переход с Electron+Go на Tauri+Rust
+  - Новая архитектура: Rust backend вместо Go HTTP сервера
+  - Tauri IPC вместо gRPC/HTTP для коммуникации
+  - Легковесная сборка: ~50MB вместо ~200MB
+  - Нативная производительность и безопасность
+
+### Changed
+- **Backend полностью переписан на Rust**:
+  - `rust/src-tauri/src/state/mod.rs` - AppState с audio capture
+  - `rust/src-tauri/src/commands/` - Tauri IPC команды
+  - Audio capture через cpal (кроссплатформенный)
+  - Stub реализация ML engines (whisper.cpp integration - следующий этап)
+
+- **Frontend обновлён для Tauri**:
+  - `rust/ui/` - React UI с Tauri API
+  - `BackendContext` - unified interface для Tauri и Electron
+  - `TauriContext` - Tauri-specific IPC layer
+  - Поддержка legacy Electron версии для обратной совместимости
+
+### Fixed
+- ✅ Белый экран при запуске DMG (React hooks conditional rendering)
+- ✅ Build процесс для Apple Silicon и Intel
+
+### Known Issues
+- ⚠️ Audio playback не работает (HTTP endpoints не мигрированы)
+- ⚠️ Waveform не загружается
+- ⚠️ Sessions list пустой (нет persistence)
+- ⚠️ Models list пустой
+- ⚠️ Settings UI частично сломан
+
+### Technical
+- Tauri 2.1 с macOS-private-api
+- Rust workspace структура (4 crates)
+- Vite 5.4 для UI сборки
+- Сохранена обратная совместимость с Electron build
+
+---
+
 ## [1.41.29] - 2025-12-14
 
 ### Fixed

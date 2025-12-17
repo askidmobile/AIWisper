@@ -1,0 +1,87 @@
+[package]
+name = "aiwisper"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AI-powered speech transcription application"
+default-run = "aiwisper"
+
+[lib]
+name = "aiwisper_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "aiwisper"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+
+# Workspace dependencies
+tokio.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Internal crates
+aiwisper-audio.workspace = true
+aiwisper-ml.workspace = true
+aiwisper-types.workspace = true
+
+# State management
+parking_lot = "0.12"
+
+# Channels for streaming
+tokio-stream = "0.1"
+broadcast = "0.1"
+tokio-util = "0.7"
+
+# Database
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Time/Date
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID generation
+uuid = { version = "1.11", features = ["v4", "serde"] }
+
+# Directories
+dirs = "5"
+
+# Base64 encoding
+base64 = "0.22"
+
+# HTTP client for Ollama API and Cloud providers
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+
+# Secure keychain storage for API keys
+keyring = "3"
+
+# Audio processing for waveform generation
+symphonia = { version = "0.5", features = ["mp3", "wav", "pcm"] }
+hound.workspace = true
+tauri-plugin-macos-permissions = "2.3.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.26"
+objc = "0.2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+cuda = ["aiwisper-ml/cuda"]
+coreml = ["aiwisper-ml/coreml"]
+directml = ["aiwisper-ml/directml"]

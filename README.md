@@ -4,7 +4,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-13+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-1.41.29-orange)
+![Version](https://img.shields.io/badge/version-2.0.7-orange)
 
 ## Возможности
 
@@ -126,16 +126,20 @@ ollama pull llama3.2
 
 ## Технологии
 
-### Backend (Go)
-- **whisper.cpp** — движок распознавания речи (CGO bindings)
+### Backend (Rust)
+- **whisper.cpp** — движок распознавания речи (Rust bindings)
 - **GigaAM** — ONNX Runtime для русского языка
 - **sherpa-onnx** — диаризация спикеров
-- **gRPC + HTTP** — коммуникация с frontend
+- **Tauri IPC** — коммуникация с frontend (v2.0+)
 
-### Frontend (Electron + React)
-- **Electron 39** — десктопная оболочка
+### Frontend (Tauri + React)
+- **Tauri 2** — легковесная десктопная оболочка (v2.0+)
 - **React 19** — UI фреймворк
 - **Vite 7** — сборка
+
+### Legacy (v1.x)
+- **Go Backend** — gRPC + HTTP сервер (до v2.0)
+- **Electron** — десктопная оболочка (до v2.0)
 
 ### macOS Native (Swift)
 - **ScreenCaptureKit** — захват системного звука (macOS 13+)

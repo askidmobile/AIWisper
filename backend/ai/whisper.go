@@ -5,9 +5,14 @@ import (
 	"log"
 	"math"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 )
+
+// specialTokensRegex регулярное выражение для очистки специальных токенов whisper
+// Включает: [_TT_xxx], [_EOT_], [_SOT_], [_TRANSLATE_], [_TRANSCRIBE_], [_LANG_xx], etc.
+var specialTokensRegex = regexp.MustCompile(`\[_[A-Z_]+_?\d*\]`)
 
 // WhisperEngine движок распознавания речи на основе whisper.cpp
 // Реализует интерфейс TranscriptionEngine

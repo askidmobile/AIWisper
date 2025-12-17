@@ -26,6 +26,7 @@ interface SessionContextType {
     generateSummary: (sessionId: string, model: string, url: string) => void;
     improveTranscription: (sessionId: string, model: string, url: string) => void;
     cancelFullTranscription: () => void;
+    refreshSessions: () => void;
 
     // Setters
     setSelectedSession: (session: Session | null) => void;
@@ -55,6 +56,18 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (isConnected) {
             sendMessage({ type: 'get_sessions' });
         }
+    }, [isConnected, sendMessage]);
+
+    // Background refresh every 10 seconds
+    useEffect(() => {
+        if (!isConnected) return;
+
+        const intervalId = setInterval(() => {
+            // Обновляем список сессий в фоне
+            sendMessage({ type: 'get_sessions' });
+        }, 10000); // 10 секунд
+
+        return () => clearInterval(intervalId);
     }, [isConnected, sendMessage]);
 
     // WebSocket Handlers
@@ -250,6 +263,10 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         sendMessage({ type: 'cancel_full_transcription' });
     };
 
+    const refreshSessions = () => {
+        sendMessage({ type: 'get_sessions' });
+    };
+
     return (
         <SessionContext.Provider value={{
             sessions, currentSession, selectedSession, isRecording, isStopping,
@@ -260,6 +277,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
             // Actions
             startSession, stopSession, deleteSession, selectSession,
             generateSummary, improveTranscription, cancelFullTranscription,
+            refreshSessions,
             setSelectedSession
         }}>
             {children}

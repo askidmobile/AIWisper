@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "crates/aiwisper-audio",
+    "crates/aiwisper-ml",
+    "crates/aiwisper-types",
+    "crates/aiwisper-worker",
+]
+
+[workspace.package]
+version = "2.0.6"
+edition = "2021"
+authors = ["AIWisper Team"]
+license = "MIT"
+repository = "https://github.com/your-org/aiwisper"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Audio processing
+cpal = "0.15"
+rubato = "0.14"
+hound = "3.5"                    # WAV file I/O
+symphonia = { version = "0.5", features = ["all"] }
+
+# ML Inference
+# whisper-rs with Metal support for macOS GPU acceleration
+# Updated to 0.15 for Apple M4 GPU family support
+whisper-rs = { version = "0.15", features = ["metal"] }
+# ONNX Runtime with CoreML for Apple Silicon
+# Using download-binaries to auto-download ONNX Runtime instead of load-dynamic
+ort = { version = "2.0.0-rc.9", features = ["download-binaries", "ndarray", "coreml"] }
+ndarray = "0.16"
+
+# IPC for worker processes
+interprocess = "2"
+
+# Internal crates
+aiwisper-audio = { path = "crates/aiwisper-audio" }
+aiwisper-ml = { path = "crates/aiwisper-ml" }
+aiwisper-types = { path = "crates/aiwisper-types" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
+
+[profile.dev]
+opt-level = 1

@@ -65,7 +65,7 @@ func NewTranscriptionService(sessionMgr *session.Manager, engineMgr *ai.EngineMa
 		VADMode:                session.VADModeAuto,   // По умолчанию автовыбор режима
 		VADMethod:              session.VADMethodAuto, // По умолчанию автовыбор метода
 		OllamaURL:              "http://localhost:11434",
-		OllamaModel:            "llama3.2",
+		OllamaModel:            "", // Модель берётся из настроек UI, не хардкодим дефолт
 		sessionSpeakerProfiles: make(map[string][]SessionSpeakerProfile),
 	}
 }
@@ -193,19 +193,20 @@ func (s *TranscriptionService) SetHybridConfig(config *ai.HybridTranscriptionCon
 		if ollamaURL == "" {
 			ollamaURL = s.OllamaURL
 		}
-		// Дефолты если всё ещё пусто
-		if ollamaModel == "" {
-			ollamaModel = "llama3.2"
-		}
 		if ollamaURL == "" {
 			ollamaURL = "http://localhost:11434"
 		}
 
-		log.Printf("Hybrid LLM selector: model=%s, url=%s", ollamaModel, ollamaURL)
-		llmSelector = &llmSelectorAdapter{
-			llmService:  s.LLMService,
-			ollamaURL:   ollamaURL,
-			ollamaModel: ollamaModel,
+		// Если модель не указана - не используем LLM
+		if ollamaModel == "" {
+			log.Printf("Hybrid LLM selector: model not configured, LLM will not be used")
+		} else {
+			log.Printf("Hybrid LLM selector: model=%s, url=%s", ollamaModel, ollamaURL)
+			llmSelector = &llmSelectorAdapter{
+				llmService:  s.LLMService,
+				ollamaURL:   ollamaURL,
+				ollamaModel: ollamaModel,
+			}
 		}
 	}
 
@@ -331,11 +332,14 @@ func (s *TranscriptionService) applyHybridToPipelineResult(samples []float32, pi
 		if ollamaURL == "" {
 			ollamaURL = s.OllamaURL
 		}
-		if ollamaModel == "" {
-			ollamaModel = "llama3.2"
-		}
 		if ollamaURL == "" {
 			ollamaURL = "http://localhost:11434"
+		}
+
+		// Если модель не указана - не используем LLM
+		if ollamaModel == "" {
+			log.Printf("[applyHybridToPipelineResult] LLM model not configured, skipping LLM selection")
+			return nil
 		}
 
 		log.Printf("[applyHybridToPipelineResult] Using LLM to select best: model=%s", ollamaModel)

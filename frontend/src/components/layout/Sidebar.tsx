@@ -29,7 +29,8 @@ const openDataFolder = async () => {
 export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
     const { 
         sessions, selectedSession, selectSession, deleteSession, isRecording,
-        isFullTranscribing, fullTranscriptionSessionId, fullTranscriptionProgress
+        isFullTranscribing, fullTranscriptionSessionId, fullTranscriptionProgress,
+        refreshSessions
     } = useSessionContext();
     const { sendMessage } = useWebSocketContext();
     const [showStats, setShowStats] = useState(false);
@@ -203,7 +204,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
                 <div style={{ display: 'flex', gap: '0.25rem' }}>
                     <button
                         className="btn-icon btn-icon-sm"
-                        onClick={() => window.location.reload()}
+                        onClick={refreshSessions}
                         title="Обновить список"
                         style={{
                             width: '32px',

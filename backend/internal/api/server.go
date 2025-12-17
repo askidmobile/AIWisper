@@ -295,6 +295,25 @@ func (s *Server) removeClient(c transportClient) {
 	_ = c.Close()
 }
 
+// sessionToInfo конвертирует Session в SessionInfo с fallback на waveform.duration
+func sessionToInfo(sess *session.Session) *SessionInfo {
+	duration := sess.TotalDuration
+	// Fallback: если TotalDuration == 0, но есть waveform с длительностью,
+	// используем длительность из waveform (для незавершённых сессий)
+	if duration == 0 && sess.Waveform != nil && sess.Waveform.Duration > 0 {
+		duration = time.Duration(sess.Waveform.Duration * float64(time.Second))
+	}
+
+	return &SessionInfo{
+		ID:            sess.ID,
+		StartTime:     sess.StartTime,
+		Status:        string(sess.Status),
+		TotalDuration: int64(duration / time.Millisecond),
+		ChunksCount:   len(sess.Chunks),
+		Title:         sess.Title,
+	}
+}
+
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -415,11 +434,7 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 		sessions := s.SessionMgr.ListSessions()
 		infos := make([]*SessionInfo, len(sessions))
 		for i, sess := range sessions {
-			infos[i] = &SessionInfo{
-				ID: sess.ID, StartTime: sess.StartTime, Status: string(sess.Status),
-				TotalDuration: int64(sess.TotalDuration / time.Millisecond),
-				ChunksCount:   len(sess.Chunks), Title: sess.Title,
-			}
+			infos[i] = sessionToInfo(sess)
 		}
 		send(Message{Type: "sessions_list", Sessions: infos})
 
@@ -455,11 +470,7 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 		sessions := s.SessionMgr.ListSessions()
 		infos := make([]*SessionInfo, len(sessions))
 		for i, sess := range sessions {
-			infos[i] = &SessionInfo{
-				ID: sess.ID, StartTime: sess.StartTime, Status: string(sess.Status),
-				TotalDuration: int64(sess.TotalDuration / time.Millisecond),
-				ChunksCount:   len(sess.Chunks), Title: sess.Title,
-			}
+			infos[i] = sessionToInfo(sess)
 		}
 		send(Message{Type: "sessions_list", Sessions: infos})
 
@@ -659,8 +670,12 @@ func (s *Server) processMessage(send sendFunc, msg Message) {
 				url = "http://localhost:11434"
 			}
 			model := msg.OllamaModel
+			// Не подставляем дефолт - модель должна быть явно указана из настроек UI
 			if model == "" {
-				model = "llama3.2"
+				log.Printf("Auto-improve: model not specified, auto-improve will be disabled")
+				s.TranscriptionService.DisableAutoImprove()
+				send(Message{Type: "auto_improve_status", AutoImproveEnabled: false, Error: "Ollama model not configured"})
+				return
 			}
 			s.TranscriptionService.EnableAutoImprove(url, model)
 			send(Message{Type: "auto_improve_status", AutoImproveEnabled: true, OllamaModel: model, OllamaUrl: url})
