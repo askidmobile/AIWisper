@@ -81,6 +81,18 @@ build/
 .build/
 *.metallib
 
+# Rust
+rust/target/
+
+# UI (Vite)
+rust/ui/node_modules/
+rust/ui/dist/
+rust/ui/.vite/
+rust/ui/*.tsbuildinfo
+
+# Tauri resources (local binaries)
+rust/src-tauri/resources/ffmpeg
+
 # Vendor binaries
 vendor/ffmpeg/ffmpeg
 
