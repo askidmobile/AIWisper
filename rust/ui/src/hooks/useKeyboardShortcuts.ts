@@ -90,7 +90,7 @@ export const useKeyboardShortcuts = ({ shortcuts, enabled = true }: UseKeyboardS
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [handleKeyDown]);
     
-    // Возвращаем список shortcuts для отображения в UI (например, в Help modal)
+    // Возвращаем список shortcuts для отображения в UI (например, в подсказке)
     return {
         shortcuts: shortcuts.filter(s => s.enabled !== false).map(s => ({
             key: s.key,
@@ -116,7 +116,6 @@ export const createAppShortcuts = (handlers: {
     onToggleSettings?: () => void;
     onCopyTranscription?: () => void;
     onExportTXT?: () => void;
-    onShowHelp?: () => void;
     isRecording?: boolean;
     isPlaying?: boolean;
 }): KeyboardShortcut[] => {
@@ -189,15 +188,6 @@ export const createAppShortcuts = (handlers: {
             meta: true,
             action: handlers.onExportTXT,
             description: 'Экспорт в TXT',
-        });
-    }
-    
-    // Помощь
-    if (handlers.onShowHelp) {
-        shortcuts.push({
-            key: '?',
-            action: handlers.onShowHelp,
-            description: 'Показать справку',
         });
     }
     

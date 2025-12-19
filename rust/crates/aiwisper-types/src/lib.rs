@@ -78,7 +78,10 @@ pub struct AudioDevice {
 
 /// Recording state
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecordingState {
+    /// Session ID
+    pub session_id: String,
     /// Duration in milliseconds
     pub duration_ms: u64,
     /// Number of samples recorded

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Chunk, TranscriptSegment } from '../../types/session';
 import { useBackendContext } from '../../context/BackendContext';
 import { StreamingTranscription } from '../StreamingTranscription';
+import { ChunkSkeleton } from './ChunkSkeleton';
 
 const API_BASE = `http://localhost:${(globalThis as any).AIWISPER_HTTP_PORT || 18080}`;
 
@@ -16,6 +17,8 @@ interface LiveChunksViewProps {
     transcribingChunkId: string | null;
     highlightedChunkId: string | null;
     onPlayChunk: (url: string) => void;
+    /** Показывать скелетон следующего чанка (во время записи) */
+    showSkeleton?: boolean;
 }
 
 /**
@@ -27,6 +30,7 @@ export const LiveChunksView: React.FC<LiveChunksViewProps> = ({
     transcribingChunkId,
     highlightedChunkId,
     onPlayChunk,
+    showSkeleton = true,
 }) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const { isTauri, sendMessage } = useBackendContext();
@@ -73,11 +77,11 @@ export const LiveChunksView: React.FC<LiveChunksViewProps> = ({
     }
 
     return (
-        <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ position: 'relative', height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <div
                 ref={containerRef}
                 onScroll={handleScroll}
-                style={{ flex: 1, overflowY: 'auto', padding: '1rem', fontSize: '0.9rem' }}
+                style={{ flex: 1, overflowY: 'auto', padding: '1rem', fontSize: '0.9rem', minHeight: 0 }}
             >
                 {chunks.map((chunk, index) => {
                     const isLast = index === chunks.length - 1;
@@ -91,13 +95,18 @@ export const LiveChunksView: React.FC<LiveChunksViewProps> = ({
                             sessionId={sessionId}
                             isTauri={isTauri}
                             sendMessage={sendMessage}
-                            isLast={isLast}
+                            isLast={isLast && !showSkeleton}
                             isTranscribing={isTranscribing}
                             isHighlighted={isHighlighted}
                             onPlayChunk={onPlayChunk}
                         />
                     );
                 })}
+                
+                {/* Скелетон следующего чанка - показывает что запись продолжается */}
+                {showSkeleton && (
+                    <ChunkSkeleton chunkIndex={chunks.length} />
+                )}
             </div>
 
             {!isScrolledToBottom && newChunksCount > 0 && (
@@ -146,7 +155,7 @@ interface LiveChunkItemProps {
 
 const chunkAudioCache = new Map<string, string>();
 
-const LiveChunkItem: React.FC<LiveChunkItemProps> = ({
+const LiveChunkItem: React.FC<LiveChunkItemProps> = React.memo(({
     chunk,
     sessionId,
     isTauri,
@@ -204,7 +213,9 @@ const LiveChunkItem: React.FC<LiveChunkItemProps> = ({
                 marginBottom: '0.75rem',
                 backgroundColor: isTranscribing ? 'rgba(59, 130, 246, 0.08)' : isHighlighted ? 'rgba(16, 185, 129, 0.08)' : 'var(--surface)',
                 borderRadius: '10px',
-                border: `1px solid ${isTranscribing ? 'rgba(59, 130, 246, 0.3)' : isHighlighted ? 'rgba(16, 185, 129, 0.3)' : 'var(--border)'}`,
+                borderTop: `1px solid ${isTranscribing ? 'rgba(59, 130, 246, 0.3)' : isHighlighted ? 'rgba(16, 185, 129, 0.3)' : 'var(--border)'}`,
+                borderRight: `1px solid ${isTranscribing ? 'rgba(59, 130, 246, 0.3)' : isHighlighted ? 'rgba(16, 185, 129, 0.3)' : 'var(--border)'}`,
+                borderBottom: `1px solid ${isTranscribing ? 'rgba(59, 130, 246, 0.3)' : isHighlighted ? 'rgba(16, 185, 129, 0.3)' : 'var(--border)'}`,
                 borderLeft: `3px solid ${statusColor}`,
                 transition: 'all 0.3s ease',
                 animation: isTranscribing ? 'transcribing-pulse 2s ease-in-out infinite' : isHighlighted ? 'highlight-flash 0.5s ease-in-out 2' : 'fadeIn 0.3s ease-out',
@@ -262,9 +273,9 @@ const LiveChunkItem: React.FC<LiveChunkItemProps> = ({
             )}
         </div>
     );
-};
+});
 
-const ChunkContent: React.FC<{ chunk: Chunk }> = ({ chunk }) => {
+const ChunkContent: React.FC<{ chunk: Chunk }> = React.memo(({ chunk }) => {
     const speakerInfo = (speaker?: string): SpeakerInfo => {
         if (speaker === 'mic' || speaker === 'Вы') return { name: 'Вы', color: '#4caf50' };
         if (speaker?.startsWith('Speaker ')) {
@@ -313,7 +324,7 @@ const ChunkContent: React.FC<{ chunk: Chunk }> = ({ chunk }) => {
     }
 
     return null;
-};
+});
 
 const DialogueSegment: React.FC<{ segment: TranscriptSegment; getSpeakerDisplayName: (speaker?: string) => SpeakerInfo }> = ({ segment, getSpeakerDisplayName }) => {
     const speaker = getSpeakerDisplayName(segment.speaker);

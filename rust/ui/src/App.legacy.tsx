@@ -4,7 +4,6 @@ import ModelManager from './components/ModelManager';
 import SessionTabs, { TabType } from './components/SessionTabs';
 import SummaryView from './components/SummaryView';
 import { SettingsPage as SettingsModal } from './components/SettingsPage';
-import HelpModal from './components/HelpModal';
 import AudioMeterSidebar from './components/AudioMeterSidebar';
 import WaveformDisplay from './components/WaveformDisplay';
 import SpeakersTab from './components/modules/SpeakersTab';
@@ -2468,27 +2467,11 @@ function App() {
     // Состояние для модального окна справки по горячим клавишам
     const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
     
-    // Состояние для полной справки (Help menu)
-    const [showHelp, setShowHelp] = useState(false);
-    const [helpInitialTab, setHelpInitialTab] = useState<'guide' | 'shortcuts' | 'about'>('guide');
-
     // Обработчики IPC событий из системного меню
     useEffect(() => {
         if (!ipcRenderer) return;
 
         const handlers: { [key: string]: () => void } = {
-            'show-help': () => {
-                setHelpInitialTab('guide');
-                setShowHelp(true);
-            },
-            'show-shortcuts': () => {
-                setHelpInitialTab('shortcuts');
-                setShowHelp(true);
-            },
-            'show-about': () => {
-                setHelpInitialTab('about');
-                setShowHelp(true);
-            },
             'open-settings': () => {
                 if (!isRecording) setShowSettings(true);
             },
@@ -4954,14 +4937,6 @@ function App() {
                     }}
                 />
             )}
-
-            {/* Help Modal (from system menu) */}
-            <HelpModal
-                isOpen={showHelp}
-                onClose={() => setShowHelp(false)}
-                initialTab={helpInitialTab}
-                appVersion="1.35.0"
-            />
 
             {/* Keyboard Shortcuts Help Modal */}
             {showKeyboardHelp && (

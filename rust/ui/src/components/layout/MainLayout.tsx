@@ -5,7 +5,6 @@ import { SettingsPage } from '../SettingsPage';
 import { TranscriptionView } from '../modules/TranscriptionView';
 
 import { RecordingOverlay } from '../RecordingOverlay';
-import { HelpModal } from '../HelpModal';
 import { useAudioPlayer } from '../../hooks/useAudioPlayer';
 import { useSettingsContext } from '../../context/SettingsContext';
 import { useKeyboardShortcuts, createAppShortcuts } from '../../hooks/useKeyboardShortcuts';
@@ -25,7 +24,7 @@ import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData } from '../../utils/waveform';
 
 // Версия приложения
-const APP_VERSION = '2.0.12';
+const APP_VERSION = '2.0.13';
 
 interface MainLayoutProps {
     addLog: (msg: string) => void;
@@ -88,7 +87,6 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     // UI State
     const [showSettings, setShowSettings] = useState(false);
     const [showModelManager, setShowModelManager] = useState(false);
-    const [showHelp, setShowHelp] = useState(false);
     const [modelLoading, setModelLoading] = useState(false);
     const [loadingModelName, setLoadingModelName] = useState('');
 
@@ -241,7 +239,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
 
         const unsubChunkTranscribed = subscribe('chunk_transcribed', (msg: any) => {
             // Запрашиваем обновлённый список спикеров после транскрипции
-            if (msg.sessionId) {
+            // Но только если сессия не в процессе записи (иначе файл может быть не готов)
+            if (msg.sessionId && !isRecording) {
                 sendMessage({ type: 'get_session_speakers', sessionId: msg.sessionId });
             }
         });
@@ -254,7 +253,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             unsubSpeakersMerged();
             unsubChunkTranscribed();
         };
-    }, [subscribe, sendMessage]);
+    }, [subscribe, sendMessage, isRecording]);
 
     // Load session speakers when session changes
     useEffect(() => {
@@ -628,11 +627,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             onToggleSettings: () => setShowSettings(prev => !prev),
             onCopyTranscription: handleCopyTranscription,
             onExportTXT: handleExportTXT,
-            onShowHelp: () => setShowHelp(true),
             isRecording,
             isPlaying,
         }),
-        enabled: !showHelp && !showModelManager, // Отключаем shortcuts когда открыты модальные окна
+        enabled: !showModelManager, // Отключаем shortcuts когда открыты модальные окна
     });
 
     // Drag & Drop for file import
@@ -858,19 +856,42 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                 </div>
             )}
             
-            <div style={{ display: 'flex', flex: 1, overflow: 'hidden', marginTop: isRecording || (isStopping && isProcessingFinalChunks) ? '48px' : 0, transition: 'margin-top 0.3s cubic-bezier(0.4, 0, 0.2, 1)' }}>
+            <div style={{ 
+                display: 'flex', 
+                flex: 1, 
+                overflow: 'hidden', 
+                // При записи контент должен занимать всё доступное пространство
+                minHeight: isRecording ? 'calc(100vh - 48px)' : 0, 
+                marginTop: isRecording || (isStopping && isProcessingFinalChunks) ? '48px' : 0, 
+                transition: 'margin-top 0.3s cubic-bezier(0.4, 0, 0.2, 1)' 
+            }}>
                 <Sidebar onStartRecording={handleStartStop} />
 
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                    <Header 
-                        showSettings={showSettings} 
-                        setShowSettings={setShowSettings}
-                        onShowHelp={() => setShowHelp(true)}
-                    />
+                <div style={{ 
+                    flex: 1, 
+                    display: 'flex', 
+                    flexDirection: 'column', 
+                    overflow: 'hidden', 
+                    // При записи убираем схлопывание flex контейнера
+                    minHeight: isRecording ? '100%' : 0 
+                }}>
+                    {/* Скрываем header при записи */}
+                    {!isRecording && (
+                        <Header 
+                            showSettings={showSettings} 
+                            setShowSettings={setShowSettings}
+                        />
+                    )}
 
 
 
-                    <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+                    <div style={{ 
+                        display: 'flex', 
+                        flex: 1, 
+                        overflow: 'hidden', 
+                        // ВАЖНО: при записи устанавливаем минимальную высоту, чтобы RecordingView был виден
+                        minHeight: isRecording ? '500px' : 0
+                    }}>
                         <ErrorBoundary>
                             <TranscriptionView
                                 onPlayChunk={handlePlayChunk}
@@ -895,15 +916,15 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                                 waveformError={waveformStatus === 'error' ? (waveformError || 'Не удалось загрузить аудио') : null}
                             />
                         </ErrorBoundary>
-
-                        {/* VU Meters Sidebar - всегда рендерится, анимация внутри компонента */}
-                        <AudioMeterSidebar
-                            micLevel={isPlaying ? playbackMicLevel : micLevel}
-                            sysLevel={isPlaying ? playbackSysLevel : sysLevel}
-                            isActive={isRecording || isPlaying}
-                        />
                     </div>
                 </div>
+
+                {/* VU Meters Sidebar - вынесен на уровень основного flex контейнера */}
+                <AudioMeterSidebar
+                    micLevel={isPlaying ? playbackMicLevel : micLevel}
+                    sysLevel={isPlaying ? playbackSysLevel : sysLevel}
+                    isActive={isRecording || isPlaying}
+                />
             </div>
 
             {/* Model Manager Modal */}
@@ -969,13 +990,6 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                 onRenameVoiceprint={handleRenameVoiceprint}
                 onDeleteVoiceprint={handleDeleteVoiceprint}
                 onRefreshVoiceprints={refreshVoiceprints}
-                appVersion={APP_VERSION}
-            />
-
-            {/* Help Modal */}
-            <HelpModal
-                isOpen={showHelp}
-                onClose={() => setShowHelp(false)}
                 appVersion={APP_VERSION}
             />
 

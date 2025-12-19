@@ -127,19 +127,22 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
         <aside
             className="glass-surface-elevated"
             style={{
-                width: '300px',
-                margin: 'var(--spacing-inset)',
+                width: isRecording ? '0px' : '300px',
+                minWidth: isRecording ? '0px' : '300px',
+                margin: isRecording ? 0 : 'var(--spacing-inset)',
                 marginRight: 0,
                 borderRadius: 'var(--radius-xl)',
                 background: 'var(--sidebar-bg)',
                 backdropFilter: 'blur(var(--glass-blur)) saturate(var(--glass-saturation))',
                 WebkitBackdropFilter: 'blur(var(--glass-blur)) saturate(var(--glass-saturation))',
-                border: '1px solid var(--glass-border)',
-                boxShadow: 'var(--shadow-glass)',
+                border: isRecording ? 'none' : '1px solid var(--glass-border)',
+                boxShadow: isRecording ? 'none' : 'var(--shadow-glass)',
                 display: 'flex',
                 flexDirection: 'column',
                 overflow: 'hidden',
                 position: 'relative',
+                opacity: isRecording ? 0 : 1,
+                transition: 'width 0.3s ease, min-width 0.3s ease, opacity 0.3s ease, margin 0.3s ease',
             }}
         >
             {/* Recording Lock Overlay */}

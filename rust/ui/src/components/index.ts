@@ -39,5 +39,4 @@ export { SessionStats } from './modules/SessionStats';
 // Other
 export { RecordingOverlay } from './RecordingOverlay';
 export { StreamingTranscription } from './StreamingTranscription';
-export { HelpModal } from './HelpModal';
 export { default as ModelManager } from './ModelManager';

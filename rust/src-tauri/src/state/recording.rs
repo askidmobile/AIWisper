@@ -208,6 +208,10 @@ impl ChunkMeta {
 pub struct RecordingHandle {
     /// Stop flag
     pub stop_flag: Arc<AtomicBool>,
+    /// Microphone mute flag
+    pub mic_muted: Arc<AtomicBool>,
+    /// System audio mute flag
+    pub sys_muted: Arc<AtomicBool>,
     /// Join handle for recording thread
     pub join_handle: Option<std::thread::JoinHandle<RecordingResult>>,
     /// Session info
@@ -223,6 +227,28 @@ pub struct RecordingResult {
 }
 
 impl RecordingHandle {
+    /// Set mute state for microphone channel
+    pub fn set_mic_muted(&self, muted: bool) {
+        self.mic_muted.store(muted, Ordering::SeqCst);
+        tracing::info!("Mic mute set to: {}", muted);
+    }
+
+    /// Set mute state for system audio channel
+    pub fn set_sys_muted(&self, muted: bool) {
+        self.sys_muted.store(muted, Ordering::SeqCst);
+        tracing::info!("Sys mute set to: {}", muted);
+    }
+
+    /// Get current mic mute state
+    pub fn is_mic_muted(&self) -> bool {
+        self.mic_muted.load(Ordering::SeqCst)
+    }
+
+    /// Get current sys mute state
+    pub fn is_sys_muted(&self) -> bool {
+        self.sys_muted.load(Ordering::SeqCst)
+    }
+
     /// Stop recording and get result
     pub fn stop(mut self) -> Result<RecordingResult> {
         // Signal stop
@@ -274,6 +300,12 @@ pub fn start_recording(
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_clone = stop_flag.clone();
 
+    // Create mute flags
+    let mic_muted = Arc::new(AtomicBool::new(false));
+    let sys_muted = Arc::new(AtomicBool::new(false));
+    let mic_muted_clone = mic_muted.clone();
+    let sys_muted_clone = sys_muted.clone();
+
     // Clone for thread
     let data_dir = session.data_dir.clone();
 
@@ -286,6 +318,8 @@ pub fn start_recording(
             device_id,
             capture_system,
             stop_flag_clone,
+            mic_muted_clone,
+            sys_muted_clone,
             app_handle,
             transcription_config,
         )
@@ -293,6 +327,8 @@ pub fn start_recording(
 
     Ok(RecordingHandle {
         stop_flag,
+        mic_muted,
+        sys_muted,
         join_handle: Some(join_handle),
         session,
     })
@@ -306,6 +342,8 @@ fn recording_thread(
     device_id: Option<String>,
     capture_system: bool,
     stop_flag: Arc<AtomicBool>,
+    mic_muted: Arc<AtomicBool>,
+    sys_muted: Arc<AtomicBool>,
     app_handle: tauri::AppHandle,
     transcription_config: TranscriptionConfig,
 ) -> RecordingResult {
@@ -414,15 +452,25 @@ fn recording_thread(
     );
 
     // Emit session_started event with full session info
+    // Must match Session interface from frontend/src/types/session.ts
     let _ = app_handle.emit(
         "session_started",
         serde_json::json!({
             "sessionId": session_id.clone(),
             "session": {
-                "id": session_id,
+                "id": session_id.clone(),
                 "startTime": chrono::Utc::now().to_rfc3339(),
+                "endTime": null,
                 "status": "recording",
                 "chunks": [],
+                "dataDir": data_dir.to_string_lossy().to_string(),
+                "totalDuration": 0,
+                "title": null,
+                "tags": [],
+                "summary": null,
+                "language": null,
+                "model": null,
+                "sampleCount": 0,
             }
         }),
     );
@@ -499,6 +547,10 @@ fn recording_thread(
             mic_buffer.extend_from_slice(&new_mic_samples);
         }
 
+        // Check mute flags
+        let is_mic_muted = mic_muted.load(Ordering::Relaxed);
+        let is_sys_muted = sys_muted.load(Ordering::Relaxed);
+
         if sys_capture.is_some() {
             // Стерео режим: пишем и обрабатываем только выровненные пары mic/sys
             let min_len = mic_buffer.len().min(sys_buffer.len());
@@ -506,19 +558,39 @@ fn recording_thread(
                 let mic_chunk = mic_buffer.drain(..min_len).collect::<Vec<_>>();
                 let sys_chunk = sys_buffer.drain(..min_len).collect::<Vec<_>>();
 
-                if let Err(e) = mp3_writer.write_stereo(&mic_chunk, &sys_chunk) {
+                // Apply mute: replace with silence (zeros) if muted
+                let mic_chunk_final: Vec<f32> = if is_mic_muted {
+                    vec![0.0; mic_chunk.len()]
+                } else {
+                    mic_chunk.clone()
+                };
+                let sys_chunk_final: Vec<f32> = if is_sys_muted {
+                    vec![0.0; sys_chunk.len()]
+                } else {
+                    sys_chunk.clone()
+                };
+
+                if let Err(e) = mp3_writer.write_stereo(&mic_chunk_final, &sys_chunk_final) {
                     tracing::error!("Failed to write stereo MP3: {}", e);
                 }
 
                 // Process through chunk buffer (стерео всегда при наличии capture_system)
-                chunk_buffer.process_stereo(&mic_chunk, &sys_chunk);
+                // Use muted samples for chunk buffer too, so transcription sees silence
+                chunk_buffer.process_stereo(&mic_chunk_final, &sys_chunk_final);
             }
         } else if !new_mic_samples.is_empty() {
             // Моно режим: только микрофон
-            if let Err(e) = mp3_writer.write(&new_mic_samples) {
+            // Apply mute for mono mode too
+            let mic_samples_final: Vec<f32> = if is_mic_muted {
+                vec![0.0; new_mic_samples.len()]
+            } else {
+                new_mic_samples.clone()
+            };
+            
+            if let Err(e) = mp3_writer.write(&mic_samples_final) {
                 tracing::error!("Failed to write MP3: {}", e);
             }
-            chunk_buffer.process(&new_mic_samples);
+            chunk_buffer.process(&mic_samples_final);
         }
 
         if !new_mic_samples.is_empty() {
@@ -545,6 +617,7 @@ fn recording_thread(
             );
 
             // Emit chunk_created event (status: pending)
+            let duration_ns = (chunk_meta.end_ms - chunk_meta.start_ms) as u64 * 1_000_000;
             let _ = app_handle.emit(
                 "chunk_created",
                 serde_json::json!({
@@ -554,42 +627,77 @@ fn recording_thread(
                         "index": chunk_meta.index,
                         "startMs": chunk_meta.start_ms,
                         "endMs": chunk_meta.end_ms,
+                        "duration": duration_ns,
                         "status": "pending",
+                        "isStereo": chunk_buffer.has_separate_channels(),
                     }
                 }),
             );
 
             // Auto-transcribe chunk if model is available AND not stopping
             // При остановке пропускаем транскрипцию для быстрого выхода
+            // ✅ Транскрипция теперь в ФОНОВОМ ПОТОКЕ, чтобы не блокировать запись и audio_level
             if !is_stopping {
+                // Emit chunk_transcribing event
+                let _ = app_handle.emit(
+                    "chunk_transcribing",
+                    serde_json::json!({
+                        "sessionId": session_id,
+                        "chunkId": chunk_meta.id,
+                        "chunkIndex": chunk_meta.index,
+                    }),
+                );
+
+                // Клонируем все необходимые данные для фонового потока
+                let bg_chunk_meta = chunk_meta.clone();
+                let bg_chunk_path = chunk_path.clone();
+                let bg_session_id = session_id.clone();
+                let bg_app_handle = app_handle.clone();
+                let bg_transcription_config = transcription_config.clone();
+                
                 if chunk_buffer.has_separate_channels() {
                     // Stereo mode: transcribe each channel separately
                     let mic_samples = chunk_buffer.get_mic_samples_range(event.start_ms, event.end_ms);
                     let sys_samples = chunk_buffer.get_sys_samples_range(event.start_ms, event.end_ms);
+                    let sample_rate = chunk_buffer.sample_rate();
                     
                     if !mic_samples.is_empty() || !sys_samples.is_empty() {
-                        chunk_meta = transcribe_chunk_stereo(
-                            chunk_meta,
-                            &mic_samples,
-                            &sys_samples,
-                            chunk_buffer.sample_rate(),
-                            &transcription_config,
-                            &session_id,
-                            &app_handle,
-                        );
+                        std::thread::spawn(move || {
+                            let transcribed = transcribe_chunk_stereo(
+                                bg_chunk_meta,
+                                &mic_samples,
+                                &sys_samples,
+                                sample_rate,
+                                &bg_transcription_config,
+                                &bg_session_id,
+                                &bg_app_handle,
+                            );
+                            // Сохраняем результат транскрипции
+                            if let Err(e) = transcribed.save(&bg_chunk_path) {
+                                tracing::error!("Failed to save transcribed chunk: {}", e);
+                            }
+                        });
                     }
                 } else {
                     // Mono mode
                     let chunk_samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
+                    let sample_rate = chunk_buffer.sample_rate();
+                    
                     if !chunk_samples.is_empty() {
-                        chunk_meta = transcribe_chunk_samples(
-                            chunk_meta,
-                            &chunk_samples,
-                            chunk_buffer.sample_rate(),
-                            &transcription_config,
-                            &session_id,
-                            &app_handle,
-                        );
+                        std::thread::spawn(move || {
+                            let transcribed = transcribe_chunk_samples(
+                                bg_chunk_meta,
+                                &chunk_samples,
+                                sample_rate,
+                                &bg_transcription_config,
+                                &bg_session_id,
+                                &bg_app_handle,
+                            );
+                            // Сохраняем результат транскрипции
+                            if let Err(e) = transcribed.save(&bg_chunk_path) {
+                                tracing::error!("Failed to save transcribed chunk: {}", e);
+                            }
+                        });
                     }
                 }
             }
@@ -603,22 +711,29 @@ fn recording_thread(
         }
 
         // Emit audio level (always emit, even if no samples yet)
+        // When muted, show 0 level (but show actual level in logs for debugging)
         let elapsed = start_time.elapsed().as_secs_f64();
         let recent_start = all_mic_samples.len().saturating_sub(800);
         let recent = &all_mic_samples[recent_start..];
-        let mic_level = if !recent.is_empty() {
+        let actual_mic_level = if !recent.is_empty() {
             let rms: f32 = (recent.iter().map(|s| s * s).sum::<f32>() / recent.len() as f32).sqrt();
             (rms * 300.0).min(100.0)
         } else {
             0.0
         };
+        
+        // Apply mute to displayed levels
+        let mic_level = if is_mic_muted { 0.0 } else { actual_mic_level };
+        let sys_level_final = if is_sys_muted { 0.0 } else { sys_level };
 
         // Log first few emissions for debugging
         if loop_count <= 5 {
             tracing::info!(
-                "Emitting audio-level: mic_level={:.1}, samples={}, elapsed={:.2}s",
+                "Emitting audio-level: mic_level={:.1}, sys_level={:.1}, mic_muted={}, sys_muted={}, elapsed={:.2}s",
                 mic_level,
-                all_mic_samples.len(),
+                sys_level_final,
+                is_mic_muted,
+                is_sys_muted,
                 elapsed
             );
         }
@@ -627,8 +742,10 @@ fn recording_thread(
             "audio_level",
             serde_json::json!({
                 "micLevel": mic_level,
-                "sysLevel": sys_level,
+                "sysLevel": sys_level_final,
                 "duration": elapsed,
+                "micMuted": is_mic_muted,
+                "sysMuted": is_sys_muted,
             }),
         );
     }
@@ -649,6 +766,7 @@ fn recording_thread(
         );
 
         // Emit chunk_created event (status: pending)
+        let final_duration_ns = (chunk_meta.end_ms - chunk_meta.start_ms) as u64 * 1_000_000;
         let _ = app_handle.emit(
             "chunk_created",
             serde_json::json!({
@@ -658,7 +776,9 @@ fn recording_thread(
                     "index": chunk_meta.index,
                     "startMs": chunk_meta.start_ms,
                     "endMs": chunk_meta.end_ms,
+                    "duration": final_duration_ns,
                     "status": "pending",
+                    "isStereo": chunk_buffer.has_separate_channels(),
                 }
             }),
         );
@@ -826,6 +946,7 @@ fn transcribe_chunk_samples(
             );
 
             // Emit chunk_transcribed event
+            let duration_ns = (chunk_meta.end_ms - chunk_meta.start_ms) as u64 * 1_000_000;
             let _ = app_handle.emit(
                 "chunk_transcribed",
                 serde_json::json!({
@@ -835,9 +956,11 @@ fn transcribe_chunk_samples(
                         "index": chunk_meta.index,
                         "startMs": chunk_meta.start_ms,
                         "endMs": chunk_meta.end_ms,
+                        "duration": duration_ns,
                         "status": "completed",
                         "transcription": chunk_meta.transcription,
                         "dialogue": dialogue,
+                        "isStereo": false,
                     }
                 }),
             );
@@ -957,6 +1080,7 @@ fn transcribe_chunk_stereo(
     );
 
     // Emit chunk_transcribed event
+    let stereo_duration_ns = (chunk_meta.end_ms - chunk_meta.start_ms) as u64 * 1_000_000;
     let _ = app_handle.emit(
         "chunk_transcribed",
         serde_json::json!({
@@ -966,9 +1090,11 @@ fn transcribe_chunk_stereo(
                 "index": chunk_meta.index,
                 "startMs": chunk_meta.start_ms,
                 "endMs": chunk_meta.end_ms,
+                "duration": stereo_duration_ns,
                 "status": "completed",
                 "transcription": chunk_meta.transcription,
                 "dialogue": all_dialogue,
+                "isStereo": true,
             }
         }),
     );

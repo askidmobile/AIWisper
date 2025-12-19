@@ -41,15 +41,15 @@ export const AudioMeterSidebar: React.FC<AudioMeterSidebarProps> = ({
 
     return (
         <div style={{
-            width: isAnimating ? '40px' : '0px',
-            minWidth: isAnimating ? '40px' : '0px',
-            height: '100%',
+            width: isAnimating ? '55px' : '0px',
+            minWidth: isAnimating ? '55px' : '0px',
+            flexShrink: 0,
             display: 'flex',
             flexDirection: 'row',
             alignItems: 'stretch',
             gap: '6px',
             padding: isAnimating ? '12px 8px' : '12px 0',
-            background: 'linear-gradient(180deg, rgba(0,0,0,0.2) 0%, rgba(0,0,0,0.1) 100%)',
+            background: 'linear-gradient(180deg, rgba(0,0,0,0.3) 0%, rgba(0,0,0,0.15) 100%)',
             borderLeft: isAnimating ? '1px solid var(--border)' : '0px solid transparent',
             opacity: isAnimating ? 1 : 0,
             overflow: 'hidden',

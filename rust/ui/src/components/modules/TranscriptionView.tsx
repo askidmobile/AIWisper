@@ -317,11 +317,19 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     };
 
     return (
-        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-            {(selectedSession || isRecording) && (
+        <main style={{ 
+            flex: 1, 
+            display: 'flex', 
+            flexDirection: 'column', 
+            overflow: 'hidden', 
+            // ВАЖНО: при записи устанавливаем минимальную высоту, чтобы RecordingView был виден
+            minHeight: isRecording ? '500px' : 0 
+        }}>
+            {/* Скрываем контролы и табы при записи */}
+            {selectedSession && !isRecording && (
                 <div style={{ flexShrink: 0, backgroundColor: 'var(--app-bg)', borderBottom: '1px solid var(--border)', padding: '0 0' }}>
                     {/* Controls with integrated Waveform */}
-                    {displaySession && !isRecording && (
+                    {displaySession && (
                         <SessionControls
                             session={displaySession}
                             isPlaying={isPlaying}
@@ -362,7 +370,15 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
 
             <div 
                 ref={transcriptionRef} 
-                style={{ flex: 1, padding: '1rem 1.5rem', overflowY: 'auto', overflowX: 'hidden', position: 'relative' }}
+                style={{ 
+                    flex: 1, 
+                    padding: '1rem 1.5rem', 
+                    overflowY: 'auto', 
+                    overflowX: 'hidden', 
+                    position: 'relative', 
+                    // ВАЖНО: убираем minHeight: 0 при записи, чтобы контент был виден
+                    minHeight: isRecording ? '400px' : 0 
+                }}
                 onScroll={() => {
                     // Отключаем автоскролл при ручной прокрутке во время воспроизведения
                     if (isPlaying) setAutoScrollToPlayback(false);
@@ -383,7 +399,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                 {chunks.length === 0 && !isRecording && !selectedSession ? (
                     <WelcomeViewSimple />
                 ) : isRecording ? (
-                    // Во время записи всегда показываем RecordingView (даже если уже есть чанки)
+                    // Во время записи всегда показываем RecordingView
                     <RecordingView />
                 ) : (
                     <>

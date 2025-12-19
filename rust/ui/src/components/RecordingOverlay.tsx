@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useSessionContext } from '../context/SessionContext';
+import { useBackendContext } from '../context/BackendContext';
 // StreamingTranscription временно отключён
 // import { StreamingTranscription } from './StreamingTranscription';
 
@@ -18,10 +19,15 @@ interface RecordingOverlayProps {
 }
 
 export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) => {
-    const { isRecording, currentSession } = useSessionContext();
+    const { isRecording, currentSession, isStopping } = useSessionContext();
+    const { sendMessage } = useBackendContext();
     const [duration, setDuration] = useState(0);
     const [waveData, setWaveData] = useState<number[]>(Array(32).fill(0.3));
     const animationRef = useRef<number | null>(null);
+    
+    // Состояние mute для каналов
+    const [micMuted, setMicMuted] = useState(false);
+    const [sysMuted, setSysMuted] = useState(false);
     
     // Состояние для плавной анимации появления/исчезновения
     const [shouldRender, setShouldRender] = useState(isRecording);
@@ -33,6 +39,9 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
     useEffect(() => {
         if (isRecording) {
             setShouldRender(true);
+            // Сбрасываем состояние mute при начале записи
+            setMicMuted(false);
+            setSysMuted(false);
             // Запускаем анимацию появления после mount
             requestAnimationFrame(() => {
                 requestAnimationFrame(() => {
@@ -187,6 +196,107 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
                 ))}
             </div>
 
+            {/* Mute Buttons */}
+            <div
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                }}
+            >
+                {/* Mic Mute Button */}
+                <button
+                    onClick={() => {
+                        const newMuted = !micMuted;
+                        setMicMuted(newMuted);
+                        sendMessage({ type: 'set_channel_mute', channel: 'mic', muted: newMuted });
+                    }}
+                    title={micMuted ? 'Включить запись микрофона' : 'Отключить запись микрофона'}
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '32px',
+                        height: '32px',
+                        padding: 0,
+                        background: micMuted ? 'rgba(239, 68, 68, 0.3)' : 'rgba(76, 175, 80, 0.2)',
+                        border: `1px solid ${micMuted ? 'rgba(239, 68, 68, 0.5)' : 'rgba(76, 175, 80, 0.4)'}`,
+                        borderRadius: '8px',
+                        color: micMuted ? '#ef4444' : '#4caf50',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease',
+                        WebkitAppRegion: 'no-drag',
+                    } as React.CSSProperties}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.transform = 'scale(1.05)';
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.transform = 'scale(1)';
+                    }}
+                >
+                    {micMuted ? (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="1" y1="1" x2="23" y2="23" />
+                            <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+                            <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+                            <line x1="12" y1="19" x2="12" y2="23" />
+                            <line x1="8" y1="23" x2="16" y2="23" />
+                        </svg>
+                    ) : (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                            <line x1="12" y1="19" x2="12" y2="23" />
+                            <line x1="8" y1="23" x2="16" y2="23" />
+                        </svg>
+                    )}
+                </button>
+
+                {/* System Audio Mute Button */}
+                <button
+                    onClick={() => {
+                        const newMuted = !sysMuted;
+                        setSysMuted(newMuted);
+                        sendMessage({ type: 'set_channel_mute', channel: 'sys', muted: newMuted });
+                    }}
+                    title={sysMuted ? 'Включить запись системного звука' : 'Отключить запись системного звука'}
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: '32px',
+                        height: '32px',
+                        padding: 0,
+                        background: sysMuted ? 'rgba(239, 68, 68, 0.3)' : 'rgba(33, 150, 243, 0.2)',
+                        border: `1px solid ${sysMuted ? 'rgba(239, 68, 68, 0.5)' : 'rgba(33, 150, 243, 0.4)'}`,
+                        borderRadius: '8px',
+                        color: sysMuted ? '#ef4444' : '#2196f3',
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease',
+                        WebkitAppRegion: 'no-drag',
+                    } as React.CSSProperties}
+                    onMouseEnter={(e) => {
+                        e.currentTarget.style.transform = 'scale(1.05)';
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.transform = 'scale(1)';
+                    }}
+                >
+                    {sysMuted ? (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                            <line x1="23" y1="9" x2="17" y2="15" />
+                            <line x1="17" y1="9" x2="23" y2="15" />
+                        </svg>
+                    ) : (
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+                        </svg>
+                    )}
+                </button>
+            </div>
+
             {/* Timer */}
             <div
                 style={{
@@ -205,35 +315,61 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
             {/* Stop Button */}
             <button
                 onClick={onStop}
+                disabled={isStopping}
                 style={{
                     display: 'flex',
                     alignItems: 'center',
                     gap: '0.5rem',
                     padding: '0.5rem 1.25rem',
-                    background: 'rgba(239, 68, 68, 0.9)',
+                    background: isStopping ? 'rgba(156, 163, 175, 0.9)' : 'rgba(239, 68, 68, 0.9)',
                     border: 'none',
                     borderRadius: '9999px',
                     color: 'white',
                     fontSize: '0.9rem',
                     fontWeight: 600,
-                    cursor: 'pointer',
+                    cursor: isStopping ? 'not-allowed' : 'pointer',
                     transition: 'all 0.15s ease',
-                    boxShadow: '0 2px 12px rgba(239, 68, 68, 0.4)',
+                    boxShadow: isStopping ? '0 2px 12px rgba(156, 163, 175, 0.4)' : '0 2px 12px rgba(239, 68, 68, 0.4)',
+                    opacity: isStopping ? 0.7 : 1,
                     WebkitAppRegion: 'no-drag',
                 } as React.CSSProperties}
                 onMouseEnter={(e) => {
-                    e.currentTarget.style.background = 'rgba(220, 38, 38, 1)';
-                    e.currentTarget.style.transform = 'scale(1.02)';
+                    if (!isStopping) {
+                        e.currentTarget.style.background = 'rgba(220, 38, 38, 1)';
+                        e.currentTarget.style.transform = 'scale(1.02)';
+                    }
                 }}
                 onMouseLeave={(e) => {
-                    e.currentTarget.style.background = 'rgba(239, 68, 68, 0.9)';
-                    e.currentTarget.style.transform = 'scale(1)';
+                    if (!isStopping) {
+                        e.currentTarget.style.background = 'rgba(239, 68, 68, 0.9)';
+                        e.currentTarget.style.transform = 'scale(1)';
+                    }
                 }}
             >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                    <rect x="6" y="6" width="12" height="12" rx="2" />
-                </svg>
-                Остановить
+                {isStopping ? (
+                    <>
+                        <svg 
+                            width="14" 
+                            height="14" 
+                            viewBox="0 0 24 24" 
+                            fill="none" 
+                            stroke="currentColor" 
+                            strokeWidth="2"
+                            style={{ animation: 'spin 1s linear infinite' }}
+                        >
+                            <circle cx="12" cy="12" r="10" opacity="0.25" />
+                            <path d="M12 2a10 10 0 0 1 10 10" strokeLinecap="round" />
+                        </svg>
+                        Сохранение...
+                    </>
+                ) : (
+                    <>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                            <rect x="6" y="6" width="12" height="12" rx="2" />
+                        </svg>
+                        Остановить
+                    </>
+                )}
             </button>
 
             <style>{`
@@ -246,6 +382,9 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
                         transform: scale(1.8);
                         opacity: 0;
                     }
+                }
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
                 }
             `}</style>
         </div>

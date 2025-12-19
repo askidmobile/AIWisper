@@ -566,6 +566,39 @@ impl AppState {
         Ok(())
     }
 
+    /// Set mute state for a specific channel during recording
+    /// 
+    /// channel: "mic" or "sys"
+    /// muted: true to mute, false to unmute
+    pub fn set_channel_mute(&self, channel: &str, muted: bool) -> Result<()> {
+        let recording_handle = self.inner.recording_handle.read();
+        let handle = recording_handle
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No recording in progress"))?;
+        
+        match channel {
+            "mic" => handle.set_mic_muted(muted),
+            "sys" => handle.set_sys_muted(muted),
+            _ => return Err(anyhow::anyhow!("Unknown channel: {}", channel)),
+        }
+        
+        Ok(())
+    }
+
+    /// Get current mute state for a channel
+    pub fn get_channel_mute(&self, channel: &str) -> Result<bool> {
+        let recording_handle = self.inner.recording_handle.read();
+        let handle = recording_handle
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No recording in progress"))?;
+        
+        match channel {
+            "mic" => Ok(handle.is_mic_muted()),
+            "sys" => Ok(handle.is_sys_muted()),
+            _ => Err(anyhow::anyhow!("Unknown channel: {}", channel)),
+        }
+    }
+
     /// Stop recording and create session
     ///
     /// Stops the recording, finalizes MP3 file, and creates a session with all chunks.
@@ -654,12 +687,16 @@ impl AppState {
         };
 
         // Add to in-memory sessions
+        tracing::info!("Adding session {} to in-memory store", result.session_id);
         self.inner.sessions.write().push(session);
+        let total_sessions = self.inner.sessions.read().len();
+        tracing::info!("Total sessions in memory after push: {}", total_sessions);
 
         // Reload sessions from disk to ensure consistency
         // (in case meta.json was updated)
 
         Ok(RecordingState {
+            session_id: result.session_id.clone(),
             duration_ms: result.duration_ms,
             sample_count: result.sample_count,
         })

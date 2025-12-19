@@ -55,6 +55,7 @@ const MESSAGE_TO_COMMAND: Record<string, string> = {
     'set_settings': 'set_settings',
     // Audio
     'get_audio_devices': 'get_audio_devices',
+    'set_channel_mute': 'set_channel_mute',
     // Voiceprints
     'list_voiceprints': 'list_voiceprints',
     'create_voiceprint': 'create_voiceprint',
@@ -83,6 +84,12 @@ const EVENT_TO_MESSAGE: Record<string, string> = {
     'session-stopped': 'session_stopped',
     'session_started': 'session_started',
     'session_stopped': 'session_stopped',
+
+    // ✅ События списка/завершения записи в Tauri
+    // (backend эмитит их напрямую, без invoke)
+    'sessions_list': 'sessions_list',
+    'recording_completed': 'recording_completed',
+
     'model-download-progress': 'model_download_progress',
     'model-loading': 'model_loading',
     'model-loaded': 'model_loaded',
@@ -125,8 +132,14 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     // Notify handlers of a message
     const notify = useCallback((type: string, data: any) => {
         const handlers = handlersRef.current.get(type);
+        // Skip logging for high-frequency events
+        if (type !== 'audio_level') {
+            console.log(`[Tauri] notify: type="${type}", handlers count:`, handlers?.size || 0);
+        }
         if (handlers) {
             handlers.forEach(handler => handler(data));
+        } else if (type !== 'audio_level' && type !== 'error') {
+            console.warn(`[Tauri] No handlers registered for event type: ${type}`);
         }
     }, []);
 
@@ -270,6 +283,12 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         ollamaContextSize: msg.ollamaContextSize || 8,
                     };
                     break;
+                case 'set_channel_mute':
+                    args = {
+                        channel: msg.channel, // 'mic' or 'sys'
+                        muted: msg.muted,
+                    };
+                    break;
             }
 
             console.log(`[Tauri] Invoking command: ${command}`, args);
@@ -360,7 +379,7 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
     }, [notify]);
 
-    // Setup Tauri event listeners
+        // Setup Tauri event listeners
     useEffect(() => {
         if (!isTauri()) {
             console.log('[Tauri] Not running in Tauri environment');
@@ -370,14 +389,43 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         console.log('[Tauri] Setting up event listeners');
         setIsConnected(true);
 
+        let cancelled = false;
+
         // Listen to all Tauri events and forward to handlers
         const setupListeners = async () => {
+            // На всякий случай чистим старые unlisten (React 18 StrictMode может вызывать эффект дважды в dev)
+            unlistenersRef.current.forEach(unlisten => unlisten());
+            unlistenersRef.current = [];
+
+            console.log('[Tauri] Setting up listeners for events:', Object.keys(EVENT_TO_MESSAGE));
             for (const [tauriEvent, wsType] of Object.entries(EVENT_TO_MESSAGE)) {
                 const unlisten = await listen(tauriEvent, (event) => {
-                    console.log(`[Tauri] Event received: ${tauriEvent}`, event.payload);
+                    // Skip logging for high-frequency events
+                    if (tauriEvent !== 'audio_level' && tauriEvent !== 'audio-level') {
+                        console.log(`[Tauri] ✅ Event received: ${tauriEvent} -> ${wsType}`, event.payload);
+                    }
+
+                    // Унифицируем payload для sessions_list
+                    // Backend может эмитить либо {sessions: [...]}, либо голый массив
+                    if (wsType === 'sessions_list' && Array.isArray(event.payload)) {
+                        notify(wsType, { sessions: event.payload });
+                        return;
+                    }
+
                     notify(wsType, event.payload);
                 });
+
+                // Если эффект уже размонтирован (StrictMode), сразу снимаем подписку
+                if (cancelled) {
+                    unlisten();
+                    continue;
+                }
+
                 unlistenersRef.current.push(unlisten);
+            }
+
+            if (!cancelled) {
+                console.log('[Tauri] All listeners set up, total:', unlistenersRef.current.length);
             }
 
             // Also listen for generic events
@@ -387,12 +435,19 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     notify(payload.type, payload);
                 }
             });
+
+            if (cancelled) {
+                unlistenGeneric();
+                return;
+            }
+
             unlistenersRef.current.push(unlistenGeneric);
         };
 
         setupListeners();
 
         return () => {
+            cancelled = true;
             // Cleanup listeners
             unlistenersRef.current.forEach(unlisten => unlisten());
             unlistenersRef.current = [];

@@ -56,6 +56,8 @@ pub fn run() {
             commands::audio::stop_recording,
             commands::audio::get_audio_devices,
             commands::audio::request_microphone_access,
+            commands::audio::set_channel_mute,
+            commands::audio::get_channel_mute,
             // Transcription
             commands::transcription::transcribe_file,
             commands::transcription::get_transcript_stream,

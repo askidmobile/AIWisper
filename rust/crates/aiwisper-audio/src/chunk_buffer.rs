@@ -54,9 +54,9 @@ impl VadConfig {
     pub fn fixed_interval() -> Self {
         Self {
             mode: VadMode::Off,
-            chunking_start_delay: Duration::from_secs(60),
-            min_chunk_duration: Duration::from_secs(30),
-            max_chunk_duration: Duration::from_secs(30), // Точно 30 сек
+            chunking_start_delay: Duration::from_secs(5), // ✅ Было 60, стало 5
+            min_chunk_duration: Duration::from_secs(10),   // ✅ Было 30, стало 10
+            max_chunk_duration: Duration::from_secs(15),   // ✅ Было 30, стало 15
             silence_duration: Duration::from_secs(1),
             silence_threshold: 0.02,
         }

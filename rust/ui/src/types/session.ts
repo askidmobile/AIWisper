@@ -20,9 +20,9 @@ export interface Chunk {
     startMs: number;
     endMs: number;
     duration: number;
-    transcription: string; // Полный текст
-    micText?: string;      // Текст с микрофона
-    sysText?: string;      // Текст системы
+    transcription?: string; // Полный текст (заполняется после транскрипции)
+    micText?: string;       // Текст с микрофона
+    sysText?: string;       // Текст системы
     dialogue?: TranscriptSegment[]; // Диалог
     micSegments?: TranscriptSegment[];
     sysSegments?: TranscriptSegment[];

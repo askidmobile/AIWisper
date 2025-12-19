@@ -18,8 +18,8 @@ interface StreamingUpdate {
  * StreamingTranscription - компонент для отображения real-time транскрипции
  * 
  * Особенности:
- * - Volatile text (серый, курсив) - промежуточные гипотезы
- * - Confirmed text (чёрный, нормальный) - подтверждённый текст
+ * - Volatile text (приглушённый, курсив) — промежуточные гипотезы
+ * - Confirmed text (основной цвет) — подтверждённый текст
  * - Плавная анимация перехода
  * - Автоскролл
  * - Индикатор уверенности модели
@@ -85,8 +85,12 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                 setVolatileText(update.text);
             }
 
-            // Включаем автоскролл при новом обновлении
-            setShouldAutoScroll(true);
+            // Автоскроллим только если пользователь был «внизу».
+            if (containerRef.current) {
+                const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
+                const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
+                setShouldAutoScroll(isAtBottom);
+            }
         });
 
         return () => unsubscribe();
@@ -119,7 +123,13 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
 
     const hasContent = confirmedText || volatileText;
     const confidencePercent = Math.round(confidence * 100);
-    const confidenceColor = confidence >= 0.85 ? '#10b981' : confidence >= 0.7 ? '#f59e0b' : '#ef4444';
+
+    const confidenceColor =
+        confidence >= 0.85
+            ? 'var(--success)'
+            : confidence >= 0.7
+                ? 'var(--warning-strong)'
+                : 'var(--danger)';
 
     const containerStyle: React.CSSProperties = compact
         ? {
@@ -134,9 +144,9 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
             display: 'flex',
             flexDirection: 'column',
             height: '100%',
-            background: 'linear-gradient(180deg, rgba(59, 130, 246, 0.05) 0%, transparent 100%)',
+            background: 'linear-gradient(180deg, rgba(59, 130, 246, 0.06) 0%, transparent 100%)',
             borderRadius: '8px',
-            border: '1px solid rgba(59, 130, 246, 0.2)',
+            border: '1px solid rgba(59, 130, 246, 0.25)',
             overflow: 'hidden'
         };
 
@@ -146,27 +156,27 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
             style={containerStyle}
         >
             {!compact && (
-                <div
-                    style={{
-                        padding: '0.75rem 1rem',
-                        borderBottom: '1px solid rgba(59, 130, 246, 0.2)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        background: 'rgba(59, 130, 246, 0.05)'
-                    }}
-                >
+                    <div
+                        style={{
+                            padding: '0.75rem 1rem',
+                            borderBottom: '1px solid rgba(59, 130, 246, 0.25)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            background: 'rgba(59, 130, 246, 0.06)'
+                        }}
+                    >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                         <div
                             style={{
                                 width: '8px',
                                 height: '8px',
                                 borderRadius: '50%',
-                                background: '#3b82f6',
-                                animation: 'pulse 2s ease-in-out infinite'
+                                background: 'var(--primary)',
+                                animation: 'streamingPulse 2s ease-in-out infinite'
                             }}
                         />
-                        <span style={{ fontSize: '0.875rem', fontWeight: 600, color: '#1f2937' }}>
+                        <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)' }}>
                             Live Транскрипция
                         </span>
                     </div>
@@ -174,7 +184,7 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                     {hasContent && (
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                                     Уверенность:
                                 </span>
                                 <div
@@ -184,8 +194,8 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                                         gap: '0.25rem',
                                         padding: '0.125rem 0.5rem',
                                         borderRadius: '12px',
-                                        background: 'rgba(255, 255, 255, 0.8)',
-                                        border: `1px solid ${confidenceColor}20`
+                                        background: 'var(--surface-strong)',
+                                        border: `1px solid ${confidenceColor}`
                                     }}
                                 >
                                     <div
@@ -217,11 +227,11 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                                     gap: '0.25rem',
                                     padding: '0.25rem 0.5rem',
                                     borderRadius: '6px',
-                                    border: '1px solid rgba(59, 130, 246, 0.3)',
-                                    background: copied ? 'rgba(16, 185, 129, 0.1)' : 'rgba(255, 255, 255, 0.8)',
+                                    border: '1px solid rgba(59, 130, 246, 0.35)',
+                                    background: copied ? 'rgba(16, 185, 129, 0.12)' : 'var(--surface-strong)',
                                     cursor: 'pointer',
                                     fontSize: '0.75rem',
-                                    color: copied ? '#10b981' : '#6b7280',
+                                    color: copied ? 'var(--success)' : 'var(--text-secondary)',
                                     transition: 'all 0.2s ease'
                                 }}
                             >
@@ -248,25 +258,26 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
             )}
 
             {/* Content */}
-            <div
-                ref={containerRef}
-                onScroll={handleScroll}
-                style={compact ? {
-                    flex: 'unset',
-                    padding: '0.4rem 0.5rem',
-                    overflowY: 'hidden',
-                    fontSize: '0.9rem',
-                    lineHeight: '1.5',
-                    color: '#1f2937'
-                } : {
-                    flex: 1,
-                    padding: '1rem',
-                    overflowY: 'auto',
-                    fontSize: '0.9375rem',
-                    lineHeight: '1.6',
-                    color: '#1f2937'
-                }}
-            >
+             <div
+                 className="streaming-transcription__scroll"
+                 ref={containerRef}
+                 onScroll={handleScroll}
+                 style={compact ? {
+                     flex: 'unset',
+                     padding: '0.4rem 0.5rem',
+                     overflowY: 'hidden',
+                     fontSize: '0.9rem',
+                     lineHeight: '1.5',
+                     color: 'var(--text-primary)'
+                 } : {
+                     flex: 1,
+                     padding: '1rem',
+                     overflowY: 'auto',
+                     fontSize: '0.9375rem',
+                     lineHeight: '1.6',
+                     color: 'var(--text-primary)'
+                 }}
+             >
                 {!hasContent ? (
                     <div
                         style={{
@@ -274,7 +285,7 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                             alignItems: 'center',
                             justifyContent: 'center',
                             height: '100%',
-                            color: '#9ca3af',
+                            color: 'var(--text-muted)',
                             fontSize: '0.875rem'
                         }}
                     >
@@ -286,7 +297,7 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                         {confirmedText && (
                             <span
                                 style={{
-                                    color: '#1f2937',
+                                    color: 'var(--text-primary)',
                                     fontWeight: 400,
                                     transition: 'all 0.3s ease'
                                 }}
@@ -302,12 +313,12 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                         {volatileText && (
                             <span
                                 style={{
-                                    color: '#9ca3af',
+                                    color: 'var(--text-muted)',
                                     fontStyle: 'italic',
                                     fontWeight: 300,
-                                    opacity: 0.8,
-                                    transition: 'all 0.3s ease',
-                                    animation: 'fadeIn 0.3s ease-in-out'
+                                    opacity: 1,
+                                     transition: 'all 0.3s ease',
+                                     animation: 'streamingFadeIn 0.3s ease-in-out'
                                 }}
                             >
                                 {volatileText}
@@ -324,7 +335,7 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                         padding: '0.5rem 1rem',
                         borderTop: '1px solid rgba(59, 130, 246, 0.1)',
                         fontSize: '0.75rem',
-                        color: '#9ca3af',
+                        color: 'var(--text-muted)',
                         display: 'flex',
                         alignItems: 'center',
                         gap: '1rem'
@@ -335,7 +346,7 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                             style={{
                                 width: '12px',
                                 height: '2px',
-                                background: '#1f2937',
+                                background: 'var(--text-primary)',
                                 borderRadius: '1px'
                             }}
                         />
@@ -346,7 +357,7 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                             style={{
                                 width: '12px',
                                 height: '2px',
-                                background: '#9ca3af',
+                                background: 'var(--text-muted)',
                                 borderRadius: '1px',
                                 opacity: 0.6
                             }}
@@ -358,7 +369,7 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
 
             {/* CSS animations */}
             <style>{`
-                @keyframes pulse {
+                @keyframes streamingPulse {
                     0%, 100% {
                         opacity: 1;
                         transform: scale(1);
@@ -369,32 +380,32 @@ export const StreamingTranscription: React.FC<StreamingTranscriptionProps> = ({
                     }
                 }
 
-                @keyframes fadeIn {
+                @keyframes streamingFadeIn {
                     from {
                         opacity: 0;
                         transform: translateY(-2px);
                     }
                     to {
-                        opacity: 0.8;
+                        opacity: 1;
                         transform: translateY(0);
                     }
                 }
 
-                .streaming-transcription::-webkit-scrollbar {
+                .streaming-transcription__scroll::-webkit-scrollbar {
                     width: 6px;
                 }
 
-                .streaming-transcription::-webkit-scrollbar-track {
-                    background: rgba(0, 0, 0, 0.05);
+                .streaming-transcription__scroll::-webkit-scrollbar-track {
+                    background: var(--surface);
                     border-radius: 3px;
                 }
 
-                .streaming-transcription::-webkit-scrollbar-thumb {
+                .streaming-transcription__scroll::-webkit-scrollbar-thumb {
                     background: rgba(59, 130, 246, 0.3);
                     border-radius: 3px;
                 }
 
-                .streaming-transcription::-webkit-scrollbar-thumb:hover {
+                .streaming-transcription__scroll::-webkit-scrollbar-thumb:hover {
                     background: rgba(59, 130, 246, 0.5);
                 }
             `}</style>

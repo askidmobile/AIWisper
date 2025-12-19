@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.13] - 2025-12-19
+
+### Added
+- **Mute каналов записи**: переключатели микрофона и системного звука в RecordingOverlay
+- **События `recording_completed` и `sessions_list`**: автообновление списка сессий и авто-выбор последней после остановки
+- **Расширенные события чанков**: `duration`, `isStereo`, `micMuted/sysMuted` в `audio_level`
+
+### Changed
+- **Транскрипция чанков в фоне**: запись и `audio_level` не блокируются распознаванием
+- **Системная запись**: фиксированный VAD ускорен (старт 5с, чанки 10–15с)
+- **UI записи**: статус-индикатор, скелетон следующего чанка, улучшенный автоскролл и компоновка без хедера/сайдбара
+
+### Fixed
+- **Выбор сессии после остановки**: корректное обновление `selectedSession` и мердж транскрипций из `session_details`
+- **Дедупликация `chunk_created`** и защита от повторного `stop`
+
+### Removed
+- **Help Modal и shortcut "?"**
+
 ## [2.0.12] - 2025-01-28
 
 ### Fixed

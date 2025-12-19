@@ -67,54 +67,181 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     // WebSocket Handlers
     useEffect(() => {
-        const unsubList = subscribe('sessions_list', (msg: any) => setSessions(msg.sessions || []));
+        // Track last stopped session ID to auto-select it when list updates
+        let lastStoppedSessionId: string | null = null;
+
+        const unsubList = subscribe('sessions_list', (msg: any) => {
+            const newSessions = msg.sessions || [];
+            console.log('[SessionContext] 📋 sessions_list received:', newSessions.length, 'sessions');
+            
+            setSessions(newSessions);
+            
+            // ✅ Если это обновление после завершения записи, автоматически выбираем последнюю сессию
+            if (lastStoppedSessionId && newSessions.length > 0) {
+                // Проверяем что сессия есть в списке
+                const sessionExists = newSessions.some((s: any) => s.id === lastStoppedSessionId);
+                console.log('[SessionContext] 🎯 Looking for stopped session:', lastStoppedSessionId, 'exists:', sessionExists);
+                
+                if (sessionExists) {
+                    console.log('[SessionContext] 🎯 Auto-selecting last stopped session');
+                    sendMessage({ type: 'get_session', sessionId: lastStoppedSessionId });
+                    lastStoppedSessionId = null; // Сбрасываем флаг
+                } else {
+                    console.log('[SessionContext] ⚠️ Session not in list yet, will retry on next sessions_list');
+                    // НЕ сбрасываем lastStoppedSessionId - подождём следующего обновления
+                }
+            }
+        });
 
         const unsubStarted = subscribe('session_started', (msg: any) => {
+            console.log('[SessionContext] ✅ session_started:', msg.session?.id);
+            console.log('[SessionContext] 📝 Setting currentSession:', msg.session ? 'session object received' : 'NO SESSION OBJECT');
+            console.log('[SessionContext] 📝 Session details:', JSON.stringify(msg.session, null, 2));
             setCurrentSession(msg.session);
             setIsRecording(true);
             setPendingTranscriptionChunks(new Set()); // Clear pending on new session
+            lastStoppedSessionId = null; // Сбрасываем на случай если была установлена
             // Optional: Beep sound logic moved to UI component or hook
         });
 
         const unsubStopped = subscribe('session_stopped', (msg: any) => {
             setIsRecording(false);
             setIsStopping(false);
-            const stoppedSessionId = currentSession?.id || msg.sessionId;
-            setCurrentSession(null);
-            sendMessage({ type: 'get_sessions' });
-            // Если есть session в сообщении - используем его
-            if (msg.session) {
-                setSelectedSession(msg.session);
-            } else if (stoppedSessionId) {
-                // Иначе запрашиваем детали сессии по ID
-                sendMessage({ type: 'get_session', sessionId: stoppedSessionId });
+            
+            // ✅ ВАЖНО: Сохраняем currentSession в selectedSession ПЕРЕД обнулением,
+            // чтобы последующие chunk_transcribed могли обновить её
+            setCurrentSession(prev => {
+                const stoppedSessionId = prev?.id || msg.sessionId;
+                lastStoppedSessionId = stoppedSessionId;
+                console.log('[SessionContext] ✅ session_stopped:', stoppedSessionId);
+                
+                if (msg.session) {
+                    // Если есть session в сообщении - используем его
+                    console.log('[SessionContext] 📝 Got full session in stopped event, using it directly');
+                    setSelectedSession(msg.session);
+                    lastStoppedSessionId = null;
+                } else if (prev) {
+                    // ✅ Переносим текущую сессию с чанками в selectedSession
+                    // чтобы chunk_transcribed мог обновить её после остановки
+                    console.log('[SessionContext] 📝 Transferring currentSession to selectedSession with', prev.chunks.length, 'chunks');
+                    setSelectedSession(prev);
+                }
+                
+                return null; // Обнуляем currentSession
+            });
+        });
+
+        // ✅ Обработчик завершения записи - гарантированно приходит ПОСЛЕ добавления сессии в память
+        const unsubRecordingCompleted = subscribe('recording_completed', (msg: any) => {
+            console.log('[SessionContext] 🎉 recording_completed:', msg.sessionId);
+            const completedSessionId = msg.sessionId;
+            
+            if (completedSessionId) {
+                // Сначала запрашиваем обновлённый список сессий
+                console.log('[SessionContext] 📡 Requesting updated sessions list...');
+                sendMessage({ type: 'get_sessions' });
+                
+                // Затем запрашиваем детали сессии для отображения
+                console.log('[SessionContext] 📡 Requesting session details for:', completedSessionId);
+                sendMessage({ type: 'get_session', sessionId: completedSessionId });
             }
         });
 
-        const unsubDetails = subscribe('session_details', (msg: any) => setSelectedSession(msg.session));
+        const unsubDetails = subscribe('session_details', (msg: any) => {
+            // ✅ Мержим данные с бэкенда с уже имеющимися транскрипциями
+            // чтобы не потерять результаты chunk_transcribed, которые пришли раньше
+            setSelectedSession(prev => {
+                if (!msg.session) return prev;
+                if (!prev || prev.id !== msg.session.id) {
+                    // Новая сессия - просто устанавливаем
+                    return msg.session;
+                }
+                
+                // Мержим чанки: берём данные с бэкенда, но сохраняем транскрипции из локального состояния
+                const mergedChunks = msg.session.chunks.map((backendChunk: any) => {
+                    const localChunk = prev.chunks.find(c => c.id === backendChunk.id);
+                    // Если локальный чанк имеет транскрипцию, а бэкенд - нет, сохраняем локальную
+                    if (localChunk && localChunk.transcription && !backendChunk.transcription) {
+                        console.log('[SessionContext] 📝 Preserving local transcription for chunk', localChunk.index);
+                        return localChunk;
+                    }
+                    // Если бэкенд чанк "completed" - используем его
+                    if (backendChunk.status === 'completed') {
+                        return backendChunk;
+                    }
+                    // Если локальный чанк completed - сохраняем его
+                    if (localChunk?.status === 'completed') {
+                        return localChunk;
+                    }
+                    return backendChunk;
+                });
+                
+                return {
+                    ...msg.session,
+                    chunks: mergedChunks
+                };
+            });
+        });
 
         const unsubChunkCreated = subscribe('chunk_created', (msg: any) => {
             setCurrentSession(prev => {
                 if (!prev || prev.id !== msg.sessionId) return prev;
-                return { ...prev, chunks: [...prev.chunks, msg.chunk] };
+                // Check if chunk already exists (deduplication)
+                const chunkExists = prev.chunks.some(c => c.id === msg.chunk.id);
+                if (chunkExists) return prev;
+                const updated = { ...prev, chunks: [...prev.chunks, msg.chunk] };
+                console.log('[SessionContext] ✅ chunk_created: index', msg.chunk.index, 'total:', updated.chunks.length);
+                return updated;
             });
             // Update selected if same
             setSelectedSession(prev => {
                 if (!prev || prev.id !== msg.sessionId) return prev;
+                const chunkExists = prev.chunks.some(c => c.id === msg.chunk.id);
+                if (chunkExists) return prev;
                 return { ...prev, chunks: [...prev.chunks, msg.chunk] };
             });
         });
 
         const unsubChunkTranscribed = subscribe('chunk_transcribed', (msg: any) => {
-            const updateChunks = (s: Session | null) => {
-                if (!s || s.id !== msg.sessionId) return s;
-                return {
+            console.log('[SessionContext] ✅ chunk_transcribed: index', msg.chunk.index, 'chunkId:', msg.chunk.id, 'sessionId:', msg.sessionId, 'text:', msg.chunk.transcription?.substring(0, 50));
+            
+            const updateChunks = (s: Session | null, sessionType: string) => {
+                if (!s) {
+                    // Не логируем для currentSession после остановки - это нормально
+                    return s;
+                }
+                if (s.id !== msg.sessionId) {
+                    return s;
+                }
+                const updated = {
                     ...s,
-                    chunks: s.chunks.map(c => c.id === msg.chunk.id ? msg.chunk : c)
+                    chunks: s.chunks.map(c => {
+                        if (c.id === msg.chunk.id) {
+                            console.log('[SessionContext] 🔄 Updating chunk', c.index, 'in', sessionType, 'from status', c.status, 'to', msg.chunk.status);
+                            return msg.chunk;
+                        }
+                        return c;
+                    })
                 };
+                return updated;
             };
-            setCurrentSession(prev => updateChunks(prev));
-            setSelectedSession(prev => updateChunks(prev));
+            
+            setCurrentSession(prev => {
+                const result = updateChunks(prev, 'currentSession');
+                if (result && result !== prev) {
+                    console.log('[SessionContext] 📝 currentSession updated, chunks:', result.chunks.length);
+                }
+                return result;
+            });
+            
+            setSelectedSession(prev => {
+                const result = updateChunks(prev, 'selectedSession');
+                if (result && result !== prev) {
+                    console.log('[SessionContext] 📝 selectedSession updated with transcription, chunks:', result.chunks.length);
+                }
+                return result;
+            });
+            
             // Удаляем из pending transcriptions
             setPendingTranscriptionChunks(prev => {
                 const next = new Set(prev);
@@ -232,7 +359,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         });
 
         return () => {
-            unsubList(); unsubStarted(); unsubStopped(); unsubDetails();
+            unsubList(); unsubStarted(); unsubStopped(); unsubRecordingCompleted(); unsubDetails();
             unsubChunkCreated(); unsubChunkTranscribed(); unsubChunkTranscribing();
             unsubAudioLevel(); unsubSummary(); unsubImprove(); unsubRenamed();
             unsubTitleUpdated(); unsubTagsUpdated();
@@ -257,6 +384,12 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
 
     const stopSession = () => {
+        // Prevent multiple calls
+        if (isStopping || !isRecording) {
+            console.log('[SessionContext] stopSession: already stopping or not recording');
+            return;
+        }
+        console.log('[SessionContext] stopSession: stopping recording');
         setIsStopping(true);
         sendMessage({ type: 'stop_session' });
     };
