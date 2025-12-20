@@ -69,7 +69,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     } = useSessionContext();
     const { sendMessage, subscribe } = useBackendContext();
     const { activeModelId } = useModelContext();
-    const { sttSettings } = useProvidersContext();
+    const { sttSettings, llmSettings } = useProvidersContext();
     const { 
         language, 
         hybridTranscription,
@@ -143,6 +143,11 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
         // ВАЖНО: Сортируем по времени начала для правильного порядка диалога
         // Mic и Sys сегменты могут идти вперемешку по времени, нужно упорядочить
         .sort((a, b) => a.start - b.start), [chunks]);
+
+    const effectiveSummaryModel = useMemo(() => {
+        const model = settingsOllamaModel || ollamaModel || llmSettings.ollama?.model;
+        return model?.trim() || 'Ollama';
+    }, [settingsOllamaModel, ollamaModel, llmSettings.ollama?.model]);
 
     // Находим текущий сегмент по времени воспроизведения
     const currentTimeMs = currentTime * 1000; // секунды -> миллисекунды
@@ -312,7 +317,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     const handleGenerateSummary = () => {
         if (displaySession) {
             // Use provided ollamaModel, URL and context size from settings
-            generateSummary(displaySession.id, ollamaModel, ollamaUrl || 'http://localhost:11434', ollamaContextSize);
+            generateSummary(displaySession.id, effectiveSummaryModel, ollamaUrl || 'http://localhost:11434', ollamaContextSize);
         }
     };
 
@@ -611,7 +616,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                 onGenerate={handleGenerateSummary}
                                 hasTranscription={chunks.some(c => c.status === 'completed')}
                                 sessionDate={displaySession.startTime}
-                                ollamaModel={ollamaModel}
+                                ollamaModel={effectiveSummaryModel}
                             />
                         )}
                     </>

@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { useOptionalSettingsContext } from '../context/SettingsContext';
 
 interface SummaryViewProps {
     summary: string | null;
@@ -18,8 +19,11 @@ export default function SummaryView({
     onGenerate,
     hasTranscription,
     sessionDate,
-    ollamaModel = 'GPT-OSS'
+    ollamaModel = ''
 }: SummaryViewProps) {
+    const settingsContext = useOptionalSettingsContext();
+    // Используем модель из контекста настроек (она синхронизируется в SettingsPage)
+    const displayModel = (settingsContext?.ollamaModel || ollamaModel || 'Ollama').trim();
     const [copySuccess, setCopySuccess] = useState(false);
     const [showExportMenu, setShowExportMenu] = useState(false);
 
@@ -385,26 +389,6 @@ export default function SummaryView({
             margin: '0 auto',
             height: '100%'
         }}>
-            <h1 style={{ 
-                fontSize: '1.5rem', 
-                fontWeight: 'var(--font-weight-bold)',
-                color: 'var(--text-primary)',
-                marginBottom: '0.5rem',
-                marginTop: '1rem',
-                textAlign: 'center'
-            }}>
-                Summary ещё не создан
-            </h1>
-            
-            <p style={{ 
-                fontSize: '0.95rem', 
-                color: 'var(--text-secondary)',
-                marginBottom: '2rem',
-                textAlign: 'center'
-            }}>
-                Нажмите кнопку чтобы сгенерировать краткое содержание записи
-            </p>
-
             <button
                 onClick={onGenerate}
                 style={{
@@ -482,7 +466,7 @@ export default function SummaryView({
                         </div>
                         <div>
                             <div style={{ color: 'var(--text-primary)', fontSize: '0.9rem', fontWeight: 'var(--font-weight-medium)' }}>
-                                Модель: {ollamaModel || 'GPT-OSS'}
+                                Модель: {displayModel || 'GPT-OSS'}
                             </div>
                             <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '2px' }}>
                                 Используется для анализа текста

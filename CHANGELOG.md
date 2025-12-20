@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.14] - 2025-12-21
+
+### Fixed
+- **Отображение модели Ollama в настройках**: Исправлена проблема, когда select показывал первую модель из списка вместо сохранённой
+  - **Проблема**: Если сохранённая модель (например, `llama3.2`) отсутствовала в списке загруженных моделей Ollama, select визуально показывал первую доступную модель, но value оставался старым
+  - **Решение**: Добавлена текущая модель в список опций select, даже если она отсутствует в списке загруженных моделей
+
+### Technical
+- `rust/ui/src/components/SettingsPage.tsx`: Добавлен условный рендер текущей модели в select если она отсутствует в списке
+
 ## [2.0.13] - 2025-12-19
 
 ### Added

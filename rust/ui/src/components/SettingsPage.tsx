@@ -741,6 +741,10 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                                 disabled={ollamaModelsLoading}
                             >
                                 {ollamaModels.length === 0 && <option value="">Нет моделей</option>}
+                                {/* Показываем текущую модель, даже если её нет в списке */}
+                                {ollamaModel && !ollamaModels.some(m => m.name === ollamaModel) && (
+                                    <option value={ollamaModel}>{ollamaModel}</option>
+                                )}
                                 {ollamaModels.map((m) => (
                                     <option key={m.name} value={m.name}>{m.name}</option>
                                 ))}

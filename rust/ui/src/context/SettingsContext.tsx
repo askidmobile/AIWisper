@@ -101,5 +101,7 @@ export const useSettingsContext = () => {
     return context;
 };
 
+export const useOptionalSettingsContext = () => useContext(SettingsContext);
+
 // Re-export types
 export type { AppSettings };

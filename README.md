@@ -4,7 +4,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-13+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-2.0.13-orange)
+![Version](https://img.shields.io/badge/version-2.0.14-orange)
 
 ## Возможности
 
@@ -128,27 +128,39 @@ ollama pull llama3.2
 ## Технологии
 
 ### Backend (Rust)
-- **whisper.cpp** — движок распознавания речи (Rust bindings)
-- **GigaAM** — ONNX Runtime для русского языка
-- **sherpa-onnx** — диаризация спикеров
-- **Tauri IPC** — коммуникация с frontend (v2.0+)
+- **Rust 1.75+** — системный язык для высокой производительности
+- **Tauri 2.1** — десктопный фреймворк с IPC
+- **whisper.cpp** — движок распознавания речи (C++ с Rust bindings)
+- **ONNX Runtime** — inference для GigaAM и диаризации
+- **sherpa-onnx** — кроссплатформенная диаризация спикеров
+- **cpal** — кроссплатформенный захват аудио
+- **serde/tokio** — сериализация и async runtime
 
-### Frontend (Tauri + React)
-- **Tauri 2** — легковесная десктопная оболочка (v2.0+)
-- **React 19** — UI фреймворк
-- **Vite 7** — сборка
-
-### Legacy (v1.x)
-- **Go Backend** — gRPC + HTTP сервер (до v2.0)
-- **Electron** — десктопная оболочка (до v2.0)
+### Frontend (React + TypeScript)
+- **React 19** — UI фреймворк с hooks
+- **TypeScript 5.6** — строгая типизация
+- **Vite 6** — сборка и HMR
+- **React Markdown** — рендеринг Markdown в Summary
 
 ### macOS Native (Swift)
 - **ScreenCaptureKit** — захват системного звука (macOS 13+)
 - **CoreAudio Process Tap** — альтернативный захват (macOS 14.2+)
-- **Voice Isolation** — шумоподавление (macOS 15+)
+- **Voice Isolation** — AI шумоподавление (macOS 15+)
 - **FluidAudio** — нативная диаризация на CoreML
 - **Metal** — GPU ускорение для whisper.cpp
-- **CoreML** — Apple Neural Engine для диаризации и GigaAM
+- **CoreML** — Apple Neural Engine для диаризации
+
+### ML/AI
+- **Whisper** — многоязычное распознавание речи (OpenAI)
+- **GigaAM** — русскоязычная модель от Sber (WER 9.1%)
+- **Parakeet TDT v3** — streaming ASR от NVIDIA
+- **Silero VAD** — нейросетевая детекция голоса (97% точность)
+- **WeSpeaker** — голосовые эмбеддинги для диаризации
+- **Ollama** — локальные LLM для AI-сводки
+
+### Legacy (v1.x)
+- **Go Backend** — gRPC + HTTP сервер (до v2.0)
+- **Electron** — десктопная оболочка (до v2.0)
 
 ## Структура проекта
 
