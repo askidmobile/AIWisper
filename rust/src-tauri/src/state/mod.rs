@@ -290,6 +290,11 @@ fn convert_go_session_to_rust(
 
     // Load chunks from chunks/ directory
     let chunks = load_chunks_from_dir(session_dir);
+    tracing::debug!(
+        "Session {} loaded with {} chunks",
+        meta.id,
+        chunks.len()
+    );
 
     // Read summary from separate file if exists
     let summary = meta.summary.or_else(|| {
@@ -334,11 +339,27 @@ fn load_chunks_from_dir(
     for (idx, entry) in entries.iter().enumerate() {
         let path = entry.path();
         if path.extension().map(|e| e == "json").unwrap_or(false) {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(chunk) = serde_json::from_str::<GoChunkMeta>(&content) {
-                    // Convert chunk to our format
-                    let converted = convert_chunk_to_rust(chunk, idx as i32);
-                    all_chunks.push(converted);
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    match serde_json::from_str::<GoChunkMeta>(&content) {
+                        Ok(chunk) => {
+                            // Convert chunk to our format
+                            let converted = convert_chunk_to_rust(chunk, idx as i32);
+                            tracing::trace!(
+                                "Loaded chunk {} with {} dialogue entries, transcription len={}",
+                                converted.id,
+                                converted.dialogue.len(),
+                                converted.transcription.len()
+                            );
+                            all_chunks.push(converted);
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to parse chunk {:?}: {}", path, e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to read chunk {:?}: {}", path, e);
                 }
             }
         }

@@ -214,14 +214,53 @@ pub async fn generate_summary(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Build transcript text from dialogue
+    // Build transcript text from dialogue or transcription field
     let mut transcript_text = String::new();
+    tracing::info!(
+        "Building transcript from {} chunks for session {}",
+        session.chunks.len(),
+        session_id
+    );
+    
     for chunk in &session.chunks {
-        for segment in &chunk.dialogue {
-            let speaker = segment.speaker.as_deref().unwrap_or("Unknown");
-            transcript_text.push_str(&format!("{}: {}\n", speaker, segment.text));
+        tracing::debug!(
+            "Chunk {}: dialogue={}, transcription={}, mic_text={:?}, sys_text={:?}",
+            chunk.id,
+            chunk.dialogue.len(),
+            chunk.transcription.len(),
+            chunk.mic_text.as_ref().map(|s| s.len()),
+            chunk.sys_text.as_ref().map(|s| s.len())
+        );
+        
+        // First try to use dialogue entries
+        if !chunk.dialogue.is_empty() {
+            for segment in &chunk.dialogue {
+                let speaker = segment.speaker.as_deref().unwrap_or("Unknown");
+                transcript_text.push_str(&format!("{}: {}\n", speaker, segment.text));
+            }
+        } else if !chunk.transcription.is_empty() {
+            // Fallback to transcription field
+            transcript_text.push_str(&chunk.transcription);
+            transcript_text.push('\n');
+        } else if let Some(mic) = &chunk.mic_text {
+            // Fallback to mic_text
+            if !mic.is_empty() {
+                transcript_text.push_str(&format!("Mic: {}\n", mic));
+            }
+        }
+        // Also add sys_text if available
+        if let Some(sys) = &chunk.sys_text {
+            if !sys.is_empty() && chunk.dialogue.is_empty() {
+                transcript_text.push_str(&format!("System: {}\n", sys));
+            }
         }
     }
+
+    tracing::info!(
+        "Built transcript text with {} chars for session {}",
+        transcript_text.len(),
+        session_id
+    );
 
     if transcript_text.is_empty() {
         let err = "No transcription available for summary generation";
