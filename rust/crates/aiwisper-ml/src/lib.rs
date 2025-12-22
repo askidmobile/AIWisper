@@ -2,6 +2,7 @@
 //!
 //! Provides transcription, diarization, and VAD engines.
 
+pub mod diarization;
 pub mod engine_manager;
 pub mod fluidasr;
 pub mod gigaam;
@@ -11,6 +12,9 @@ pub mod traits;
 pub mod vad;
 pub mod whisper;
 
+pub use diarization::{
+    DiarizationResult, FluidDiarizationConfig, FluidDiarizationEngine, SpeakerEmbedding,
+};
 pub use engine_manager::{get_recommended_model_for_language, EngineManager, EngineType};
 pub use fluidasr::{FluidASREngine, FluidModelVersion};
 pub use gigaam::GigaAMEngine;

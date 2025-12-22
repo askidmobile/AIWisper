@@ -35,6 +35,10 @@ pub struct TranscriptionConfig {
     pub hybrid_secondary_model_id: String,
     /// Hotwords for improved accuracy
     pub hotwords: Vec<String>,
+    /// Enable diarization for sys channel
+    pub diarization_enabled: bool,
+    /// Diarization provider ("coreml" for FluidAudio)
+    pub diarization_provider: String,
 }
 
 impl Default for TranscriptionConfig {
@@ -45,6 +49,8 @@ impl Default for TranscriptionConfig {
             hybrid_enabled: false,
             hybrid_secondary_model_id: String::new(),
             hotwords: Vec::new(),
+            diarization_enabled: false,
+            diarization_provider: String::new(),
         }
     }
 }
@@ -1034,7 +1040,7 @@ fn transcribe_chunk_stereo(
         }
     }
 
-    // Transcribe sys channel
+    // Transcribe sys channel with optional diarization
     if !sys_samples.is_empty() {
         let sys_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
             resample_audio(sys_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE)
@@ -1042,6 +1048,7 @@ fn transcribe_chunk_stereo(
             sys_samples.to_vec()
         };
 
+        // First transcribe
         if let Ok(segments) = transcribe_samples_sync(
             &sys_16k,
             &config.model_id,
@@ -1050,13 +1057,64 @@ fn transcribe_chunk_stereo(
             &config.hybrid_secondary_model_id,
             &config.hotwords,
         ) {
-            for seg in segments {
-                all_dialogue.push(DialogueEntry {
-                    start: seg.start + chunk_meta.start_ms,
-                    end: seg.end + chunk_meta.start_ms,
-                    text: seg.text,
-                    speaker: "sys".to_string(),
-                });
+            // If diarization enabled, apply speaker labels
+            if config.diarization_enabled && config.diarization_provider == "coreml" {
+                // Run diarization on sys channel
+                match diarize_samples(&sys_16k) {
+                    Ok(speaker_segments) if !speaker_segments.is_empty() => {
+                        tracing::info!(
+                            "Diarization found {} speaker segments in sys channel",
+                            speaker_segments.len()
+                        );
+                        // Apply speaker labels to transcription segments
+                        for seg in segments {
+                            let speaker = find_speaker_for_segment(
+                                seg.start as f32 / 1000.0,  // convert ms to seconds
+                                seg.end as f32 / 1000.0,
+                                &speaker_segments,
+                            );
+                            all_dialogue.push(DialogueEntry {
+                                start: seg.start + chunk_meta.start_ms,
+                                end: seg.end + chunk_meta.start_ms,
+                                text: seg.text,
+                                speaker: format!("Собеседник {}", speaker + 1),
+                            });
+                        }
+                    }
+                    Ok(_) => {
+                        // No diarization segments, use default "sys"
+                        tracing::debug!("No diarization segments found, using 'sys'");
+                        for seg in segments {
+                            all_dialogue.push(DialogueEntry {
+                                start: seg.start + chunk_meta.start_ms,
+                                end: seg.end + chunk_meta.start_ms,
+                                text: seg.text,
+                                speaker: "sys".to_string(),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Diarization failed, falling back to 'sys': {}", e);
+                        for seg in segments {
+                            all_dialogue.push(DialogueEntry {
+                                start: seg.start + chunk_meta.start_ms,
+                                end: seg.end + chunk_meta.start_ms,
+                                text: seg.text,
+                                speaker: "sys".to_string(),
+                            });
+                        }
+                    }
+                }
+            } else {
+                // No diarization, use simple "sys" label
+                for seg in segments {
+                    all_dialogue.push(DialogueEntry {
+                        start: seg.start + chunk_meta.start_ms,
+                        end: seg.end + chunk_meta.start_ms,
+                        text: seg.text,
+                        speaker: "sys".to_string(),
+                    });
+                }
             }
         }
     }
@@ -1269,4 +1327,58 @@ fn transcribe_samples_sync(
         // Single engine mode
         primary_engine.transcribe_with_segments(samples)
     }
+}
+
+/// Run diarization on audio samples using FluidAudio
+fn diarize_samples(samples: &[f32]) -> Result<Vec<aiwisper_types::SpeakerSegment>> {
+    use aiwisper_ml::{FluidDiarizationConfig, FluidDiarizationEngine};
+
+    // Check if diarization engine is available
+    if !FluidDiarizationEngine::is_available() {
+        tracing::debug!("FluidDiarization not available, skipping");
+        return Ok(vec![]);
+    }
+
+    let config = FluidDiarizationConfig {
+        binary_path: None,  // Auto-detect
+        clustering_threshold: 0.70,
+        min_segment_duration: 0.2,
+        vbx_max_iterations: 30,
+        min_gap_duration: 0.15,
+        debug: false,
+    };
+
+    let engine = FluidDiarizationEngine::new(config)?;
+    engine.diarize(samples)
+}
+
+/// Find the speaker ID for a given time range based on diarization segments
+fn find_speaker_for_segment(
+    start_sec: f32,
+    end_sec: f32,
+    speaker_segments: &[aiwisper_types::SpeakerSegment],
+) -> i32 {
+    let mid_point = (start_sec + end_sec) / 2.0;
+    
+    // Find segment that contains the midpoint
+    for seg in speaker_segments {
+        if seg.start <= mid_point && mid_point <= seg.end {
+            return seg.speaker;
+        }
+    }
+    
+    // Fallback: find closest segment
+    let mut closest_speaker = 0;
+    let mut min_distance = f32::MAX;
+    
+    for seg in speaker_segments {
+        let seg_mid = (seg.start + seg.end) / 2.0;
+        let distance = (mid_point - seg_mid).abs();
+        if distance < min_distance {
+            min_distance = distance;
+            closest_speaker = seg.speaker;
+        }
+    }
+    
+    closest_speaker
 }

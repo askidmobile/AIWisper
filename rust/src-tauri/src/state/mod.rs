@@ -563,12 +563,17 @@ impl AppState {
         };
 
         // Build transcription config from settings
+        let diarization_enabled = *self.inner.diarization_enabled.read();
+        let diarization_provider = self.inner.diarization_provider.read().clone();
+        
         let transcription_config = recording::TranscriptionConfig {
             model_id: model_id.clone(),
             language: language.clone(),
             hybrid_enabled: settings.hybrid_enabled,
             hybrid_secondary_model_id: settings.hybrid_secondary_model_id.clone(),
             hotwords: settings.hotwords.clone(),
+            diarization_enabled,
+            diarization_provider,
         };
 
         // Start new recording with full MP3/chunk support
