@@ -150,6 +150,13 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         const unsubDetails = subscribe('session_details', (msg: any) => {
             // ✅ Мержим данные с бэкенда с уже имеющимися транскрипциями
             // чтобы не потерять результаты chunk_transcribed, которые пришли раньше
+            console.log('[SessionContext] session_details received:', { 
+                hasSession: !!msg.session, 
+                sessionId: msg.session?.id,
+                hasSummary: !!msg.session?.summary,
+                summaryLength: msg.session?.summary?.length || 0,
+                summaryPreview: msg.session?.summary?.substring(0, 100)
+            });
             setSelectedSession(prev => {
                 if (!msg.session) return prev;
                 if (!prev || prev.id !== msg.session.id) {
@@ -262,10 +269,24 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         });
 
         const unsubSummary = subscribe('summary_completed', (msg: any) => {
-            setSelectedSession(prev => {
-                if (!prev || prev.id !== msg.sessionId) return prev;
-                return { ...prev, summary: msg.summary };
+            console.log('[SessionContext] summary_completed received:', {
+                sessionId: msg.sessionId,
+                hasSummary: !!msg.summary,
+                summaryLength: msg.summary?.length || 0
             });
+            
+            if (msg.summary && msg.sessionId) {
+                // Summary received directly from command return value
+                setSelectedSession(prev => {
+                    if (!prev || prev.id !== msg.sessionId) return prev;
+                    console.log('[SessionContext] Updating session with summary:', msg.summary.length, 'chars');
+                    return { ...prev, summary: msg.summary };
+                });
+            } else if (msg.sessionId) {
+                // Fallback: if summary is empty (legacy event), fetch the session
+                console.log('[SessionContext] Summary empty in event, fetching session data...');
+                sendMessage({ type: 'get_session', sessionId: msg.sessionId });
+            }
         });
 
         const unsubImprove = subscribe('improve_completed', (msg: any) => {

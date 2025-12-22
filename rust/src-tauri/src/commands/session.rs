@@ -185,6 +185,7 @@ pub async fn get_session_speakers(
 }
 
 /// Generate summary for a session using Ollama
+/// Returns the generated summary text directly from the command
 #[tauri::command]
 pub async fn generate_summary(
     app: tauri::AppHandle,
@@ -193,7 +194,7 @@ pub async fn generate_summary(
     ollama_model: String,
     ollama_url: String,
     ollama_context_size: Option<u32>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let context_size = ollama_context_size.unwrap_or(8); // default 8k
     tracing::info!(
         "Generating summary for session {} with model {} (context: {}k)",
@@ -279,20 +280,29 @@ pub async fn generate_summary(
         .await
     {
         Ok(summary) => {
+            tracing::info!(
+                "Generated summary for session {}: {} chars, preview: {}...",
+                session_id,
+                summary.len(),
+                summary.chars().take(100).collect::<String>()
+            );
+            
             // Save summary to session
             if let Err(e) = state.set_session_summary(&session_id, &summary).await {
                 tracing::error!("Failed to save summary: {}", e);
             }
 
-            // Emit completed event
+            // Emit completed event (for UI spinner/status updates)
             let _ = app.emit(
                 "summary_completed",
                 serde_json::json!({
-                    "sessionId": session_id,
-                    "summary": summary
+                    "sessionId": session_id.clone()
                 }),
             );
-            Ok(())
+            
+            // Return summary directly from command (more reliable than event payload)
+            tracing::info!("Returning summary from command: {} chars", summary.len());
+            Ok(summary)
         }
         Err(e) => {
             let err_msg = e.to_string();
@@ -358,7 +368,7 @@ async fn generate_summary_with_ollama(
         "stream": false,
         "options": {
             "temperature": 0.3,
-            "num_predict": 1000,
+            "num_predict": 4096,  // Allow longer summaries
             "num_ctx": num_ctx
         }
     });
@@ -376,10 +386,43 @@ async fn generate_summary_with_ollama(
     }
 
     let json: serde_json::Value = response.json().await?;
-    let summary = json["response"]
-        .as_str()
-        .unwrap_or("Failed to parse response")
-        .to_string();
+    tracing::debug!("Ollama response JSON keys: {:?}", json.as_object().map(|o| o.keys().collect::<Vec<_>>()));
+    
+    // Try "response" first, then "thinking" for thinking models like kimi-k2-thinking
+    let response_text = json["response"].as_str().unwrap_or("");
+    let thinking_text = json["thinking"].as_str().unwrap_or("");
+    
+    tracing::info!(
+        "Ollama response fields: response={} chars, thinking={} chars",
+        response_text.len(),
+        thinking_text.len()
+    );
+    
+    // Log first 200 chars of each for debugging
+    if !response_text.is_empty() {
+        tracing::debug!("response preview: {}", response_text.chars().take(200).collect::<String>());
+    }
+    if !thinking_text.is_empty() {
+        tracing::debug!("thinking preview: {}", thinking_text.chars().take(500).collect::<String>());
+    }
+    
+    // Use response if available, otherwise use thinking
+    // For thinking models, the actual answer is in "response", thinking is the reasoning
+    // But some models like kimi-k2-thinking put everything in thinking and leave response empty
+    let summary = if !response_text.is_empty() {
+        response_text.to_string()
+    } else if !thinking_text.is_empty() {
+        // For thinking models, just use the whole thinking text
+        // It usually contains useful analysis even if not perfectly formatted
+        thinking_text.to_string()
+    } else {
+        "Не удалось получить ответ от модели".to_string()
+    };
+    
+    tracing::info!("Ollama returned summary: {} chars, preview: {}...", 
+        summary.len(),
+        summary.chars().take(100).collect::<String>()
+    );
 
     Ok(summary)
 }

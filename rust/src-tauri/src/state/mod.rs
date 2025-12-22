@@ -1685,11 +1685,21 @@ impl AppState {
     /// Get a specific session (in-memory)
     pub async fn get_session(&self, session_id: &str) -> Result<crate::commands::session::Session> {
         let sessions = self.inner.sessions.read();
-        sessions
+        let session = sessions
             .iter()
             .find(|s| s.id == session_id)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Session not found"))
+            .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+        
+        // Debug: log if session has summary
+        tracing::debug!(
+            "get_session {}: summary={}, chunks={}",
+            session_id,
+            session.summary.as_ref().map(|s| s.len()).unwrap_or(0),
+            session.chunks.len()
+        );
+        
+        Ok(session)
     }
 
     /// Delete a session (from memory and disk)

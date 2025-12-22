@@ -372,6 +372,34 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     // Progress events are emitted via Tauri events, not return value
                     // Result is empty on success
                     break;
+                case 'generate_summary':
+                    // Command returns summary, but it may be truncated by Tauri IPC
+                    // So we fetch the session to get the full summary from disk
+                    console.log(`[Tauri] generate_summary returned: ${typeof result === 'string' ? (result as string).length : 0} chars`);
+                    // Fetch session to get full summary (saved to meta.json)
+                    try {
+                        const session = await invoke('get_session', { sessionId: msg.sessionId });
+                        if (session && (session as any).summary) {
+                            console.log(`[Tauri] Fetched session with summary: ${(session as any).summary.length} chars`);
+                            notify('summary_completed', { 
+                                sessionId: msg.sessionId, 
+                                summary: (session as any).summary 
+                            });
+                        } else {
+                            // Fallback to command result if session fetch fails
+                            notify('summary_completed', { 
+                                sessionId: msg.sessionId, 
+                                summary: result || '' 
+                            });
+                        }
+                    } catch (e) {
+                        console.error('[Tauri] Failed to fetch session after summary:', e);
+                        notify('summary_completed', { 
+                            sessionId: msg.sessionId, 
+                            summary: result || '' 
+                        });
+                    }
+                    break;
             }
         } catch (error) {
             console.error(`[Tauri] Command ${command} failed:`, error);

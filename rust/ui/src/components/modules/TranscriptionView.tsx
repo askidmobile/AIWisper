@@ -308,9 +308,20 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     const [summaryError, setSummaryError] = useState<string | null>(null);
 
     useEffect(() => {
-        const unsubStart = subscribe('summary_started', () => { setIsGeneratingSummary(true); setSummaryError(null); });
-        const unsubEnd = subscribe('summary_completed', () => { setIsGeneratingSummary(false); });
-        const unsubErr = subscribe('summary_error', (m: any) => { setIsGeneratingSummary(false); setSummaryError(m.error); });
+        const unsubStart = subscribe('summary_started', () => { 
+            console.log('[TranscriptionView] summary_started received');
+            setIsGeneratingSummary(true); 
+            setSummaryError(null); 
+        });
+        const unsubEnd = subscribe('summary_completed', (msg: any) => { 
+            console.log('[TranscriptionView] summary_completed received:', msg);
+            setIsGeneratingSummary(false); 
+        });
+        const unsubErr = subscribe('summary_error', (m: any) => { 
+            console.log('[TranscriptionView] summary_error received:', m);
+            setIsGeneratingSummary(false); 
+            setSummaryError(m.error); 
+        });
         return () => { unsubStart(); unsubEnd(); unsubErr(); };
     }, [subscribe]);
 

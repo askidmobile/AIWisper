@@ -4,7 +4,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-13+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-2.0.14-orange)
+![Version](https://img.shields.io/badge/version-2.0.15-orange)
 
 ## Возможности
 
@@ -129,17 +129,18 @@ ollama pull llama3.2
 
 ### Backend (Rust)
 - **Rust 1.75+** — системный язык для высокой производительности
-- **Tauri 2.1** — десктопный фреймворк с IPC
-- **whisper.cpp** — движок распознавания речи (C++ с Rust bindings)
-- **ONNX Runtime** — inference для GigaAM и диаризации
-- **sherpa-onnx** — кроссплатформенная диаризация спикеров
-- **cpal** — кроссплатформенный захват аудио
-- **serde/tokio** — сериализация и async runtime
+- **Tauri 2.1** — десктопный фреймворк с нативным IPC
+- **whisper-rs 0.15** — Rust bindings для whisper.cpp с Metal поддержкой
+- **ort 2.0** — ONNX Runtime с CoreML для Apple Silicon
+- **cpal 0.15** — кроссплатформенный захват аудио
+- **tokio** — async runtime для параллельной обработки
+- **parking_lot** — эффективные примитивы синхронизации
 
 ### Frontend (React + TypeScript)
-- **React 19** — UI фреймворк с hooks
-- **TypeScript 5.6** — строгая типизация
-- **Vite 6** — сборка и HMR
+- **React 18** — UI фреймворк с hooks
+- **TypeScript 5.3** — строгая типизация
+- **Vite 5** — быстрая сборка и HMR
+- **@tauri-apps/api** — Tauri IPC для коммуникации с бэкендом
 - **React Markdown** — рендеринг Markdown в Summary
 
 ### macOS Native (Swift)
@@ -158,35 +159,38 @@ ollama pull llama3.2
 - **WeSpeaker** — голосовые эмбеддинги для диаризации
 - **Ollama** — локальные LLM для AI-сводки
 
-### Legacy (v1.x)
-- **Go Backend** — gRPC + HTTP сервер (до v2.0)
-- **Electron** — десктопная оболочка (до v2.0)
-
 ## Структура проекта
 
 ```
 AIWisper/
-├── backend/                 # Go backend
+├── rust/                    # Основная кодовая база (Rust + Tauri)
+│   ├── src-tauri/           # Tauri backend
+│   │   ├── src/
+│   │   │   ├── commands/    # IPC команды
+│   │   │   ├── state/       # Состояние приложения
+│   │   │   └── main.rs      # Точка входа
+│   │   ├── resources/       # Ресурсы (модели, бинарники)
+│   │   └── tauri.conf.json  # Конфигурация Tauri
+│   ├── crates/              # Rust workspace crates
+│   │   ├── aiwisper-audio/  # Захват и обработка аудио
+│   │   ├── aiwisper-ml/     # ML движки (Whisper, GigaAM)
+│   │   ├── aiwisper-types/  # Общие типы данных
+│   │   └── aiwisper-worker/ # Worker процессы
+│   └── ui/                  # React frontend
+│       ├── src/
+│       │   ├── components/  # UI компоненты
+│       │   ├── context/     # React контексты
+│       │   ├── hooks/       # Custom hooks
+│       │   └── App.tsx      # Главный компонент
+│       └── package.json
+├── backend/                 # Legacy Go backend (для совместимости)
 │   ├── ai/                  # Движки распознавания
-│   │   ├── binding/         # CGO bindings для whisper.cpp
-│   │   ├── whisper.go       # Whisper интерфейс
-│   │   ├── gigaam.go        # GigaAM интерфейс
-│   │   └── diarization*.go  # Диаризация
-│   ├── audio/               # Захват аудио
-│   │   ├── coreaudio/       # Swift: CoreAudio Tap
-│   │   ├── screencapture/   # Swift: ScreenCaptureKit
-│   │   └── diarization/     # Swift: FluidAudio
-│   ├── internal/            # Внутренние сервисы
-│   │   ├── api/             # gRPC сервер
-│   │   └── service/         # Бизнес-логика
-│   ├── session/             # Управление записями
-│   └── models/              # Загрузка моделей
-├── frontend/                # Electron + React
-│   ├── electron/            # Main process
-│   ├── src/                 # React приложение
-│   │   ├── components/      # UI компоненты
-│   │   └── App.tsx          # Главный компонент
-│   └── package.json
+│   ├── audio/               # Swift модули захвата
+│   │   ├── coreaudio/       # CoreAudio Process Tap
+│   │   ├── screencapture/   # ScreenCaptureKit
+│   │   └── diarization/     # FluidAudio диаризация
+│   └── session/             # Управление сессиями
+├── frontend/                # Legacy Electron frontend
 ├── scripts/                 # Скрипты сборки
 └── docs/                    # Документация
 ```
@@ -195,24 +199,25 @@ AIWisper/
 
 ### Требования для сборки
 
-- **Go** 1.21+
+- **Rust** 1.75+ (с `cargo`)
 - **Node.js** 18+
-- **Xcode Command Line Tools** (для CGO и Swift)
+- **Xcode Command Line Tools** (для Swift и Metal)
+- **Tauri CLI** (`cargo install tauri-cli`)
 
 ### Команды
 
 ```bash
-# Запуск в режиме разработки
+# Запуск в режиме разработки (Tauri + React)
+cd rust && cargo tauri dev
+
+# Сборка релиза
+cd rust && cargo tauri build
+
+# Только frontend (без Tauri)
+cd rust/ui && npm run dev
+
+# Legacy Electron режим (если нужен)
 cd frontend && npm run electron:dev
-
-# Сборка backend отдельно
-cd frontend && npm run backend:build
-
-# Сборка DMG
-cd frontend && npm run electron:build:dmg
-
-# Сборка без упаковки (для отладки)
-cd frontend && npm run electron:build:dir
 ```
 
 ### Переменные окружения
