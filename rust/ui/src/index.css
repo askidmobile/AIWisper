@@ -832,3 +832,28 @@ input[type="range"] {
 .animate-slide-up {
   animation: slideUp var(--duration-normal) var(--transition-ease-out);
 }
+
+/* ============================================
+   RESPONSIVE BUTTON TEXT
+   Скрываем текст на кнопках при узком экране
+   ============================================ */
+
+/* Текст кнопки который нужно скрыть на узком экране */
+.btn-text-responsive {
+  display: inline;
+  transition: opacity var(--duration-fast);
+}
+
+/* При ширине меньше 700px скрываем текст на кнопках */
+@media (max-width: 700px) {
+  .btn-text-responsive {
+    display: none;
+  }
+  
+  /* Убираем gap когда текста нет */
+  .btn-capsule-responsive {
+    gap: 0;
+    padding: 0.4rem 0.6rem;
+    min-width: 36px;
+  }
+}

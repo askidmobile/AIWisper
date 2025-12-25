@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.16] - 2025-12-25
+
+### Fixed
+- **Длительность чанков**: Исправлено отображение длительности отрезков (было в мс, должно быть в нс для совместимости с frontend)
+  - Конвертация ms → ns в `convert_chunk_to_rust` и `get_session`
+  - Корректное отображение времени в UI
+
+- **Обновление транскрипции с диска**: Сессия теперь перезагружает чанки с диска при запросе деталей
+  - Background transcription записывает на диск, но не обновляла in-memory состояние
+  - `get_session` теперь мержит свежие данные с диска (transcription, status)
+  - Решает проблему "пустой транскрипции" после записи
+
+### Changed
+- **Адаптивные кнопки**: Улучшен UI кнопок "Ретранскрибировать", "Улучшить", "Экспорт"
+  - На узких экранах (<700px) текст скрывается, остаются только иконки
+  - Добавлены CSS классы `btn-capsule-responsive` и `btn-text-responsive`
+  - Плавная анимация при изменении размера окна
+
+### Technical
+- `rust/src-tauri/src/state/mod.rs`: Duration конвертация ms→ns, перезагрузка чанков с диска
+- `rust/ui/src/components/modules/SessionControls.tsx`: Responsive классы для кнопок
+- `rust/ui/src/index.css`: Media query для скрытия текста на узких экранах
+
 ## [2.0.15] - 2025-12-22
 
 ### Changed

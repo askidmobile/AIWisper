@@ -4,7 +4,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-13+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-2.0.15-orange)
+![Version](https://img.shields.io/badge/version-2.0.16-orange)
 
 ## Возможности
 

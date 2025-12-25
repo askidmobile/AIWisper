@@ -387,12 +387,15 @@ fn convert_chunk_to_rust(chunk: GoChunkMeta, index: i32) -> crate::commands::ses
     // Get transcription text
     let transcription = chunk.transcription.clone().unwrap_or_default();
 
+    // Duration: convert ms to nanoseconds (frontend expects ns)
+    let duration_ns = (chunk.end_ms - chunk.start_ms) * 1_000_000;
+    
     SessionChunk {
         id: chunk.id,
         index,
         start_ms: chunk.start_ms,
         end_ms: chunk.end_ms,
-        duration: chunk.end_ms - chunk.start_ms,
+        duration: duration_ns,
         transcription,
         mic_text: chunk.mic_text,
         sys_text: chunk.sys_text,
@@ -653,28 +656,32 @@ impl AppState {
         let chunks: Vec<SessionChunk> = result
             .chunks
             .iter()
-            .map(|chunk| SessionChunk {
-                id: chunk.id.clone(),
-                index: chunk.index,
-                start_ms: chunk.start_ms,
-                end_ms: chunk.end_ms,
-                duration: chunk.end_ms - chunk.start_ms,
-                transcription: chunk.transcription.clone(),
-                mic_text: chunk.mic_text.clone(),
-                sys_text: chunk.sys_text.clone(),
-                dialogue: chunk
-                    .dialogue
-                    .iter()
-                    .map(|d| DialogueSegment {
-                        start: d.start,
-                        end: d.end,
-                        text: d.text.clone(),
-                        speaker: Some(d.speaker.clone()),
-                    })
-                    .collect(),
-                is_stereo: false,
-                status: chunk.status.clone(),
-                speaker: Some("mic".to_string()),
+            .map(|chunk| {
+                // Duration: convert ms to nanoseconds (frontend expects ns)
+                let duration_ns = (chunk.end_ms - chunk.start_ms) * 1_000_000;
+                SessionChunk {
+                    id: chunk.id.clone(),
+                    index: chunk.index,
+                    start_ms: chunk.start_ms,
+                    end_ms: chunk.end_ms,
+                    duration: duration_ns,
+                    transcription: chunk.transcription.clone(),
+                    mic_text: chunk.mic_text.clone(),
+                    sys_text: chunk.sys_text.clone(),
+                    dialogue: chunk
+                        .dialogue
+                        .iter()
+                        .map(|d| DialogueSegment {
+                            start: d.start,
+                            end: d.end,
+                            text: d.text.clone(),
+                            speaker: Some(d.speaker.clone()),
+                        })
+                        .collect(),
+                    is_stereo: false,
+                    status: chunk.status.clone(),
+                    speaker: Some("mic".to_string()),
+                }
             })
             .collect();
 
@@ -1687,21 +1694,71 @@ impl AppState {
             .collect())
     }
 
-    /// Get a specific session (in-memory)
+    /// Get a specific session (refreshes chunks from disk for latest data)
     pub async fn get_session(&self, session_id: &str) -> Result<crate::commands::session::Session> {
-        let sessions = self.inner.sessions.read();
-        let session = sessions
-            .iter()
-            .find(|s| s.id == session_id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+        // First get base session from memory
+        let mut session = {
+            let sessions = self.inner.sessions.read();
+            sessions
+                .iter()
+                .find(|s| s.id == session_id)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Session not found"))?
+        };
         
-        // Debug: log if session has summary
+        // Reload chunks from disk to get latest transcription data
+        // This is important because background transcription writes to disk
+        // but doesn't update in-memory state
+        if let Some(sessions_dir) = get_sessions_dir() {
+            let session_path = sessions_dir.join(session_id);
+            if session_path.exists() {
+                let fresh_chunks = load_chunks_from_dir(&session_path);
+                if !fresh_chunks.is_empty() {
+                    // Merge: prefer disk chunks with transcription over memory chunks without
+                    let merged_chunks: Vec<_> = fresh_chunks.into_iter().map(|disk_chunk| {
+                        // Find matching memory chunk
+                        if let Some(mem_chunk) = session.chunks.iter().find(|c| c.id == disk_chunk.id) {
+                            // If disk has transcription and memory doesn't, use disk
+                            if !disk_chunk.transcription.is_empty() && mem_chunk.transcription.is_empty() {
+                                tracing::debug!(
+                                    "Using disk transcription for chunk {} (mem was empty)",
+                                    disk_chunk.index
+                                );
+                                disk_chunk
+                            } else if disk_chunk.status == "completed" && mem_chunk.status != "completed" {
+                                tracing::debug!(
+                                    "Using disk chunk {} (completed status)",
+                                    disk_chunk.index
+                                );
+                                disk_chunk
+                            } else {
+                                // Otherwise use memory chunk (may have fresher inline transcription)
+                                mem_chunk.clone()
+                            }
+                        } else {
+                            // Chunk only on disk, use it
+                            disk_chunk
+                        }
+                    }).collect();
+                    
+                    session.chunks = merged_chunks;
+                    
+                    // Also update in-memory cache so subsequent reads are consistent
+                    let mut sessions = self.inner.sessions.write();
+                    if let Some(s) = sessions.iter_mut().find(|s| s.id == session_id) {
+                        s.chunks = session.chunks.clone();
+                    }
+                }
+            }
+        }
+        
+        // Debug: log session state
         tracing::debug!(
-            "get_session {}: summary={}, chunks={}",
+            "get_session {}: summary={}, chunks={}, transcriptions={}",
             session_id,
             session.summary.as_ref().map(|s| s.len()).unwrap_or(0),
-            session.chunks.len()
+            session.chunks.len(),
+            session.chunks.iter().filter(|c| !c.transcription.is_empty()).count()
         );
         
         Ok(session)
@@ -2072,8 +2129,9 @@ impl AppState {
             speaker_id
         );
 
-        // Generate 2 seconds of silence as a sample
-        let wav_data = Self::generate_silence_wav(2.0);
+        // Generate 2 seconds of silence as a sample (32000 samples at 16kHz)
+        let silence_samples = vec![0.0f32; 32000];
+        let wav_data = Self::samples_to_wav(&silence_samples);
 
         // Encode as base64 data URL
         let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_data);
@@ -2110,7 +2168,9 @@ impl AppState {
 
         // Fallback: Generate silence based on session duration
         let duration_sec = (session.total_duration as f32) / 1000.0;
-        let wav_data = Self::generate_silence_wav(duration_sec);
+        let num_samples = (duration_sec * 16000.0) as usize;
+        let silence_samples = vec![0.0f32; num_samples];
+        let wav_data = Self::samples_to_wav(&silence_samples);
 
         // Encode as base64 data URL
         let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_data);
@@ -2120,36 +2180,45 @@ impl AppState {
     /// Get chunk audio as base64-encoded WAV
     /// Returns a data URL that can be used directly in an <audio> element
     pub async fn get_chunk_audio(&self, session_id: &str, chunk_index: usize) -> Result<String> {
-        let sessions = self.inner.sessions.read();
-        let session = sessions
-            .iter()
-            .find(|s| s.id == session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+        // Get chunk timestamps
+        let (start_ms, end_ms) = {
+            let sessions = self.inner.sessions.read();
+            let session = sessions
+                .iter()
+                .find(|s| s.id == session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 
-        let chunk = session
-            .chunks
-            .get(chunk_index)
-            .ok_or_else(|| anyhow::anyhow!("Chunk not found"))?;
-
-        // Calculate chunk duration from timestamps
-        let duration_ms = chunk.end_ms - chunk.start_ms;
-        let duration_sec = (duration_ms as f32) / 1000.0;
-
-        let wav_data = Self::generate_silence_wav(duration_sec);
+            let chunk = session
+                .chunks
+                .get(chunk_index)
+                .ok_or_else(|| anyhow::anyhow!("Chunk not found"))?;
+            
+            (chunk.start_ms, chunk.end_ms)
+        };
+        
+        // Extract audio samples from the MP3 file
+        let samples = self.extract_audio_segment(session_id, start_ms, end_ms).await?;
+        
+        if samples.is_empty() {
+            return Err(anyhow::anyhow!("No audio samples for chunk"));
+        }
+        
+        // Convert samples to WAV
+        let wav_data = Self::samples_to_wav(&samples);
 
         // Encode as base64 data URL
         let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_data);
         Ok(format!("data:audio/wav;base64,{}", base64))
     }
-
-    /// Generate a minimal WAV file with silence
+    
+    /// Convert f32 samples to WAV format
     /// Format: 16kHz, mono, 16-bit PCM
-    fn generate_silence_wav(duration_sec: f32) -> Vec<u8> {
+    fn samples_to_wav(samples: &[f32]) -> Vec<u8> {
         const SAMPLE_RATE: u32 = 16000;
         const BITS_PER_SAMPLE: u16 = 16;
         const CHANNELS: u16 = 1;
 
-        let num_samples = (SAMPLE_RATE as f32 * duration_sec) as u32;
+        let num_samples = samples.len() as u32;
         let data_size = num_samples * (BITS_PER_SAMPLE / 8) as u32 * CHANNELS as u32;
         let file_size = 36 + data_size;
 
@@ -2176,8 +2245,13 @@ impl AppState {
         wav.extend_from_slice(b"data");
         wav.extend_from_slice(&data_size.to_le_bytes());
 
-        // Silent samples (all zeros)
-        wav.resize(44 + data_size as usize, 0);
+        // Convert f32 samples to i16 PCM
+        for &sample in samples {
+            // Clamp to [-1.0, 1.0] and scale to i16 range
+            let clamped = sample.clamp(-1.0, 1.0);
+            let pcm = (clamped * 32767.0) as i16;
+            wav.extend_from_slice(&pcm.to_le_bytes());
+        }
 
         wav
     }
