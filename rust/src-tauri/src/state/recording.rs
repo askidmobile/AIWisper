@@ -838,6 +838,98 @@ fn recording_thread(
         );
     }
 
+    // ===== ФИНАЛЬНАЯ ОБРАБОТКА БУФЕРОВ =====
+    // После break из цикла могут остаться необработанные семплы:
+    // 1. В mic_buffer/sys_buffer (невыровненные данные)
+    // 2. В capture (последние семплы, которые не были прочитаны)
+    tracing::info!(
+        "Final buffer flush: mic_buffer={}, sys_buffer={} samples before processing",
+        mic_buffer.len(),
+        sys_buffer.len()
+    );
+
+    // Получаем последние семплы из capture устройств
+    let final_mic_samples_raw = mic_capture.get_samples();
+    if !final_mic_samples_raw.is_empty() {
+        // Ресэмплируем микрофон к 24kHz если нужно
+        let final_mic_samples = if mic_sample_rate != 24000 {
+            match crate::audio::resample(&final_mic_samples_raw, mic_sample_rate, 24000) {
+                Ok(resampled) => resampled,
+                Err(e) => {
+                    tracing::error!("Failed to resample final mic samples: {}", e);
+                    final_mic_samples_raw.clone()
+                }
+            }
+        } else {
+            final_mic_samples_raw.clone()
+        };
+        mic_buffer.extend_from_slice(&final_mic_samples);
+        tracing::info!(
+            "Final mic samples: raw={}, resampled={}, mic_buffer now={}",
+            final_mic_samples_raw.len(),
+            final_mic_samples.len(),
+            mic_buffer.len()
+        );
+    }
+
+    // Получаем последние семплы из системного аудио
+    if let Some(ref sys) = sys_capture {
+        while let Ok(channel_data) = sys.get_receiver().try_recv() {
+            sys_buffer.extend_from_slice(&channel_data.samples);
+        }
+        tracing::info!("Final sys_buffer after drain: {} samples", sys_buffer.len());
+    }
+
+    // Обрабатываем оставшиеся выровненные данные
+    if sys_capture.is_some() {
+        let min_len = mic_buffer.len().min(sys_buffer.len());
+        if min_len > 0 {
+            let mic_final: Vec<f32> = mic_buffer.drain(..min_len).collect();
+            let sys_final: Vec<f32> = sys_buffer.drain(..min_len).collect();
+
+            // Записываем в MP3
+            if let Err(e) = mp3_writer.write_stereo(&mic_final, &sys_final) {
+                tracing::error!("Failed to write final stereo samples to MP3: {}", e);
+            }
+
+            // Передаём в chunk_buffer
+            chunk_buffer.process_stereo(&mic_final, &sys_final);
+            tracing::info!(
+                "Final stereo samples processed: {} samples, remaining mic={}, sys={}",
+                min_len,
+                mic_buffer.len(),
+                sys_buffer.len()
+            );
+        }
+
+        // Если остались только микрофонные семплы (системный канал отстал) - добавляем тишину
+        if !mic_buffer.is_empty() {
+            let remaining_mic = mic_buffer.len();
+            let silence = vec![0.0f32; remaining_mic];
+            if let Err(e) = mp3_writer.write_stereo(&mic_buffer, &silence) {
+                tracing::error!("Failed to write final mic+silence to MP3: {}", e);
+            }
+            chunk_buffer.process_stereo(&mic_buffer, &silence);
+            mic_buffer.clear();
+            tracing::info!("Final mic samples (with silence for sys): {} samples", remaining_mic);
+        }
+    } else {
+        // Моно режим - обрабатываем только микрофон
+        if !mic_buffer.is_empty() {
+            if let Err(e) = mp3_writer.write(&mic_buffer) {
+                tracing::error!("Failed to write final mono samples to MP3: {}", e);
+            }
+            chunk_buffer.process(&mic_buffer);
+            tracing::info!("Final mono samples processed: {}", mic_buffer.len());
+            mic_buffer.clear();
+        }
+    }
+
+    tracing::info!(
+        "ChunkBuffer after final processing: total_duration={}ms",
+        chunk_buffer.total_duration_ms()
+    );
+
     // Flush remaining audio as final chunk
     // При остановке не блокируем на транскрипции - запускаем в фоне
     if let Some(event) = chunk_buffer.flush_all() {
