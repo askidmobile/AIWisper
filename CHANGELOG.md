@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.19] - 2025-12-27
+
+### Fixed
+- **Chunk Sample Indexing After Drain**: Fixed critical bug where chunks after the first one received empty or incorrect audio samples
+  - **Problem**: After `drain_processed_samples()` removed data from buffers, `get_*_samples_range()` functions still used absolute timestamps but the buffer had shifted
+  - **Solution**: Added `drained_samples_offset` field to `ChunkBuffer` that tracks total drained samples and adjusts coordinates in get functions
+  - Now chunks correctly receive ~240,000 samples (10 seconds @ 24kHz) instead of ~500
+
+- **Final Recording Seconds Lost**: Fixed issue where the last 2-3 seconds of recording were not transcribed
+  - **Problem**: When recording stopped, samples in `mic_buffer`/`sys_buffer` and capture devices were not processed before `flush_all()`
+  - **Solution**: Added final buffer flush that reads remaining samples from capture devices and processes them through `chunk_buffer` before creating the final chunk
+
+- **Tauri Event Listener Cleanup**: Improved event listener cleanup for React 18 Strict Mode
+  - **Problem**: `TypeError: undefined is not an object (evaluating 'listeners[eventId].handlerId')` errors
+  - **Solution**: Enhanced cleanup logic with local unlisten array, setTimeout for cleanup, better cancelled flag handling
+
+### Technical
+- `rust/crates/aiwisper-audio/src/chunk_buffer.rs`:
+  - Added `drained_samples_offset: i64` field
+  - Updated `get_samples_range()`, `get_mic_samples_range()`, `get_sys_samples_range()` to subtract offset
+  - Updated `drain_processed_samples()` to increment offset
+  - Updated `clear()` to reset offset and absolute counters
+  - Added debug warnings when range becomes empty after adjustment
+
+- `rust/src-tauri/src/state/recording.rs`:
+  - Added ~90 lines of final buffer processing code
+  - Reads last samples from mic_capture and sys_capture
+  - Processes remaining aligned mic/sys data
+  - Handles edge case where mic has data but sys doesn't (adds silence)
+
+- `rust/ui/src/context/TauriContext.tsx`:
+  - Improved cleanup with local unlisten array
+  - Added setTimeout for deferred cleanup
+  - Better React 18 Strict Mode compatibility
+
 ## [2.0.18] - 2025-12-26
 
 ### Changed
