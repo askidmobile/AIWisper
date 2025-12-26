@@ -8,6 +8,7 @@ use crate::{FluidASREngine, GigaAMEngine, WhisperEngine};
 use anyhow::{Context, Result};
 use parking_lot::{Mutex, RwLock};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Тип движка транскрипции
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,33 +130,97 @@ impl EngineManager {
         }
     }
 
+    /// Создать движок для модели с установкой языка (возвращает Arc)
+    /// 
+    /// Это основной метод для использования в транскрипции.
+    /// Поддерживает fallback на default модель при неизвестном типе.
+    pub fn create_engine_arc(&self, model_id: &str, language: &str) -> Result<Arc<dyn TranscriptionEngine>> {
+        let engine_type = EngineType::from_model_id(model_id);
+        
+        let mut engine: Box<dyn TranscriptionEngine> = match engine_type {
+            EngineType::FluidASR => {
+                tracing::info!("Creating FluidASR engine for model: {}", model_id);
+                let engine = FluidASREngine::new()?;
+                Box::new(engine)
+            }
+            EngineType::GigaAM => {
+                let model_path = self.get_model_path(model_id)?;
+                let vocab_path = self.get_vocab_path(model_id)?;
+                let engine = GigaAMEngine::new(
+                    model_path.to_str().unwrap(),
+                    vocab_path.to_str().unwrap(),
+                )?;
+                tracing::info!("Created GigaAM engine for model: {}", model_id);
+                Box::new(engine)
+            }
+            EngineType::Whisper => {
+                match self.get_model_path(model_id) {
+                    Ok(model_path) => {
+                        let engine = WhisperEngine::new(model_path.to_str().unwrap())?;
+                        tracing::info!("Created Whisper engine for model: {}", model_id);
+                        Box::new(engine)
+                    }
+                    Err(_) => {
+                        // Fallback на default модель
+                        tracing::warn!(
+                            "Unknown model type '{}', falling back to Whisper large-v3-turbo",
+                            model_id
+                        );
+                        let default_path = self.models_dir.join("ggml-large-v3-turbo.bin");
+                        if !default_path.exists() {
+                            anyhow::bail!("Default Whisper model not found");
+                        }
+                        let engine = WhisperEngine::new(default_path.to_str().unwrap())?;
+                        Box::new(engine)
+                    }
+                }
+            }
+        };
+        
+        // Установить язык если указан
+        if !language.is_empty() && language != "auto" {
+            if let Err(e) = engine.set_language(language) {
+                tracing::warn!("Failed to set language '{}' on engine: {}", language, e);
+            }
+        }
+        
+        Ok(Arc::from(engine))
+    }
+
     /// Получить путь к файлу модели
     fn get_model_path(&self, model_id: &str) -> Result<PathBuf> {
         let engine_type = EngineType::from_model_id(model_id);
 
-        let file_name = match engine_type {
-            EngineType::Whisper => format!("{}.bin", model_id),
-            EngineType::GigaAM => {
-                // GigaAM модели имеют специфичные имена файлов
-                if model_id.contains("e2e") {
-                    "v3_e2e_ctc.int8.onnx".to_string()
-                } else {
-                    "v3_ctc.int8.onnx".to_string()
+        match engine_type {
+            EngineType::Whisper => {
+                let model_file = format!("{}.bin", model_id);
+                let path = self.models_dir.join(&model_file);
+                if path.exists() {
+                    return Ok(path);
                 }
+                anyhow::bail!("Whisper model not found: {}", model_file)
+            }
+            EngineType::GigaAM => {
+                // Пробуем разные варианты имён модели
+                let model_candidates: &[&str] = if model_id.contains("e2e") {
+                    &["gigaam-v3-e2e-ctc.onnx", "v3_e2e_ctc.int8.onnx", "gigaam-v3-e2e-ctc.int8.onnx"]
+                } else {
+                    &["gigaam-v3-ctc.onnx", "v3_ctc.int8.onnx", "gigaam-v3-ctc.int8.onnx"]
+                };
+                
+                for candidate in model_candidates {
+                    let path = self.models_dir.join(candidate);
+                    if path.exists() {
+                        return Ok(path);
+                    }
+                }
+                anyhow::bail!("GigaAM model not found. Tried: {:?}", model_candidates)
             }
             EngineType::FluidASR => {
                 // FluidAudio управляет моделями сам
-                return Ok(self.models_dir.clone());
+                Ok(self.models_dir.clone())
             }
-        };
-
-        let path = self.models_dir.join(&file_name);
-
-        if !path.exists() {
-            anyhow::bail!("Model file not found: {:?}", path);
         }
-
-        Ok(path)
     }
 
     /// Получить путь к vocab файлу (для GigaAM)

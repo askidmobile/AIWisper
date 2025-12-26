@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.18] - 2025-12-26
+
+### Changed
+- **Code Refactoring (~600 lines removed)**: Major cleanup to reduce code duplication across Rust crates
+  - `is_channel_silent` → `aiwisper_audio::is_silent()` (~22 lines saved)
+  - `create_engine` closure → `EngineManager.create_engine_arc()` (~140 lines saved)
+  - 4x `extract_audio_segment*` functions → unified `Mp3Decoder` module (~366 lines saved)
+  - `resample_audio` → `aiwisper_audio::resample()` (~24 lines saved)
+  - `are_channels_similar` → `aiwisper_audio::are_channels_similar()` (~22 lines saved)
+  - `resample_linear` → `resample_for_asr()` using rubato (~28 lines saved)
+
+### Added
+- **Mp3Decoder Module**: New unified MP3 decoding API in `aiwisper-audio` crate
+  - `decode_segment_mono()` - mono mix for ASR (16kHz)
+  - `decode_segment_stereo()` - stereo channels for ASR (16kHz)
+  - `decode_segment_for_playback()` - raw stereo, original sample rate
+  - `decode_waveform()` - full file for visualization
+
+- **EngineManager.create_engine_arc()**: New method for simplified engine creation
+  - Returns `Arc<dyn TranscriptionEngine>` with language setting and fallback support
+  - Improved model path resolution with multiple filename candidates
+
+### Technical
+- `rust/crates/aiwisper-audio/src/mp3_decoder.rs`: NEW FILE (350 lines)
+- `rust/crates/aiwisper-audio/src/lib.rs`: Added `are_channels_similar()`, exports for Mp3Decoder
+- `rust/crates/aiwisper-ml/src/engine_manager.rs`: Added `create_engine_arc()` (~60 lines)
+- `rust/src-tauri/src/state/mod.rs`: Major refactoring (-501 lines)
+- `rust/src-tauri/src/state/recording.rs`: Refactoring (-71 lines)
+- Uses rubato for high-quality resampling instead of linear interpolation
+
 ## [2.0.17] - 2025-12-26
 
 ### Added

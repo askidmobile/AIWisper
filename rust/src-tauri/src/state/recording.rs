@@ -7,8 +7,8 @@
 //! - Transcription of chunks during recording
 
 use aiwisper_audio::{
-    resample, AudioCapture, AudioChannel, ChunkBuffer, SegmentedMp3Writer, SystemAudioCapture,
-    SystemCaptureConfig, SystemCaptureMethod, VadConfig,
+    is_silent, resample, AudioCapture, AudioChannel, ChunkBuffer, SegmentedMp3Writer,
+    SystemAudioCapture, SystemCaptureConfig, SystemCaptureMethod, VadConfig,
 };
 use std::sync::mpsc;
 use anyhow::Result;
@@ -488,7 +488,7 @@ fn recording_thread(
 
     let start_time = Instant::now();
     let mut chunks: Vec<ChunkMeta> = Vec::new();
-    let mut last_mic_sample_count = 0usize;
+    // УДАЛЕНО: last_mic_sample_count больше не нужен, т.к. используем clear() после чтения
 
     // Buffers for stereo recording (микрофон и система накапливаются до выравнивания)
     let mut sys_buffer: Vec<f32> = Vec::new();
@@ -496,6 +496,12 @@ fn recording_thread(
 
     // For debug logging
     let mut loop_count: u64 = 0;
+    
+    // Счётчик итераций без новых системных данных (для детекции застоя)
+    let mut sys_empty_streak: u32 = 0;
+    const SYS_EMPTY_WARNING_THRESHOLD: u32 = 40; // 2 секунды (40 * 50ms)
+    let mut sys_disconnected = false;
+    let mut sys_fallback_logged = false;
 
     // Main recording loop
     loop {
@@ -508,47 +514,67 @@ fn recording_thread(
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         // Get new mic samples (at mic_sample_rate)
-        let all_mic_samples = mic_capture.get_samples();
-        let new_mic_samples_raw = &all_mic_samples[last_mic_sample_count..];
+        // ВАЖНО: используем get_samples() + clear() вместо индексации,
+        // потому что в capture.rs есть sliding window buffer,
+        // который удаляет старые сэмплы после 30 секунд
+        let new_mic_samples_raw = mic_capture.get_samples();
+        mic_capture.clear(); // Очищаем буфер после чтения
 
         // Resample if needed
         let new_mic_samples: Vec<f32> = if need_resample && !new_mic_samples_raw.is_empty() {
-            match resample(new_mic_samples_raw, mic_sample_rate, SAMPLE_RATE) {
+            match resample(&new_mic_samples_raw, mic_sample_rate, SAMPLE_RATE) {
                 Ok(resampled) => resampled,
                 Err(e) => {
                     tracing::warn!("Resample failed: {}, using raw samples", e);
-                    new_mic_samples_raw.to_vec()
+                    new_mic_samples_raw.clone()
                 }
             }
         } else {
-            new_mic_samples_raw.to_vec()
+            new_mic_samples_raw.clone()
         };
-
-        // Log every 20 iterations (1 second)
-        loop_count += 1;
-        if loop_count % 20 == 0 {
-            tracing::info!(
-                "Recording loop #{}: total_samples={}, new_raw={}, new_resampled={}",
-                loop_count,
-                all_mic_samples.len(),
-                new_mic_samples_raw.len(),
-                new_mic_samples.len()
-            );
-        }
 
         // Collect system audio samples if available
         let mut sys_level: f32 = 0.0;
+        let mut sys_recv_count = 0u32;
         if let Some(ref sys) = sys_capture {
-            while let Ok(data) = sys.get_receiver().try_recv() {
-                if data.channel == AudioChannel::System {
-                    sys_buffer.extend_from_slice(&data.samples);
-                    // Calculate RMS for sys level
-                    if !data.samples.is_empty() {
-                        let rms: f32 = (data.samples.iter().map(|s| s * s).sum::<f32>()
-                            / data.samples.len() as f32)
-                            .sqrt();
-                        sys_level = (rms * 300.0).min(100.0);
+            loop {
+                match sys.get_receiver().try_recv() {
+                    Ok(data) => {
+                        if data.channel == AudioChannel::System {
+                            sys_buffer.extend_from_slice(&data.samples);
+                            sys_recv_count += 1;
+                            // Calculate RMS for sys level
+                            if !data.samples.is_empty() {
+                                let rms: f32 = (data.samples.iter().map(|s| s * s).sum::<f32>()
+                                    / data.samples.len() as f32)
+                                    .sqrt();
+                                sys_level = (rms * 300.0).min(100.0);
+                            }
+                        }
                     }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        // Нормально - канал пуст, выходим из цикла
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        // КРИТИЧНО: Swift процесс завершился или упал!
+                        if !sys_disconnected {
+                            tracing::error!("❌ System audio channel DISCONNECTED! Swift screencapture-audio process likely crashed.");
+                            sys_disconnected = true;
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            // Отслеживание застоя системного аудио
+            if sys_recv_count > 0 {
+                sys_empty_streak = 0; // Сброс счётчика
+            } else {
+                sys_empty_streak += 1;
+                if sys_empty_streak == SYS_EMPTY_WARNING_THRESHOLD {
+                    tracing::warn!("⚠️ No system audio for {} iterations (~2 sec)! sys_buffer={}, mic_buffer={}", 
+                        sys_empty_streak, sys_buffer.len(), mic_buffer.len());
                 }
             }
         }
@@ -562,7 +588,47 @@ fn recording_thread(
         let is_mic_muted = mic_muted.load(Ordering::Relaxed);
         let is_sys_muted = sys_muted.load(Ordering::Relaxed);
 
+        // Log every 20 iterations (1 second)
+        loop_count += 1;
+        if loop_count % 20 == 0 {
+            tracing::info!(
+                "Recording loop #{}: new_raw={}, new_resampled={}, mic_buf={}, sys_buf={}, muted=({},{})",
+                loop_count,
+                new_mic_samples_raw.len(),
+                new_mic_samples.len(),
+                mic_buffer.len(),
+                sys_buffer.len(),
+                is_mic_muted,
+                is_sys_muted
+            );
+        }
+        
+        // Log mute state changes (only when they change)
+        static LAST_MIC_MUTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static LAST_SYS_MUTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        
+        let last_mic = LAST_MIC_MUTED.swap(is_mic_muted, Ordering::Relaxed);
+        let last_sys = LAST_SYS_MUTED.swap(is_sys_muted, Ordering::Relaxed);
+        
+        if last_mic != is_mic_muted || last_sys != is_sys_muted {
+            tracing::info!("🔇 Mute state changed: mic_muted={}, sys_muted={}", is_mic_muted, is_sys_muted);
+        }
+
         if sys_capture.is_some() {
+            // FALLBACK: Если системный канал отключился или долго не отвечает,
+            // генерируем тишину для системного аудио чтобы не блокировать запись
+            if (sys_disconnected || sys_empty_streak >= SYS_EMPTY_WARNING_THRESHOLD) && sys_buffer.is_empty() && !mic_buffer.is_empty() {
+                // Генерируем тишину в размере микрофонного буфера
+                let silence_len = mic_buffer.len();
+                sys_buffer.extend(std::iter::repeat(0.0f32).take(silence_len));
+                
+                // Логируем только первый раз после обнаружения проблемы
+                if !sys_fallback_logged {
+                    tracing::warn!("🔇 System audio unavailable, using silence fallback ({} samples)", silence_len);
+                    sys_fallback_logged = true;
+                }
+            }
+            
             // Стерео режим: пишем и обрабатываем только выровненные пары mic/sys
             let min_len = mic_buffer.len().min(sys_buffer.len());
             if min_len > 0 {
@@ -604,9 +670,7 @@ fn recording_thread(
             chunk_buffer.process(&mic_samples_final);
         }
 
-        if !new_mic_samples.is_empty() {
-            last_mic_sample_count = all_mic_samples.len();
-        }
+        // УДАЛЕНО: больше не нужно отслеживать last_mic_sample_count
 
         // Check for completed chunks
         while let Some(event) = chunk_buffer.try_recv() {
@@ -736,8 +800,9 @@ fn recording_thread(
         // Emit audio level (always emit, even if no samples yet)
         // When muted, show 0 level (but show actual level in logs for debugging)
         let elapsed = start_time.elapsed().as_secs_f64();
-        let recent_start = all_mic_samples.len().saturating_sub(800);
-        let recent = &all_mic_samples[recent_start..];
+        // Используем последние ~800 сэмплов из свежих данных для расчёта уровня
+        let recent_start = new_mic_samples_raw.len().saturating_sub(800);
+        let recent = &new_mic_samples_raw[recent_start..];
         let actual_mic_level = if !recent.is_empty() {
             let rms: f32 = (recent.iter().map(|s| s * s).sum::<f32>() / recent.len() as f32).sqrt();
             (rms * 300.0).min(100.0)
@@ -957,7 +1022,8 @@ fn transcribe_chunk_samples(
 
     // Resample to 16kHz if needed
     let samples_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
-        resample_audio(samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE)
+        resample(samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE)
+            .unwrap_or_else(|_| samples.to_vec())
     } else {
         samples.to_vec()
     };
@@ -1051,20 +1117,27 @@ fn transcribe_chunk_stereo(
     #[allow(unused_imports)]
     use tauri::Emitter;
 
+    // Check for silent channels to avoid hallucinations like "Продолжение следует..."
+    let mic_is_silent = is_silent(mic_samples, None);
+    let sys_is_silent = is_silent(sys_samples, None);
+    
     tracing::info!(
-        "Transcribing stereo chunk {}: mic={} sys={} samples @ {}Hz",
+        "Transcribing stereo chunk {}: mic={} sys={} samples @ {}Hz, silent=(mic:{}, sys:{})",
         chunk_meta.index,
         mic_samples.len(),
         sys_samples.len(),
-        source_sample_rate
+        source_sample_rate,
+        mic_is_silent,
+        sys_is_silent
     );
 
     let mut all_dialogue: Vec<DialogueEntry> = Vec::new();
 
-    // Transcribe mic channel
-    if !mic_samples.is_empty() {
+    // Transcribe mic channel (skip if silent)
+    if !mic_samples.is_empty() && !mic_is_silent {
         let mic_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
-            resample_audio(mic_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE)
+            resample(mic_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE)
+                .unwrap_or_else(|_| mic_samples.to_vec())
         } else {
             mic_samples.to_vec()
         };
@@ -1086,12 +1159,15 @@ fn transcribe_chunk_stereo(
                 });
             }
         }
+    } else if mic_is_silent {
+        tracing::debug!("Skipping MIC channel for chunk {} - silent", chunk_meta.index);
     }
 
-    // Transcribe sys channel with optional diarization
-    if !sys_samples.is_empty() {
+    // Transcribe sys channel with optional diarization (skip if silent)
+    if !sys_samples.is_empty() && !sys_is_silent {
         let sys_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
-            resample_audio(sys_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE)
+            resample(sys_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE)
+                .unwrap_or_else(|_| sys_samples.to_vec())
         } else {
             sys_samples.to_vec()
         };
@@ -1208,32 +1284,6 @@ fn transcribe_chunk_stereo(
     chunk_meta
 }
 
-/// Resample audio to target sample rate using linear interpolation
-fn resample_audio(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
-    if source_rate == target_rate || samples.is_empty() {
-        return samples.to_vec();
-    }
-
-    let ratio = target_rate as f64 / source_rate as f64;
-    let new_len = (samples.len() as f64 * ratio) as usize;
-    let mut resampled = vec![0.0f32; new_len];
-
-    for (i, sample) in resampled.iter_mut().enumerate() {
-        let src_idx = i as f64 / ratio;
-        let src_idx_floor = src_idx.floor() as usize;
-        let src_idx_ceil = (src_idx_floor + 1).min(samples.len() - 1);
-        let frac = src_idx - src_idx_floor as f64;
-
-        *sample = if src_idx_floor < samples.len() {
-            samples[src_idx_floor] * (1.0 - frac as f32) + samples[src_idx_ceil] * frac as f32
-        } else {
-            0.0
-        };
-    }
-
-    resampled
-}
-
 /// Synchronous transcription (called from recording thread)
 fn transcribe_samples_sync(
     samples: &[f32],
@@ -1244,91 +1294,18 @@ fn transcribe_samples_sync(
     hotwords: &[String],
 ) -> Result<Vec<aiwisper_types::TranscriptSegment>> {
     use aiwisper_ml::{
-        FluidASREngine, GigaAMEngine, HybridMode, HybridTranscriber, HybridTranscriptionConfig,
-        TranscriptionEngine, VotingConfig, WhisperEngine,
+        EngineManager, HybridMode, HybridTranscriber, HybridTranscriptionConfig, VotingConfig,
     };
-    use std::sync::Arc;
 
-    // Get models directory
+    // Get models directory and create engine manager
     let models_dir = dirs::data_local_dir()
         .map(|p| p.join("aiwisper").join("models"))
         .ok_or_else(|| anyhow::anyhow!("Models directory not found"))?;
+    
+    let engine_manager = EngineManager::new(models_dir);
 
-    // Helper to create engine from model ID
-    let create_engine = |mid: &str| -> Result<Arc<dyn TranscriptionEngine>> {
-        let is_gigaam = mid.starts_with("gigaam");
-        let is_whisper = mid.starts_with("ggml");
-        let is_parakeet = mid.starts_with("parakeet") || mid.contains("fluid");
-
-        if is_parakeet {
-            // FluidASR (Parakeet TDT v3) - uses subprocess
-            tracing::info!("Creating FluidASR engine for model: {}", mid);
-            let mut engine = FluidASREngine::new()?;
-            if !language.is_empty() && language != "auto" {
-                engine.set_language(language)?;
-            }
-            Ok(Arc::new(engine))
-        } else if is_gigaam {
-            // Пробуем разные варианты имён модели
-            let model_candidates: &[&str] = if mid.contains("e2e") {
-                &["gigaam-v3-e2e-ctc.onnx", "v3_e2e_ctc.int8.onnx", "gigaam-v3-e2e-ctc.int8.onnx"]
-            } else {
-                &["gigaam-v3-ctc.onnx", "v3_ctc.int8.onnx", "gigaam-v3-ctc.int8.onnx"]
-            };
-            
-            let model_path = model_candidates
-                .iter()
-                .map(|m| models_dir.join(m))
-                .find(|p| p.exists())
-                .ok_or_else(|| anyhow::anyhow!("GigaAM model not found. Tried: {:?}", model_candidates))?;
-            
-            // Пробуем разные варианты имён vocab файлов
-            let vocab_candidates: &[&str] = if mid.contains("e2e") {
-                &["gigaam-v3-e2e-ctc_vocab.txt", "v3_e2e_ctc_vocab.txt"]
-            } else {
-                &["gigaam-v3-ctc_vocab.txt", "v3_vocab.txt", "v3_ctc_vocab.txt"]
-            };
-            
-            let vocab_path = vocab_candidates
-                .iter()
-                .map(|v| models_dir.join(v))
-                .find(|p| p.exists())
-                .ok_or_else(|| anyhow::anyhow!("GigaAM vocab not found. Tried: {:?}", vocab_candidates))?;
-
-            let engine =
-                GigaAMEngine::new(model_path.to_str().unwrap(), vocab_path.to_str().unwrap())?;
-            Ok(Arc::new(engine))
-        } else if is_whisper {
-            let model_file = format!("{}.bin", mid);
-            let model_path = models_dir.join(&model_file);
-
-            if !model_path.exists() {
-                return Err(anyhow::anyhow!("Whisper model not found: {}", model_file));
-            }
-
-            let mut engine = WhisperEngine::new(model_path.to_str().unwrap())?;
-            if !language.is_empty() && language != "auto" {
-                engine.set_language(language)?;
-            }
-            Ok(Arc::new(engine))
-        } else {
-            // Default to large-v3-turbo (fallback)
-            tracing::warn!("Unknown model type '{}', falling back to Whisper large-v3-turbo", mid);
-            let model_path = models_dir.join("ggml-large-v3-turbo.bin");
-            if !model_path.exists() {
-                return Err(anyhow::anyhow!("Default Whisper model not found"));
-            }
-
-            let mut engine = WhisperEngine::new(model_path.to_str().unwrap())?;
-            if !language.is_empty() && language != "auto" {
-                engine.set_language(language)?;
-            }
-            Ok(Arc::new(engine))
-        }
-    };
-
-    // Create primary engine
-    let primary_engine = create_engine(model_id)?;
+    // Create primary engine using EngineManager
+    let primary_engine = engine_manager.create_engine_arc(model_id, language)?;
 
     // If hybrid enabled, create secondary engine and use HybridTranscriber
     if hybrid_enabled && !hybrid_secondary_model_id.is_empty() {
@@ -1338,7 +1315,7 @@ fn transcribe_samples_sync(
             hybrid_secondary_model_id
         );
 
-        let secondary_engine = match create_engine(hybrid_secondary_model_id) {
+        let secondary_engine = match engine_manager.create_engine_arc(hybrid_secondary_model_id, language) {
             Ok(e) => Some(e),
             Err(e) => {
                 tracing::warn!(

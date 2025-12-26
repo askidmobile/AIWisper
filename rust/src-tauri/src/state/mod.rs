@@ -9,7 +9,7 @@
 pub mod recording;
 
 #[allow(unused_imports)]
-use aiwisper_audio::AudioCapture;
+use aiwisper_audio::{are_channels_similar, is_silent, AudioCapture};
 use aiwisper_ml::TranscriptionEngine;
 use aiwisper_types::{
     AudioDevice, ModelInfo, RecordingState, Settings, TranscriptSegment, TranscriptionResult,
@@ -836,83 +836,16 @@ impl AppState {
         Ok(waveform)
     }
 
-    /// Compute waveform from audio file using symphonia
+    /// Compute waveform from audio file using Mp3Decoder
     fn compute_waveform_from_file(path: &std::path::Path) -> Result<serde_json::Value> {
-        use symphonia::core::audio::SampleBuffer;
-        use symphonia::core::codecs::DecoderOptions;
-        use symphonia::core::formats::FormatOptions;
-        use symphonia::core::io::MediaSourceStream;
-        use symphonia::core::meta::MetadataOptions;
-        use symphonia::core::probe::Hint;
+        use aiwisper_audio::Mp3Decoder;
 
         const SAMPLE_COUNT: usize = 400; // Number of waveform bins
 
-        let file = std::fs::File::open(path)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-        let mut hint = Hint::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            hint.with_extension(ext);
-        }
-
-        let format_opts = FormatOptions::default();
-        let metadata_opts = MetadataOptions::default();
-        let decoder_opts = DecoderOptions::default();
-
-        let probed =
-            symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts)?;
-
-        let mut format = probed.format;
-
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-            .ok_or_else(|| anyhow::anyhow!("No audio track found"))?;
-
-        let track_id = track.id;
-        let sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
-        let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
-
-        let mut decoder =
-            symphonia::default::get_codecs().make(&track.codec_params, &decoder_opts)?;
-
-        // Collect all samples
-        let mut all_samples: Vec<Vec<f32>> = vec![Vec::new(); channels];
-
-        loop {
-            let packet = match format.next_packet() {
-                Ok(packet) => packet,
-                Err(symphonia::core::errors::Error::IoError(e))
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
-                    break
-                }
-                Err(e) => return Err(e.into()),
-            };
-
-            if packet.track_id() != track_id {
-                continue;
-            }
-
-            let decoded = decoder.decode(&packet)?;
-            let spec = *decoded.spec();
-            let duration = decoded.capacity() as u64;
-
-            let mut sample_buf = SampleBuffer::<f32>::new(duration, spec);
-            sample_buf.copy_interleaved_ref(decoded);
-            let samples = sample_buf.samples();
-
-            // De-interleave samples into channels
-            for (i, sample) in samples.iter().enumerate() {
-                let ch = i % channels;
-                all_samples[ch].push(*sample);
-            }
-        }
-
-        if all_samples[0].is_empty() {
-            return Err(anyhow::anyhow!("No audio samples found"));
-        }
+        let waveform_data = Mp3Decoder::decode_waveform(path)?;
+        let all_samples = waveform_data.channels;
+        let sample_rate = waveform_data.sample_rate;
+        let channels = waveform_data.channel_count;
 
         let total_samples = all_samples[0].len();
         let duration_sec = total_samples as f32 / sample_rate as f32;
@@ -2314,12 +2247,7 @@ impl AppState {
         start_ms: i64,
         end_ms: i64,
     ) -> Result<(Vec<f32>, Vec<f32>, u32)> {
-        use symphonia::core::audio::SampleBuffer;
-        use symphonia::core::codecs::DecoderOptions;
-        use symphonia::core::formats::FormatOptions;
-        use symphonia::core::io::MediaSourceStream;
-        use symphonia::core::meta::MetadataOptions;
-        use symphonia::core::probe::Hint;
+        use aiwisper_audio::Mp3Decoder;
 
         let sessions_dir =
             get_sessions_dir().ok_or_else(|| anyhow::anyhow!("Sessions directory not found"))?;
@@ -2330,101 +2258,8 @@ impl AppState {
             return Err(anyhow::anyhow!("Audio file not found: {:?}", mp3_path));
         }
 
-        // Open and decode MP3
-        let file = std::fs::File::open(&mp3_path)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-        let mut hint = Hint::new();
-        hint.with_extension("mp3");
-
-        let format_opts = FormatOptions::default();
-        let metadata_opts = MetadataOptions::default();
-        let decoder_opts = DecoderOptions::default();
-
-        let probed =
-            symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts)?;
-
-        let mut format = probed.format;
-
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-            .ok_or_else(|| anyhow::anyhow!("No audio track found"))?;
-
-        let track_id = track.id;
-        let source_sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
-        let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
-
-        let mut decoder =
-            symphonia::default::get_codecs().make(&track.codec_params, &decoder_opts)?;
-
-        // Calculate sample positions
-        let start_sample = (start_ms as f64 * source_sample_rate as f64 / 1000.0) as usize;
-        let end_sample = (end_ms as f64 * source_sample_rate as f64 / 1000.0) as usize;
-
-        // Separate buffers for left and right channels
-        let mut left_samples: Vec<f32> = Vec::new();
-        let mut right_samples: Vec<f32> = Vec::new();
-        let mut current_sample = 0usize;
-
-        loop {
-            let packet = match format.next_packet() {
-                Ok(packet) => packet,
-                Err(symphonia::core::errors::Error::IoError(e))
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
-                    break
-                }
-                Err(_) => break,
-            };
-
-            if packet.track_id() != track_id {
-                continue;
-            }
-
-            let decoded = match decoder.decode(&packet) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-
-            let spec = *decoded.spec();
-            let duration = decoded.capacity() as u64;
-
-            let mut sample_buf = SampleBuffer::<f32>::new(duration, spec);
-            sample_buf.copy_interleaved_ref(decoded);
-            let samples = sample_buf.samples();
-
-            // Process samples (de-interleave to separate channels)
-            let frame_samples = samples.len() / channels;
-
-            for i in 0..frame_samples {
-                let sample_idx = current_sample + i;
-
-                // Only keep samples in our range
-                if sample_idx >= start_sample && sample_idx < end_sample {
-                    if channels >= 2 {
-                        // Stereo: left = mic, right = sys
-                        left_samples.push(samples[i * channels]);     // left channel
-                        right_samples.push(samples[i * channels + 1]); // right channel
-                    } else {
-                        // Mono: duplicate to both channels
-                        left_samples.push(samples[i * channels]);
-                        right_samples.push(samples[i * channels]);
-                    }
-                }
-            }
-
-            current_sample += frame_samples;
-
-            // Early exit if we've passed the end
-            if current_sample >= end_sample {
-                break;
-            }
-        }
-
-        // Return without resampling - preserve original sample rate for playback quality
-        Ok((left_samples, right_samples, source_sample_rate))
+        let segment = Mp3Decoder::decode_segment_for_playback(&mp3_path, start_ms, end_ms)?;
+        Ok((segment.left, segment.right, segment.sample_rate))
     }
 
     // ========================================================================
@@ -2516,7 +2351,7 @@ impl AppState {
         );
 
         // 1. Get session and chunk info (extract data before any await)
-        let (start_ms, end_ms, chunk_index) = {
+        let (mut start_ms, mut end_ms, chunk_index, total_chunks, session_duration) = {
             let sessions = self.inner.sessions.read();
             let session = sessions
                 .iter()
@@ -2529,9 +2364,27 @@ impl AppState {
                 .find(|c| c.id == chunk_id)
                 .ok_or_else(|| anyhow::anyhow!("Chunk not found: {}", chunk_id))?;
 
-            (chunk.start_ms, chunk.end_ms, chunk.index)
+            (chunk.start_ms, chunk.end_ms, chunk.index, session.chunks.len(), session.total_duration)
             // sessions guard dropped here
         };
+        
+        // WORKAROUND: Fix broken timestamps from old recordings
+        // If start_ms=0 and end_ms=10000 but chunk_index > 0, recalculate
+        if start_ms == 0 && chunk_index > 0 {
+            const CHUNK_DURATION_MS: i64 = 10000;
+            start_ms = chunk_index as i64 * CHUNK_DURATION_MS;
+            end_ms = (chunk_index as i64 + 1) * CHUNK_DURATION_MS;
+            
+            // Adjust last chunk end_ms based on session duration
+            if chunk_index as usize == total_chunks - 1 && session_duration > 0 {
+                end_ms = session_duration as i64;
+            }
+            
+            tracing::warn!(
+                "Fixed broken timestamps for chunk {}: {} - {} ms",
+                chunk_index, start_ms, end_ms
+            );
+        }
 
         // 2. Extract stereo audio segment (left=mic, right=sys)
         let (mic_samples, sys_samples) = self
@@ -2539,7 +2392,7 @@ impl AppState {
             .await?;
 
         // 3. Check if channels are similar (duplicated mono)
-        let is_stereo = !Self::are_channels_similar(&mic_samples, &sys_samples);
+        let is_stereo = !are_channels_similar(&mic_samples, &sys_samples);
         
         tracing::info!(
             "Extracted audio: mic={} samples, sys={} samples, is_stereo={}",
@@ -2681,41 +2534,15 @@ impl AppState {
                 .collect();
         }
 
-        // 4. Update chunk in session
-        {
-            let mut sessions = self.inner.sessions.write();
-            if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
-                if let Some(chunk) = session.chunks.iter_mut().find(|c| c.id == chunk_id) {
-                    chunk.dialogue = dialogue.clone();
-                    chunk.transcription = dialogue
-                        .iter()
-                        .map(|d| d.text.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    chunk.mic_text = if mic_text.is_empty() { None } else { Some(mic_text.clone()) };
-                    chunk.sys_text = if sys_text.is_empty() { None } else { Some(sys_text.clone()) };
+        // 4. Update chunk in session (including corrected timestamps)
+        let duration_ns = self.update_chunk_transcription(
+            session_id, chunk_id, start_ms, end_ms, &dialogue, &mic_text, &sys_text
+        );
 
-                    // Save to disk
-                    let _ = Self::save_chunk_to_disk(session_id, chunk);
-                }
-            }
-        }
-
-        // 5. Build response matching Go backend format
-        let result = serde_json::json!({
-            "sessionId": session_id,
-            "chunk": {
-                "id": chunk_id,
-                "index": chunk_index,
-                "startMs": start_ms,
-                "endMs": end_ms,
-                "dialogue": dialogue,
-                "micText": mic_text,
-                "sysText": sys_text,
-            }
-        });
-
-        // Emit event
+        // 5. Build response and emit event
+        let result = Self::build_chunk_event_payload(
+            session_id, chunk_id, chunk_index, start_ms, end_ms, duration_ns, &dialogue, &mic_text, &sys_text
+        );
         let _ = window.emit("chunk_transcribed", &result);
 
         Ok(result)
@@ -2785,7 +2612,7 @@ impl AppState {
         );
 
         // 2. Get session chunks info
-        let chunk_infos: Vec<(String, i32, i64, i64)> = {
+        let mut chunk_infos: Vec<(String, i32, i64, i64)> = {
             let sessions = self.inner.sessions.read();
             let session = sessions
                 .iter()
@@ -2800,6 +2627,38 @@ impl AppState {
         };
 
         let total_chunks = chunk_infos.len();
+        
+        // WORKAROUND: Fix broken timestamps from old recordings (all start_ms=0 bug)
+        // If more than 2 chunks have the same start_ms, recalculate from indices
+        if total_chunks > 2 {
+            let same_start_count = chunk_infos.iter()
+                .filter(|(_, _, start_ms, _)| *start_ms == 0)
+                .count();
+            
+            if same_start_count > total_chunks / 2 {
+                tracing::warn!(
+                    "Detected broken timestamps ({}/{} chunks have start_ms=0), recalculating from indices",
+                    same_start_count, total_chunks
+                );
+                
+                // Assume ~10 second chunks and recalculate
+                const CHUNK_DURATION_MS: i64 = 10000;
+                for (idx, (_, _, start_ms, end_ms)) in chunk_infos.iter_mut().enumerate() {
+                    *start_ms = idx as i64 * CHUNK_DURATION_MS;
+                    *end_ms = (idx as i64 + 1) * CHUNK_DURATION_MS;
+                }
+                
+                // Adjust last chunk end_ms based on session duration if available
+                if let Some((_, _, _, end_ms)) = chunk_infos.last_mut() {
+                    let sessions = self.inner.sessions.read();
+                    if let Some(session) = sessions.iter().find(|s| s.id == session_id) {
+                        if session.total_duration > 0 {
+                            *end_ms = session.total_duration as i64;
+                        }
+                    }
+                }
+            }
+        }
 
         // 3. Process each chunk
         for (idx, (chunk_id, chunk_index, start_ms, end_ms)) in chunk_infos.into_iter().enumerate()
@@ -2848,7 +2707,7 @@ impl AppState {
             };
 
             // Check if channels are similar (duplicated mono)
-            let is_stereo = !Self::are_channels_similar(&mic_samples, &sys_samples);
+            let is_stereo = !are_channels_similar(&mic_samples, &sys_samples);
             
             // Check if using cloud provider
             let use_cloud = stt_provider != "local" && !stt_provider.is_empty();
@@ -2859,9 +2718,13 @@ impl AppState {
 
             if is_stereo {
                 // Stereo mode: transcribe channels separately
+                // Skip silent channels to avoid hallucinations like "Продолжение следует..."
                 
-                // Transcribe MIC channel -> "Вы"
-                if !mic_samples.is_empty() {
+                let mic_is_silent = is_silent(&mic_samples, None);
+                let sys_is_silent = is_silent(&sys_samples, None);
+                
+                // Transcribe MIC channel -> "Вы" (skip if silent)
+                if !mic_samples.is_empty() && !mic_is_silent {
                     let result = if use_cloud {
                         self.transcribe_samples_with_cloud_provider(&mic_samples, language, stt_provider).await
                     } else {
@@ -2890,10 +2753,12 @@ impl AppState {
                             });
                         }
                     }
+                } else if mic_is_silent {
+                    tracing::debug!("Skipping MIC channel for chunk {} - silent", chunk_index);
                 }
 
-                // Transcribe SYS channel -> "Собеседник"
-                if !sys_samples.is_empty() {
+                // Transcribe SYS channel -> "Собеседник" (skip if silent)
+                if !sys_samples.is_empty() && !sys_is_silent {
                     let result = if use_cloud {
                         self.transcribe_samples_with_cloud_provider(&sys_samples, language, stt_provider).await
                     } else {
@@ -2922,6 +2787,8 @@ impl AppState {
                             });
                         }
                     }
+                } else if sys_is_silent {
+                    tracing::debug!("Skipping SYS channel for chunk {} - silent", chunk_index);
                 }
 
                 // Sort dialogue by timestamp
@@ -2967,41 +2834,14 @@ impl AppState {
                 }
             }
 
-            // Update chunk
-            {
-                let mut sessions = self.inner.sessions.write();
-                if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
-                    if let Some(chunk) = session.chunks.iter_mut().find(|c| c.id == chunk_id) {
-                        chunk.dialogue = dialogue.clone();
-                        chunk.transcription = dialogue
-                            .iter()
-                            .map(|d| d.text.as_str())
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        chunk.mic_text = if mic_text.is_empty() { None } else { Some(mic_text.clone()) };
-                        chunk.sys_text = if sys_text.is_empty() { None } else { Some(sys_text.clone()) };
-
-                        let _ = Self::save_chunk_to_disk(session_id, chunk);
-                    }
-                }
-            }
-
-            // Emit chunk_transcribed event
-            let _ = window.emit(
-                "chunk_transcribed",
-                serde_json::json!({
-                    "sessionId": session_id,
-                    "chunk": {
-                        "id": chunk_id,
-                        "index": chunk_index,
-                        "startMs": start_ms,
-                        "endMs": end_ms,
-                        "dialogue": dialogue,
-                        "micText": mic_text,
-                        "sysText": sys_text,
-                    }
-                }),
+            // Update chunk (including corrected timestamps) and emit event
+            let duration_ns = self.update_chunk_transcription(
+                session_id, &chunk_id, start_ms, end_ms, &dialogue, &mic_text, &sys_text
             );
+            let event_payload = Self::build_chunk_event_payload(
+                session_id, &chunk_id, chunk_index, start_ms, end_ms, duration_ns, &dialogue, &mic_text, &sys_text
+            );
+            let _ = window.emit("chunk_transcribed", event_payload);
         }
 
         // Clear cancellation token
@@ -3027,19 +2867,14 @@ impl AppState {
         Ok(())
     }
 
-    /// Extract audio segment from session's MP3 file
+    /// Extract audio segment from session's MP3 file (mono mix for ASR)
     async fn extract_audio_segment(
         &self,
         session_id: &str,
         start_ms: i64,
         end_ms: i64,
     ) -> Result<Vec<f32>> {
-        use symphonia::core::audio::SampleBuffer;
-        use symphonia::core::codecs::DecoderOptions;
-        use symphonia::core::formats::FormatOptions;
-        use symphonia::core::io::MediaSourceStream;
-        use symphonia::core::meta::MetadataOptions;
-        use symphonia::core::probe::Hint;
+        use aiwisper_audio::Mp3Decoder;
 
         let sessions_dir =
             get_sessions_dir().ok_or_else(|| anyhow::anyhow!("Sessions directory not found"))?;
@@ -3050,121 +2885,7 @@ impl AppState {
             return Err(anyhow::anyhow!("Audio file not found: {:?}", mp3_path));
         }
 
-        // Open and decode MP3
-        let file = std::fs::File::open(&mp3_path)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-        let mut hint = Hint::new();
-        hint.with_extension("mp3");
-
-        let format_opts = FormatOptions::default();
-        let metadata_opts = MetadataOptions::default();
-        let decoder_opts = DecoderOptions::default();
-
-        let probed =
-            symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts)?;
-
-        let mut format = probed.format;
-
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-            .ok_or_else(|| anyhow::anyhow!("No audio track found"))?;
-
-        let track_id = track.id;
-        let source_sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
-        let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
-
-        let mut decoder =
-            symphonia::default::get_codecs().make(&track.codec_params, &decoder_opts)?;
-
-        // Calculate sample positions
-        let start_sample = (start_ms as f64 * source_sample_rate as f64 / 1000.0) as usize;
-        let end_sample = (end_ms as f64 * source_sample_rate as f64 / 1000.0) as usize;
-
-        // Decode all samples and extract the segment
-        let mut all_samples: Vec<f32> = Vec::new();
-        let mut current_sample = 0usize;
-
-        loop {
-            let packet = match format.next_packet() {
-                Ok(packet) => packet,
-                Err(symphonia::core::errors::Error::IoError(e))
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
-                    break
-                }
-                Err(_) => break,
-            };
-
-            if packet.track_id() != track_id {
-                continue;
-            }
-
-            let decoded = match decoder.decode(&packet) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-
-            let spec = *decoded.spec();
-            let duration = decoded.capacity() as u64;
-
-            let mut sample_buf = SampleBuffer::<f32>::new(duration, spec);
-            sample_buf.copy_interleaved_ref(decoded);
-            let samples = sample_buf.samples();
-
-            // Process samples (de-interleave and mix to mono for ASR)
-            let frame_samples = samples.len() / channels;
-
-            for i in 0..frame_samples {
-                let sample_idx = current_sample + i;
-
-                // Only keep samples in our range
-                if sample_idx >= start_sample && sample_idx < end_sample {
-                    // Mix channels to mono (average)
-                    let mut sum = 0.0;
-                    for ch in 0..channels {
-                        sum += samples[i * channels + ch];
-                    }
-                    all_samples.push(sum / channels as f32);
-                }
-            }
-
-            current_sample += frame_samples;
-
-            // Early exit if we've passed the end
-            if current_sample >= end_sample {
-                break;
-            }
-        }
-
-        // Resample to 16kHz if needed
-        const TARGET_SAMPLE_RATE: u32 = 16000;
-
-        if source_sample_rate != TARGET_SAMPLE_RATE {
-            let ratio = TARGET_SAMPLE_RATE as f64 / source_sample_rate as f64;
-            let new_len = (all_samples.len() as f64 * ratio) as usize;
-            let mut resampled = vec![0.0f32; new_len];
-
-            for (i, sample) in resampled.iter_mut().enumerate() {
-                let src_idx = i as f64 / ratio;
-                let src_idx_floor = src_idx.floor() as usize;
-                let src_idx_ceil = (src_idx_floor + 1).min(all_samples.len() - 1);
-                let frac = src_idx - src_idx_floor as f64;
-
-                *sample = if src_idx_floor < all_samples.len() {
-                    all_samples[src_idx_floor] * (1.0 - frac as f32)
-                        + all_samples[src_idx_ceil] * frac as f32
-                } else {
-                    0.0
-                };
-            }
-
-            return Ok(resampled);
-        }
-
-        Ok(all_samples)
+        Mp3Decoder::decode_segment_mono(&mp3_path, start_ms, end_ms)
     }
 
     /// Transcribe audio samples with optional hybrid mode
@@ -3280,99 +3001,18 @@ impl AppState {
         hotwords: &[String],
     ) -> Result<Vec<aiwisper_types::TranscriptSegment>> {
         use aiwisper_ml::{
-            FluidASREngine, GigaAMEngine, HybridMode, HybridTranscriber, HybridTranscriptionConfig,
-            TranscriptionEngine, VotingConfig, WhisperEngine,
+            EngineManager, HybridMode, HybridTranscriber, HybridTranscriptionConfig, VotingConfig,
         };
-        use std::sync::Arc;
 
-        // Get models directory
+        // Get models directory and create engine manager
         let models_dir = dirs::data_local_dir()
             .map(|p| p.join("aiwisper").join("models"))
             .ok_or_else(|| anyhow::anyhow!("Models directory not found"))?;
+        
+        let engine_manager = EngineManager::new(models_dir);
 
-        // Helper to create engine from model ID
-        let create_engine = |mid: &str| -> Result<Arc<dyn TranscriptionEngine>> {
-            let is_gigaam = mid.starts_with("gigaam");
-            let is_whisper = mid.starts_with("ggml");
-            let is_parakeet = mid.starts_with("parakeet") || mid.contains("fluid");
-
-            if is_parakeet {
-                // FluidASR (Parakeet TDT v3) - uses subprocess
-                tracing::info!("Creating FluidASR engine for model: {}", mid);
-                let mut engine = FluidASREngine::new()?;
-                if !language.is_empty() && language != "auto" {
-                    engine.set_language(language)?;
-                }
-                Ok(Arc::new(engine))
-            } else if is_gigaam {
-                // Пробуем разные варианты имён модели
-                let model_candidates: &[&str] = if mid.contains("e2e") {
-                    &["gigaam-v3-e2e-ctc.onnx", "v3_e2e_ctc.int8.onnx", "gigaam-v3-e2e-ctc.int8.onnx"]
-                } else {
-                    &["gigaam-v3-ctc.onnx", "v3_ctc.int8.onnx", "gigaam-v3-ctc.int8.onnx"]
-                };
-                
-                let model_path = model_candidates
-                    .iter()
-                    .map(|m| models_dir.join(m))
-                    .find(|p| p.exists());
-                    
-                let _model_file = model_path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(model_candidates[0]);
-                
-                // Пробуем разные варианты имён vocab файлов
-                let vocab_candidates: &[&str] = if mid.contains("e2e") {
-                    &["gigaam-v3-e2e-ctc_vocab.txt", "v3_e2e_ctc_vocab.txt"]
-                } else {
-                    &["gigaam-v3-ctc_vocab.txt", "v3_vocab.txt", "v3_ctc_vocab.txt"]
-                };
-
-                let model_path = model_path
-                    .ok_or_else(|| anyhow::anyhow!("GigaAM model not found. Tried: {:?}", model_candidates))?;
-                
-                let vocab_path = vocab_candidates
-                    .iter()
-                    .map(|v| models_dir.join(v))
-                    .find(|p| p.exists())
-                    .ok_or_else(|| anyhow::anyhow!("GigaAM vocab not found. Tried: {:?}", vocab_candidates))?;
-
-                let engine =
-                    GigaAMEngine::new(model_path.to_str().unwrap(), vocab_path.to_str().unwrap())?;
-                Ok(Arc::new(engine))
-            } else if is_whisper {
-                let model_file = format!("{}.bin", mid);
-                let model_path = models_dir.join(&model_file);
-
-                if !model_path.exists() {
-                    return Err(anyhow::anyhow!("Whisper model not found: {}", model_file));
-                }
-
-                let mut engine = WhisperEngine::new(model_path.to_str().unwrap())?;
-                if !language.is_empty() && language != "auto" {
-                    engine.set_language(language)?;
-                }
-                Ok(Arc::new(engine))
-            } else {
-                // Default to large-v3-turbo (fallback)
-                tracing::warn!("Unknown model type '{}', falling back to Whisper large-v3-turbo", mid);
-                let model_path = models_dir.join("ggml-large-v3-turbo.bin");
-                if !model_path.exists() {
-                    return Err(anyhow::anyhow!("Default Whisper model not found"));
-                }
-
-                let mut engine = WhisperEngine::new(model_path.to_str().unwrap())?;
-                if !language.is_empty() && language != "auto" {
-                    engine.set_language(language)?;
-                }
-                Ok(Arc::new(engine))
-            }
-        };
-
-        // Create primary engine
-        let primary_engine = create_engine(model_id)?;
+        // Create primary engine using EngineManager
+        let primary_engine = engine_manager.create_engine_arc(model_id, language)?;
 
         // If hybrid enabled, create secondary engine and use HybridTranscriber
         if hybrid_enabled && !hybrid_secondary_model_id.is_empty() {
@@ -3382,7 +3022,7 @@ impl AppState {
                 hybrid_secondary_model_id
             );
 
-            let secondary_engine = match create_engine(hybrid_secondary_model_id) {
+            let secondary_engine = match engine_manager.create_engine_arc(hybrid_secondary_model_id, language) {
                 Ok(e) => Some(e),
                 Err(e) => {
                     tracing::warn!(
@@ -3538,12 +3178,7 @@ impl AppState {
         start_ms: i64,
         end_ms: i64,
     ) -> Result<(Vec<f32>, Vec<f32>)> {
-        use symphonia::core::audio::SampleBuffer;
-        use symphonia::core::codecs::DecoderOptions;
-        use symphonia::core::formats::FormatOptions;
-        use symphonia::core::io::MediaSourceStream;
-        use symphonia::core::meta::MetadataOptions;
-        use symphonia::core::probe::Hint;
+        use aiwisper_audio::Mp3Decoder;
 
         let sessions_dir =
             get_sessions_dir().ok_or_else(|| anyhow::anyhow!("Sessions directory not found"))?;
@@ -3554,151 +3189,71 @@ impl AppState {
             return Err(anyhow::anyhow!("Audio file not found: {:?}", mp3_path));
         }
 
-        // Open and decode MP3
-        let file = std::fs::File::open(&mp3_path)?;
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-        let mut hint = Hint::new();
-        hint.with_extension("mp3");
-
-        let format_opts = FormatOptions::default();
-        let metadata_opts = MetadataOptions::default();
-        let decoder_opts = DecoderOptions::default();
-
-        let probed =
-            symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts)?;
-
-        let mut format = probed.format;
-
-        let track = format
-            .tracks()
-            .iter()
-            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
-            .ok_or_else(|| anyhow::anyhow!("No audio track found"))?;
-
-        let track_id = track.id;
-        let source_sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
-        let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
-
-        let mut decoder =
-            symphonia::default::get_codecs().make(&track.codec_params, &decoder_opts)?;
-
-        // Calculate sample positions
-        let start_sample = (start_ms as f64 * source_sample_rate as f64 / 1000.0) as usize;
-        let end_sample = (end_ms as f64 * source_sample_rate as f64 / 1000.0) as usize;
-
-        // Separate buffers for left (mic) and right (sys) channels
-        let mut mic_samples: Vec<f32> = Vec::new();
-        let mut sys_samples: Vec<f32> = Vec::new();
-        let mut current_sample = 0usize;
-
-        loop {
-            let packet = match format.next_packet() {
-                Ok(packet) => packet,
-                Err(symphonia::core::errors::Error::IoError(e))
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
-                    break
-                }
-                Err(_) => break,
-            };
-
-            if packet.track_id() != track_id {
-                continue;
-            }
-
-            let decoded = match decoder.decode(&packet) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-
-            let spec = *decoded.spec();
-            let duration = decoded.capacity() as u64;
-
-            let mut sample_buf = SampleBuffer::<f32>::new(duration, spec);
-            sample_buf.copy_interleaved_ref(decoded);
-            let samples = sample_buf.samples();
-
-            // Process samples (de-interleave to separate channels)
-            let frame_samples = samples.len() / channels;
-
-            for i in 0..frame_samples {
-                let sample_idx = current_sample + i;
-
-                // Only keep samples in our range
-                if sample_idx >= start_sample && sample_idx < end_sample {
-                    if channels >= 2 {
-                        // Stereo: left = mic, right = sys
-                        mic_samples.push(samples[i * channels]);     // left channel
-                        sys_samples.push(samples[i * channels + 1]); // right channel
-                    } else {
-                        // Mono: duplicate to both channels
-                        mic_samples.push(samples[i * channels]);
-                        sys_samples.push(samples[i * channels]);
-                    }
-                }
-            }
-
-            current_sample += frame_samples;
-
-            // Early exit if we've passed the end
-            if current_sample >= end_sample {
-                break;
-            }
-        }
-
-        // Resample to 16kHz if needed
-        const TARGET_SAMPLE_RATE: u32 = 16000;
-
-        let resample = |samples: Vec<f32>| -> Vec<f32> {
-            if source_sample_rate == TARGET_SAMPLE_RATE || samples.is_empty() {
-                return samples;
-            }
-            let ratio = TARGET_SAMPLE_RATE as f64 / source_sample_rate as f64;
-            let new_len = (samples.len() as f64 * ratio) as usize;
-            let mut resampled = vec![0.0f32; new_len];
-
-            for (i, sample) in resampled.iter_mut().enumerate() {
-                let src_idx = i as f64 / ratio;
-                let src_idx_floor = src_idx.floor() as usize;
-                let src_idx_ceil = (src_idx_floor + 1).min(samples.len().saturating_sub(1));
-                let frac = src_idx - src_idx_floor as f64;
-
-                *sample = if src_idx_floor < samples.len() {
-                    samples[src_idx_floor] * (1.0 - frac as f32)
-                        + samples[src_idx_ceil] * frac as f32
-                } else {
-                    0.0
-                };
-            }
-
-            resampled
-        };
-
-        Ok((resample(mic_samples), resample(sys_samples)))
+        Mp3Decoder::decode_segment_stereo(&mp3_path, start_ms, end_ms)
     }
 
-    /// Check if two audio channels are similar (duplicated mono)
-    fn are_channels_similar(mic: &[f32], sys: &[f32]) -> bool {
-        if mic.len() != sys.len() || mic.is_empty() {
-            return false;
-        }
+    /// Update chunk with transcription results
+    /// Returns the duration in nanoseconds
+    fn update_chunk_transcription(
+        &self,
+        session_id: &str,
+        chunk_id: &str,
+        start_ms: i64,
+        end_ms: i64,
+        dialogue: &[crate::commands::session::DialogueSegment],
+        mic_text: &str,
+        sys_text: &str,
+    ) -> i64 {
+        let duration_ns = (end_ms - start_ms) * 1_000_000;
         
-        // Sample every 100th sample for efficiency
-        let step = (mic.len() / 1000).max(1);
-        let mut similar_count = 0;
-        let mut total_count = 0;
-        
-        for i in (0..mic.len()).step_by(step) {
-            let diff = (mic[i] - sys[i]).abs();
-            if diff < 0.01 {
-                similar_count += 1;
+        let mut sessions = self.inner.sessions.write();
+        if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
+            if let Some(chunk) = session.chunks.iter_mut().find(|c| c.id == chunk_id) {
+                // Update timestamps (may have been recalculated for broken old recordings)
+                chunk.start_ms = start_ms;
+                chunk.end_ms = end_ms;
+                chunk.duration = duration_ns;
+                chunk.dialogue = dialogue.to_vec();
+                chunk.transcription = dialogue
+                    .iter()
+                    .map(|d| d.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                chunk.mic_text = if mic_text.is_empty() { None } else { Some(mic_text.to_string()) };
+                chunk.sys_text = if sys_text.is_empty() { None } else { Some(sys_text.to_string()) };
+
+                let _ = Self::save_chunk_to_disk(session_id, chunk);
             }
-            total_count += 1;
         }
         
-        // If more than 95% of samples are similar, channels are duplicated
-        total_count > 0 && similar_count as f32 / total_count as f32 > 0.95
+        duration_ns
+    }
+    
+    /// Build chunk transcribed event payload
+    fn build_chunk_event_payload(
+        session_id: &str,
+        chunk_id: &str,
+        chunk_index: i32,
+        start_ms: i64,
+        end_ms: i64,
+        duration_ns: i64,
+        dialogue: &[crate::commands::session::DialogueSegment],
+        mic_text: &str,
+        sys_text: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "sessionId": session_id,
+            "chunk": {
+                "id": chunk_id,
+                "index": chunk_index,
+                "startMs": start_ms,
+                "endMs": end_ms,
+                "duration": duration_ns,
+                "dialogue": dialogue,
+                "micText": if mic_text.is_empty() { None } else { Some(mic_text) },
+                "sysText": if sys_text.is_empty() { None } else { Some(sys_text) },
+            }
+        })
     }
 
     /// Save chunk to disk

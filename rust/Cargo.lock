@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper"
-version = "2.0.16"
+version = "2.0.17"
 dependencies = [
  "aiwisper-audio",
  "aiwisper-ml",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-audio"
-version = "2.0.16"
+version = "2.0.17"
 dependencies = [
  "aiwisper-types",
  "anyhow",
@@ -88,7 +88,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-ml"
-version = "2.0.16"
+version = "2.0.17"
 dependencies = [
  "aiwisper-types",
  "anyhow",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-types"
-version = "2.0.16"
+version = "2.0.17"
 dependencies = [
  "serde",
  "serde_json",
@@ -116,7 +116,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-worker"
-version = "2.0.16"
+version = "2.0.17"
 dependencies = [
  "aiwisper-ml",
  "aiwisper-types",

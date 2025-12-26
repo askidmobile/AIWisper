@@ -91,7 +91,11 @@ pub struct ChunkBuffer {
 
     /// Счётчики
     total_samples: i64,
+    /// Позиция в буфере откуда выпускать следующий чанк (относительная)
     emitted_samples: i64,
+    /// Абсолютное время начала следующего чанка (в семплах от начала записи)
+    /// Не изменяется при drain!
+    absolute_emitted_samples: i64,
     chunk_count: usize,
 
     /// Время начала записи
@@ -122,6 +126,7 @@ impl ChunkBuffer {
             has_separate_channels: false,
             total_samples: 0,
             emitted_samples: 0,
+            absolute_emitted_samples: 0,
             chunk_count: 0,
             start_time: Instant::now(),
             chunking_enabled: false,
@@ -222,9 +227,10 @@ impl ChunkBuffer {
             }
         }
 
-        // Вычисляем таймстемпы
-        let start_ms = self.emitted_samples * 1000 / self.sample_rate as i64;
-        let end_ms = split_point * 1000 / self.sample_rate as i64;
+        // Вычисляем таймстемпы (используем АБСОЛЮТНОЕ время от начала записи)
+        let chunk_samples = split_point - self.emitted_samples;
+        let start_ms = self.absolute_emitted_samples * 1000 / self.sample_rate as i64;
+        let end_ms = (self.absolute_emitted_samples + chunk_samples) * 1000 / self.sample_rate as i64;
         let duration = Duration::from_millis((end_ms - start_ms) as u64);
 
         let event = ChunkEvent {
@@ -235,15 +241,17 @@ impl ChunkBuffer {
         };
 
         tracing::info!(
-            "ChunkBuffer: Emitting chunk {} ({} - {} ms, {:?})",
+            "ChunkBuffer: Emitting chunk {} ({} - {} ms, {:?}), absolute_emitted={}",
             self.chunk_count,
             start_ms,
             end_ms,
-            duration
+            duration,
+            self.absolute_emitted_samples
         );
 
         self.chunk_count += 1;
         self.emitted_samples = split_point;
+        self.absolute_emitted_samples += chunk_samples;
 
         // Отправляем событие
         let _ = self.output_tx.send(event);
@@ -308,8 +316,10 @@ impl ChunkBuffer {
             return None;
         }
 
-        let start_ms = self.emitted_samples * 1000 / self.sample_rate as i64;
-        let end_ms = self.accumulated.len() as i64 * 1000 / self.sample_rate as i64;
+        // Используем АБСОЛЮТНОЕ время от начала записи
+        let chunk_samples = available;
+        let start_ms = self.absolute_emitted_samples * 1000 / self.sample_rate as i64;
+        let end_ms = (self.absolute_emitted_samples + chunk_samples) * 1000 / self.sample_rate as i64;
         let duration = Duration::from_millis((end_ms - start_ms) as u64);
 
         let event = ChunkEvent {
@@ -320,15 +330,17 @@ impl ChunkBuffer {
         };
 
         tracing::info!(
-            "ChunkBuffer: Flushing final chunk {} ({} - {} ms, {:?})",
+            "ChunkBuffer: Flushing final chunk {} ({} - {} ms, {:?}), absolute_emitted={}",
             self.chunk_count,
             start_ms,
             end_ms,
-            duration
+            duration,
+            self.absolute_emitted_samples
         );
 
         self.chunk_count += 1;
         self.emitted_samples = self.accumulated.len() as i64;
+        self.absolute_emitted_samples += chunk_samples;
 
         Some(event)
     }
@@ -464,19 +476,22 @@ impl ChunkBuffer {
         }
 
         // Корректируем счётчики
-        // emitted_samples - это позиция в ОРИГИНАЛЬНОМ буфере откуда мы уже выпустили чанки
+        // emitted_samples - это ОТНОСИТЕЛЬНАЯ позиция в буфере откуда выпускать следующий чанк
         // После drain нужно сдвинуть на количество удалённых семплов
+        // ВАЖНО: absolute_emitted_samples НЕ меняется - это абсолютное время от начала записи!
         let drain_i64 = actual_drain as i64;
         self.emitted_samples = (self.emitted_samples - drain_i64).max(0);
         self.total_samples = (self.total_samples - drain_i64).max(0);
 
         tracing::info!(
-            "ChunkBuffer: drained {} samples (up to {} ms), remaining accumulated={}, mic={}, sys={}",
+            "ChunkBuffer: drained {} samples (up to {} ms), remaining accumulated={}, mic={}, sys={}, emitted_samples={}, absolute={}",
             actual_drain,
             up_to_ms,
             self.accumulated.len(),
             self.mic_accumulated.len(),
-            self.sys_accumulated.len()
+            self.sys_accumulated.len(),
+            self.emitted_samples,
+            self.absolute_emitted_samples
         );
     }
 
