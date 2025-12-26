@@ -107,6 +107,11 @@ pub struct ChunkBuffer {
     /// Канал для отправки событий
     output_tx: mpsc::Sender<ChunkEvent>,
     output_rx: mpsc::Receiver<ChunkEvent>,
+    
+    /// Смещение для учёта удалённых семплов через drain_processed_samples
+    /// Используется в get_*_samples_range для корректного доступа к семплам
+    /// после того как начало буфера было удалено
+    drained_samples_offset: i64,
 }
 
 impl ChunkBuffer {
@@ -132,6 +137,7 @@ impl ChunkBuffer {
             chunking_enabled: false,
             output_tx: tx,
             output_rx: rx,
+            drained_samples_offset: 0,
         }
     }
 
@@ -352,9 +358,18 @@ impl ChunkBuffer {
 
     /// Получить аудио семплы для указанного диапазона времени
     /// Возвращает семплы из accumulated буфера
+    /// 
+    /// start_ms и end_ms - это АБСОЛЮТНОЕ время от начала записи.
+    /// Функция учитывает drained_samples_offset для корректного доступа к буферу
+    /// после того как начало было удалено через drain_processed_samples.
     pub fn get_samples_range(&self, start_ms: i64, end_ms: i64) -> Vec<f32> {
-        let start_sample = (start_ms * self.sample_rate as i64 / 1000) as usize;
-        let end_sample = (end_ms * self.sample_rate as i64 / 1000) as usize;
+        // Конвертируем абсолютное время в абсолютные семплы
+        let abs_start_sample = start_ms * self.sample_rate as i64 / 1000;
+        let abs_end_sample = end_ms * self.sample_rate as i64 / 1000;
+        
+        // Вычитаем смещение удалённых семплов для получения индекса в текущем буфере
+        let start_sample = (abs_start_sample - self.drained_samples_offset).max(0) as usize;
+        let end_sample = (abs_end_sample - self.drained_samples_offset).max(0) as usize;
 
         let start = start_sample.min(self.accumulated.len());
         let end = end_sample.min(self.accumulated.len());
@@ -387,18 +402,34 @@ impl ChunkBuffer {
     }
 
     /// Получить mic samples для указанного диапазона (только для стерео режима)
+    /// 
+    /// start_ms и end_ms - это АБСОЛЮТНОЕ время от начала записи.
+    /// Функция учитывает drained_samples_offset для корректного доступа к буферу
+    /// после того как начало было удалено через drain_processed_samples.
     pub fn get_mic_samples_range(&self, start_ms: i64, end_ms: i64) -> Vec<f32> {
         if !self.has_separate_channels {
             return Vec::new();
         }
 
-        let start_sample = (start_ms * self.sample_rate as i64 / 1000) as usize;
-        let end_sample = (end_ms * self.sample_rate as i64 / 1000) as usize;
+        // Конвертируем абсолютное время в абсолютные семплы
+        let abs_start_sample = start_ms * self.sample_rate as i64 / 1000;
+        let abs_end_sample = end_ms * self.sample_rate as i64 / 1000;
+        
+        // Вычитаем смещение удалённых семплов для получения индекса в текущем буфере
+        let start_sample = (abs_start_sample - self.drained_samples_offset).max(0) as usize;
+        let end_sample = (abs_end_sample - self.drained_samples_offset).max(0) as usize;
 
         let start = start_sample.min(self.mic_accumulated.len());
         let end = end_sample.min(self.mic_accumulated.len());
 
         if start >= end {
+            tracing::warn!(
+                "get_mic_samples_range: empty range after offset adjustment. \
+                 abs_start={}, abs_end={}, drained_offset={}, \
+                 adjusted_start={}, adjusted_end={}, buf_len={}",
+                abs_start_sample, abs_end_sample, self.drained_samples_offset,
+                start_sample, end_sample, self.mic_accumulated.len()
+            );
             return Vec::new();
         }
 
@@ -406,18 +437,34 @@ impl ChunkBuffer {
     }
 
     /// Получить sys samples для указанного диапазона (только для стерео режима)
+    /// 
+    /// start_ms и end_ms - это АБСОЛЮТНОЕ время от начала записи.
+    /// Функция учитывает drained_samples_offset для корректного доступа к буферу
+    /// после того как начало было удалено через drain_processed_samples.
     pub fn get_sys_samples_range(&self, start_ms: i64, end_ms: i64) -> Vec<f32> {
         if !self.has_separate_channels {
             return Vec::new();
         }
 
-        let start_sample = (start_ms * self.sample_rate as i64 / 1000) as usize;
-        let end_sample = (end_ms * self.sample_rate as i64 / 1000) as usize;
+        // Конвертируем абсолютное время в абсолютные семплы
+        let abs_start_sample = start_ms * self.sample_rate as i64 / 1000;
+        let abs_end_sample = end_ms * self.sample_rate as i64 / 1000;
+        
+        // Вычитаем смещение удалённых семплов для получения индекса в текущем буфере
+        let start_sample = (abs_start_sample - self.drained_samples_offset).max(0) as usize;
+        let end_sample = (abs_end_sample - self.drained_samples_offset).max(0) as usize;
 
         let start = start_sample.min(self.sys_accumulated.len());
         let end = end_sample.min(self.sys_accumulated.len());
 
         if start >= end {
+            tracing::warn!(
+                "get_sys_samples_range: empty range after offset adjustment. \
+                 abs_start={}, abs_end={}, drained_offset={}, \
+                 adjusted_start={}, adjusted_end={}, buf_len={}",
+                abs_start_sample, abs_end_sample, self.drained_samples_offset,
+                start_sample, end_sample, self.sys_accumulated.len()
+            );
             return Vec::new();
         }
 
@@ -431,6 +478,8 @@ impl ChunkBuffer {
         self.sys_accumulated.clear();
         self.total_samples = 0;
         self.emitted_samples = 0;
+        self.absolute_emitted_samples = 0;
+        self.drained_samples_offset = 0;
         self.chunk_count = 0;
         self.chunking_enabled = false;
         self.start_time = Instant::now();
@@ -482,16 +531,20 @@ impl ChunkBuffer {
         let drain_i64 = actual_drain as i64;
         self.emitted_samples = (self.emitted_samples - drain_i64).max(0);
         self.total_samples = (self.total_samples - drain_i64).max(0);
+        
+        // Обновляем смещение для get_*_samples_range функций
+        self.drained_samples_offset += drain_i64;
 
         tracing::info!(
-            "ChunkBuffer: drained {} samples (up to {} ms), remaining accumulated={}, mic={}, sys={}, emitted_samples={}, absolute={}",
+            "ChunkBuffer: drained {} samples (up to {} ms), remaining accumulated={}, mic={}, sys={}, emitted_samples={}, absolute={}, drained_offset={}",
             actual_drain,
             up_to_ms,
             self.accumulated.len(),
             self.mic_accumulated.len(),
             self.sys_accumulated.len(),
             self.emitted_samples,
-            self.absolute_emitted_samples
+            self.absolute_emitted_samples,
+            self.drained_samples_offset
         );
     }
 
