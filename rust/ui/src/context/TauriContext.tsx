@@ -423,7 +423,13 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         // Listen to all Tauri events and forward to handlers
         const setupListeners = async () => {
             // На всякий случай чистим старые unlisten (React 18 StrictMode может вызывать эффект дважды в dev)
-            unlistenersRef.current.forEach(unlisten => unlisten());
+            unlistenersRef.current.forEach(unlisten => {
+                try {
+                    unlisten();
+                } catch (e) {
+                    // Ignore - can happen during race conditions in Strict Mode
+                }
+            });
             unlistenersRef.current = [];
 
             console.log('[Tauri] Setting up listeners for events:', Object.keys(EVENT_TO_MESSAGE));
@@ -477,8 +483,16 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
         return () => {
             cancelled = true;
-            // Cleanup listeners
-            unlistenersRef.current.forEach(unlisten => unlisten());
+            // Cleanup listeners - wrap in try-catch to handle race conditions
+            // in React Strict Mode where Tauri's internal listener state may be inconsistent
+            unlistenersRef.current.forEach(unlisten => {
+                try {
+                    unlisten();
+                } catch (e) {
+                    // Ignore errors during cleanup - can happen in Strict Mode
+                    // when listeners are cleaned up before they're fully registered
+                }
+            });
             unlistenersRef.current = [];
         };
     }, [notify]);

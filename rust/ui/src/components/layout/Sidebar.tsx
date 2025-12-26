@@ -129,7 +129,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ onStartRecording }) => {
             style={{
                 width: isRecording ? '0px' : '300px',
                 minWidth: isRecording ? '0px' : '300px',
-                margin: isRecording ? 0 : 'var(--spacing-inset)',
+                marginTop: isRecording ? 0 : 'var(--spacing-inset)',
+                marginBottom: isRecording ? 0 : 'var(--spacing-inset)',
+                marginLeft: isRecording ? 0 : 'var(--spacing-inset)',
                 marginRight: 0,
                 borderRadius: 'var(--radius-xl)',
                 background: 'var(--sidebar-bg)',

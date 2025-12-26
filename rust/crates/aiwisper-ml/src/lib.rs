@@ -15,7 +15,10 @@ pub mod whisper;
 pub use diarization::{
     DiarizationResult, FluidDiarizationConfig, FluidDiarizationEngine, SpeakerEmbedding,
 };
-pub use engine_manager::{get_recommended_model_for_language, EngineManager, EngineType};
+pub use engine_manager::{
+    clear_engine_cache, get_engine_cache_info, get_or_create_engine_cached,
+    get_recommended_model_for_language, EngineManager, EngineType,
+};
 pub use fluidasr::{FluidASREngine, FluidModelVersion};
 pub use gigaam::GigaAMEngine;
 pub use hybrid::{

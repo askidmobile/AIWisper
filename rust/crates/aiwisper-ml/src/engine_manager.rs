@@ -2,13 +2,28 @@
 //!
 //! Позволяет переключаться между Whisper и GigaAM,
 //! а также создавать дополнительные движки для гибридной транскрипции.
+//!
+//! ## Глобальный кэш движков
+//!
+//! Для избежания многократной загрузки тяжёлых моделей (GigaAM, CoreML),
+//! используйте `get_or_create_engine_cached()` вместо `create_engine_arc()`.
+//! Кэш хранит движки по ключу `(model_id, language)`.
 
 use crate::traits::TranscriptionEngine;
 use crate::{FluidASREngine, GigaAMEngine, WhisperEngine};
 use anyhow::{Context, Result};
 use parking_lot::{Mutex, RwLock};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+/// Глобальный кэш движков транскрипции
+/// Ключ: (model_id, language)
+static ENGINE_CACHE: OnceLock<RwLock<HashMap<String, Arc<dyn TranscriptionEngine>>>> = OnceLock::new();
+
+fn get_engine_cache() -> &'static RwLock<HashMap<String, Arc<dyn TranscriptionEngine>>> {
+    ENGINE_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
 
 /// Тип движка транскрипции
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,6 +348,81 @@ pub fn get_recommended_model_for_language(language: &str) -> &'static str {
         "ru" => "gigaam-v3-e2e-ctc",
         _ => "ggml-large-v3-turbo",
     }
+}
+
+/// Получить движок из глобального кэша или создать новый
+///
+/// Эта функция гарантирует, что для каждой пары (model_id, language)
+/// движок создаётся только один раз. Это критично для тяжёлых моделей
+/// типа GigaAM/CoreML, которые долго загружаются.
+///
+/// # Аргументы
+/// * `model_id` - ID модели (например, "gigaam-v3-e2e-ctc")
+/// * `language` - Язык (например, "ru" или "auto")
+///
+/// # Пример
+/// ```ignore
+/// let engine = get_or_create_engine_cached("gigaam-v3-e2e-ctc", "ru")?;
+/// let segments = engine.transcribe_with_segments(&samples)?;
+/// ```
+pub fn get_or_create_engine_cached(model_id: &str, language: &str) -> Result<Arc<dyn TranscriptionEngine>> {
+    // Формируем ключ кэша
+    // Для GigaAM язык не влияет на движок (только русский), поэтому используем фиксированный ключ
+    let cache_key = if model_id.starts_with("gigaam") {
+        model_id.to_string()
+    } else {
+        format!("{}:{}", model_id, language)
+    };
+    
+    // Пробуем получить из кэша (быстрый путь с read lock)
+    {
+        let cache = get_engine_cache().read();
+        if let Some(engine) = cache.get(&cache_key) {
+            tracing::debug!("Engine cache hit for: {}", cache_key);
+            return Ok(Arc::clone(engine));
+        }
+    }
+    
+    // Не нашли в кэше - создаём новый движок (медленный путь с write lock)
+    let mut cache = get_engine_cache().write();
+    
+    // Double-check после получения write lock (другой поток мог создать)
+    if let Some(engine) = cache.get(&cache_key) {
+        tracing::debug!("Engine cache hit (after write lock) for: {}", cache_key);
+        return Ok(Arc::clone(engine));
+    }
+    
+    tracing::info!("Creating new engine for cache: {}", cache_key);
+    
+    // Получаем директорию моделей
+    let models_dir = dirs::data_local_dir()
+        .map(|p| p.join("aiwisper").join("models"))
+        .ok_or_else(|| anyhow::anyhow!("Models directory not found"))?;
+    
+    let manager = EngineManager::new(models_dir);
+    let engine = manager.create_engine_arc(model_id, language)?;
+    
+    // Сохраняем в кэш
+    cache.insert(cache_key.clone(), Arc::clone(&engine));
+    tracing::info!("Engine cached: {}", cache_key);
+    
+    Ok(engine)
+}
+
+/// Очистить глобальный кэш движков
+///
+/// Полезно при смене настроек или для освобождения памяти.
+pub fn clear_engine_cache() {
+    let mut cache = get_engine_cache().write();
+    let count = cache.len();
+    cache.clear();
+    tracing::info!("Engine cache cleared: {} engines removed", count);
+}
+
+/// Получить информацию о кэше движков
+pub fn get_engine_cache_info() -> Vec<String> {
+    let cache = get_engine_cache().read();
+    cache.keys().cloned().collect()
 }
 
 #[cfg(test)]

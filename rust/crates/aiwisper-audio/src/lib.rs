@@ -65,19 +65,36 @@ pub fn calculate_rms(samples: &[f32]) -> f32 {
 /// 
 /// # Arguments
 /// * `samples` - Audio samples to check
-/// * `threshold` - RMS threshold below which audio is considered silent (default: 0.005 ≈ -46dB)
+/// * `threshold` - RMS threshold below which audio is considered silent (default: 0.02 ≈ -34dB)
 /// 
 /// # Returns
 /// `true` if the channel should be skipped from transcription
 pub fn is_silent(samples: &[f32], threshold: Option<f32>) -> bool {
-    const DEFAULT_SILENCE_THRESHOLD: f32 = 0.005; // ~-46dB
+    // Aggressive threshold to filter out:
+    // - Background noise from microphone
+    // - System audio bleeding/crosstalk
+    // - Low-level interference
+    // 0.02 ≈ -34dB is aggressive but avoids hallucinations like "Продолжение следует..."
+    const DEFAULT_SILENCE_THRESHOLD: f32 = 0.02;
     
     if samples.is_empty() {
         return true;
     }
     
     let rms = calculate_rms(samples);
-    rms < threshold.unwrap_or(DEFAULT_SILENCE_THRESHOLD)
+    let threshold_val = threshold.unwrap_or(DEFAULT_SILENCE_THRESHOLD);
+    let is_silent = rms < threshold_val;
+    
+    // Always log for debugging silence detection issues
+    tracing::info!(
+        "is_silent: rms={:.5} vs threshold={:.3} -> {} (samples={})",
+        rms,
+        threshold_val,
+        if is_silent { "SILENT" } else { "HAS_AUDIO" },
+        samples.len()
+    );
+    
+    is_silent
 }
 
 /// Check if two audio channels are similar (duplicated mono)
@@ -93,6 +110,11 @@ pub fn is_silent(samples: &[f32], threshold: Option<f32>) -> bool {
 /// `true` if channels are more than 95% similar (duplicated mono)
 pub fn are_channels_similar(left: &[f32], right: &[f32]) -> bool {
     if left.len() != right.len() || left.is_empty() {
+        tracing::debug!(
+            "are_channels_similar: length mismatch or empty (left={}, right={})",
+            left.len(),
+            right.len()
+        );
         return false;
     }
     
@@ -109,6 +131,22 @@ pub fn are_channels_similar(left: &[f32], right: &[f32]) -> bool {
         total_count += 1;
     }
     
-    // If more than 95% of samples are similar, channels are duplicated
-    total_count > 0 && similar_count as f32 / total_count as f32 > 0.95
+    let similarity = if total_count > 0 {
+        similar_count as f32 / total_count as f32
+    } else {
+        0.0
+    };
+    
+    let is_similar = similarity > 0.95;
+    
+    tracing::debug!(
+        "are_channels_similar: samples={}, checked={}, similar={}, similarity={:.2}%, result={}",
+        left.len(),
+        total_count,
+        similar_count,
+        similarity * 100.0,
+        is_similar
+    );
+    
+    is_similar
 }

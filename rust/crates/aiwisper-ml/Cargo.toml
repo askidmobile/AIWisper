@@ -22,6 +22,7 @@ parking_lot = "0.12"
 regex = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
+dirs = "5"
 
 # HTTP client for LLM API
 reqwest = { version = "0.12", features = ["json"] }

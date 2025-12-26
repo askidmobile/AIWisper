@@ -7,7 +7,7 @@
 //! - Transcription of chunks during recording
 
 use aiwisper_audio::{
-    is_silent, resample, AudioCapture, AudioChannel, ChunkBuffer, SegmentedMp3Writer,
+    calculate_rms, is_silent, resample, AudioCapture, AudioChannel, ChunkBuffer, SegmentedMp3Writer,
     SystemAudioCapture, SystemCaptureConfig, SystemCaptureMethod, VadConfig,
 };
 use std::sync::mpsc;
@@ -1121,12 +1121,18 @@ fn transcribe_chunk_stereo(
     let mic_is_silent = is_silent(mic_samples, None);
     let sys_is_silent = is_silent(sys_samples, None);
     
+    // Calculate RMS for debugging
+    let mic_rms = calculate_rms(mic_samples);
+    let sys_rms = calculate_rms(sys_samples);
+    
     tracing::info!(
-        "Transcribing stereo chunk {}: mic={} sys={} samples @ {}Hz, silent=(mic:{}, sys:{})",
+        "Transcribing stereo chunk {}: mic={} sys={} samples @ {}Hz, rms=(mic:{:.6}, sys:{:.6}), silent=(mic:{}, sys:{})",
         chunk_meta.index,
         mic_samples.len(),
         sys_samples.len(),
         source_sample_rate,
+        mic_rms,
+        sys_rms,
         mic_is_silent,
         sys_is_silent
     );
@@ -1285,6 +1291,8 @@ fn transcribe_chunk_stereo(
 }
 
 /// Synchronous transcription (called from recording thread)
+///
+/// Использует глобальный кэш движков для избежания многократной загрузки модели.
 fn transcribe_samples_sync(
     samples: &[f32],
     model_id: &str,
@@ -1294,18 +1302,12 @@ fn transcribe_samples_sync(
     hotwords: &[String],
 ) -> Result<Vec<aiwisper_types::TranscriptSegment>> {
     use aiwisper_ml::{
-        EngineManager, HybridMode, HybridTranscriber, HybridTranscriptionConfig, VotingConfig,
+        get_or_create_engine_cached, HybridMode, HybridTranscriber, HybridTranscriptionConfig,
+        VotingConfig,
     };
 
-    // Get models directory and create engine manager
-    let models_dir = dirs::data_local_dir()
-        .map(|p| p.join("aiwisper").join("models"))
-        .ok_or_else(|| anyhow::anyhow!("Models directory not found"))?;
-    
-    let engine_manager = EngineManager::new(models_dir);
-
-    // Create primary engine using EngineManager
-    let primary_engine = engine_manager.create_engine_arc(model_id, language)?;
+    // Get primary engine from cache (or create if first time)
+    let primary_engine = get_or_create_engine_cached(model_id, language)?;
 
     // If hybrid enabled, create secondary engine and use HybridTranscriber
     if hybrid_enabled && !hybrid_secondary_model_id.is_empty() {
@@ -1315,7 +1317,7 @@ fn transcribe_samples_sync(
             hybrid_secondary_model_id
         );
 
-        let secondary_engine = match engine_manager.create_engine_arc(hybrid_secondary_model_id, language) {
+        let secondary_engine = match get_or_create_engine_cached(hybrid_secondary_model_id, language) {
             Ok(e) => Some(e),
             Err(e) => {
                 tracing::warn!(

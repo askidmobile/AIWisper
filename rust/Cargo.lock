@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper"
-version = "2.0.17"
+version = "2.0.18"
 dependencies = [
  "aiwisper-audio",
  "aiwisper-ml",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-audio"
-version = "2.0.17"
+version = "2.0.18"
 dependencies = [
  "aiwisper-types",
  "anyhow",
@@ -88,11 +88,12 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-ml"
-version = "2.0.17"
+version = "2.0.18"
 dependencies = [
  "aiwisper-types",
  "anyhow",
  "async-trait",
+ "dirs 5.0.1",
  "ndarray 0.15.6",
  "ort",
  "parking_lot",
@@ -108,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-types"
-version = "2.0.17"
+version = "2.0.18"
 dependencies = [
  "serde",
  "serde_json",
@@ -116,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-worker"
-version = "2.0.17"
+version = "2.0.18"
 dependencies = [
  "aiwisper-ml",
  "aiwisper-types",

@@ -2407,12 +2407,27 @@ impl AppState {
 
         // Check if using cloud provider
         let use_cloud = stt_provider != "local" && !stt_provider.is_empty();
+        
+        // Check for silent channels to avoid hallucinations like "Продолжение следует..."
+        let mic_is_silent = is_silent(&mic_samples, None);
+        let sys_is_silent = is_silent(&sys_samples, None);
+        
+        tracing::info!(
+            "Retranscribe chunk {}: mic={} sys={} samples, is_stereo={}, silent=(mic:{}, sys:{})",
+            chunk_index,
+            mic_samples.len(),
+            sys_samples.len(),
+            is_stereo,
+            mic_is_silent,
+            sys_is_silent
+        );
 
         if is_stereo {
             // Stereo mode: transcribe channels separately (like Go backend)
+            // Skip silent channels to avoid hallucinations like "Продолжение следует..."
             
-            // 3a. Transcribe MIC channel -> "Вы"
-            if !mic_samples.is_empty() {
+            // 3a. Transcribe MIC channel -> "Вы" (skip if silent)
+            if !mic_samples.is_empty() && !mic_is_silent {
                 tracing::info!("Transcribing MIC channel (Вы): {} samples, cloud={}", mic_samples.len(), use_cloud);
                 let result = if use_cloud {
                     self.transcribe_samples_with_cloud_provider(&mic_samples, language, stt_provider).await
@@ -2449,10 +2464,12 @@ impl AppState {
                         tracing::error!("MIC transcription error: {}", e);
                     }
                 }
+            } else if mic_is_silent {
+                tracing::info!("Skipping MIC channel for chunk {} - silent", chunk_index);
             }
 
-            // 3b. Transcribe SYS channel -> "Собеседник" (TODO: add diarization for multiple speakers)
-            if !sys_samples.is_empty() {
+            // 3b. Transcribe SYS channel -> "Собеседник" (skip if silent)
+            if !sys_samples.is_empty() && !sys_is_silent {
                 tracing::info!("Transcribing SYS channel (Собеседник): {} samples, cloud={}", sys_samples.len(), use_cloud);
                 let result = if use_cloud {
                     self.transcribe_samples_with_cloud_provider(&sys_samples, language, stt_provider).await
@@ -2489,6 +2506,8 @@ impl AppState {
                         tracing::error!("SYS transcription error: {}", e);
                     }
                 }
+            } else if sys_is_silent {
+                tracing::info!("Skipping SYS channel for chunk {} - silent", chunk_index);
             }
 
             // 3c. Sort dialogue by timestamp
@@ -2988,6 +3007,8 @@ impl AppState {
 
     /// Synchronous transcription with optional hybrid mode (called from blocking thread)
     /// Note: LLM enhancement is NOT done here - it's async and called after spawn_blocking
+    ///
+    /// Использует глобальный кэш движков для избежания многократной загрузки модели.
     fn transcribe_samples_sync_with_hybrid(
         samples: &[f32],
         model_id: &str,
@@ -3001,18 +3022,12 @@ impl AppState {
         hotwords: &[String],
     ) -> Result<Vec<aiwisper_types::TranscriptSegment>> {
         use aiwisper_ml::{
-            EngineManager, HybridMode, HybridTranscriber, HybridTranscriptionConfig, VotingConfig,
+            get_or_create_engine_cached, HybridMode, HybridTranscriber, HybridTranscriptionConfig,
+            VotingConfig,
         };
 
-        // Get models directory and create engine manager
-        let models_dir = dirs::data_local_dir()
-            .map(|p| p.join("aiwisper").join("models"))
-            .ok_or_else(|| anyhow::anyhow!("Models directory not found"))?;
-        
-        let engine_manager = EngineManager::new(models_dir);
-
-        // Create primary engine using EngineManager
-        let primary_engine = engine_manager.create_engine_arc(model_id, language)?;
+        // Get primary engine from cache (or create if first time)
+        let primary_engine = get_or_create_engine_cached(model_id, language)?;
 
         // If hybrid enabled, create secondary engine and use HybridTranscriber
         if hybrid_enabled && !hybrid_secondary_model_id.is_empty() {
@@ -3022,7 +3037,7 @@ impl AppState {
                 hybrid_secondary_model_id
             );
 
-            let secondary_engine = match engine_manager.create_engine_arc(hybrid_secondary_model_id, language) {
+            let secondary_engine = match get_or_create_engine_cached(hybrid_secondary_model_id, language) {
                 Ok(e) => Some(e),
                 Err(e) => {
                     tracing::warn!(
