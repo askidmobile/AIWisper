@@ -52,7 +52,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     const { sttSettings } = useProvidersContext();
 
     // Хуки
-    const { play, pause, playingUrl, seek, currentTime, duration, isPlaying, micLevel: playbackMicLevel, sysLevel: playbackSysLevel } = useAudioPlayer();
+    const { play, playChunk, pause, playingUrl, seek, currentTime, duration, isPlaying, isPlayingFullSession, playbackOffset, micLevel: playbackMicLevel, sysLevel: playbackSysLevel } = useAudioPlayer();
     const {
         settings,
         isLoaded: settingsLoaded,
@@ -485,9 +485,13 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     }, [isRecording, isFullTranscribing, stopSession, startSession, activeModelId, language, micDevice, captureSystem, useVoiceIsolation, echoCancel, pauseThreshold, hybridTranscription, addLog, isTauri, checkMicrophonePermission, requestMicrophonePermission]);
 
     // Playback Handlers
-    const handlePlayChunk = useCallback((url: string) => {
-        play(url);
-    }, [play]);
+    const handlePlayChunk = useCallback((url: string, startMs?: number) => {
+        if (startMs !== undefined) {
+            playChunk(url, startMs);
+        } else {
+            play(url);
+        }
+    }, [play, playChunk]);
 
     const handlePlaySession = useCallback(async (sessionId: string) => {
         if (isTauri) {
@@ -898,7 +902,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                                 playingUrl={playingUrl}
                                 ollamaModel={ollamaModel}
                                 isPlaying={isPlaying}
-                                isPlayingFullSession={playingUrl?.includes('/full.mp3') ?? false}
+                                isPlayingFullSession={isPlayingFullSession}
+                                playbackOffset={playbackOffset}
                                 onPlaySession={handlePlaySession}
                                 onPauseSession={pause}
                                 currentTime={currentTime}

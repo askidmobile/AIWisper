@@ -36,7 +36,7 @@ interface ChunksViewSimpleProps {
     highlightedChunkId: string | null;
     transcribingChunkId: string | null;
     isFullTranscribing?: boolean; // Блокировка во время полной ретранскрибации
-    onPlayChunk: (url: string) => void;
+    onPlayChunk: (url: string, startMs?: number) => void;
     onRetranscribe: (chunkId: string) => void;
 }
 
@@ -112,7 +112,7 @@ interface ChunkItemProps {
     isHighlighted: boolean;
     isTranscribing: boolean;
     isRetranscribeDisabled?: boolean; // Блокировка кнопки ретранскрибации
-    onPlayChunk: (url: string) => void;
+    onPlayChunk: (url: string, startMs?: number) => void;
     onRetranscribe: () => void;
 }
 
@@ -139,10 +139,11 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
     // Load audio URL when needed
     const handlePlay = async () => {
         const chunkKey = `${sessionId}:${chunkIndex}`;
+        const startMs = chunk.startMs;
         
         // If already have cached URL, use it
         if (chunkAudioUrl) {
-            onPlayChunk(chunkAudioUrl);
+            onPlayChunk(chunkAudioUrl, startMs);
             return;
         }
         
@@ -150,7 +151,7 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
         const cached = chunkAudioCache.get(chunkKey);
         if (cached) {
             setChunkAudioUrl(cached);
-            onPlayChunk(cached);
+            onPlayChunk(cached, startMs);
             return;
         }
         
@@ -168,7 +169,7 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
                 if (result && typeof result === 'string') {
                     chunkAudioCache.set(chunkKey, result);
                     setChunkAudioUrl(result);
-                    onPlayChunk(result);
+                    onPlayChunk(result, startMs);
                 }
             } else {
                 // Use HTTP for Electron
@@ -176,7 +177,7 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
                 const url = `${API_BASE}/api/sessions/${sessionId}/chunk/${chunkIndex}.mp3`;
                 chunkAudioCache.set(chunkKey, url);
                 setChunkAudioUrl(url);
-                onPlayChunk(url);
+                onPlayChunk(url, startMs);
             }
         } catch (error) {
             console.error('[ChunkItem] Failed to load audio:', error);

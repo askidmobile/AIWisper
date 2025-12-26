@@ -42,7 +42,9 @@ pub fn run() {
 
     tracing::info!("Starting AIWisper application");
     tracing::info!("Logging initialized to file in home directory");
-    tracing::info!("Logging initialized to file in home directory");
+    
+    // Log GPU/accelerator status at startup
+    commands::system::log_gpu_status();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -110,6 +112,8 @@ pub fn run() {
             commands::providers::has_provider_api_key,
             commands::providers::test_provider_connection,
             commands::providers::get_providers_status,
+            // System
+            commands::system::get_gpu_status,
             // Utility
             commands::open_data_folder,
         ])

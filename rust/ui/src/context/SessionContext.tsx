@@ -8,6 +8,8 @@ interface SessionContextType {
     selectedSession: Session | null;
     isRecording: boolean;
     isStopping: boolean;
+    isFinalizing: boolean;
+    finalizingMessage: string | null;
     micLevel: number;
     sysLevel: number;
 
@@ -44,6 +46,8 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const [selectedSession, setSelectedSession] = useState<Session | null>(null);
     const [isRecording, setIsRecording] = useState(false);
     const [isStopping, setIsStopping] = useState(false);
+    const [isFinalizing, setIsFinalizing] = useState(false);
+    const [finalizingMessage, setFinalizingMessage] = useState<string | null>(null);
     const [micLevel, setMicLevel] = useState(0);
     const [sysLevel, setSysLevel] = useState(0);
 
@@ -104,9 +108,18 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
             // Optional: Beep sound logic moved to UI component or hook
         });
 
+        // Обработчик события финализации (склейка MP3 сегментов)
+        const unsubFinalizing = subscribe('session_finalizing', (msg: any) => {
+            console.log('[SessionContext] ⏳ session_finalizing:', msg);
+            setIsFinalizing(true);
+            setFinalizingMessage(msg.message || 'Сохранение записи...');
+        });
+
         const unsubStopped = subscribe('session_stopped', (msg: any) => {
             setIsRecording(false);
             setIsStopping(false);
+            setIsFinalizing(false);
+            setFinalizingMessage(null);
             
             // ✅ ВАЖНО: Сохраняем currentSession в selectedSession ПЕРЕД обнулением,
             // чтобы последующие chunk_transcribed могли обновить её
@@ -380,7 +393,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         });
 
         return () => {
-            unsubList(); unsubStarted(); unsubStopped(); unsubRecordingCompleted(); unsubDetails();
+            unsubList(); unsubStarted(); unsubStopped(); unsubFinalizing(); unsubRecordingCompleted(); unsubDetails();
             unsubChunkCreated(); unsubChunkTranscribed(); unsubChunkTranscribing();
             unsubAudioLevel(); unsubSummary(); unsubImprove(); unsubRenamed();
             unsubTitleUpdated(); unsubTagsUpdated();
@@ -452,6 +465,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
     return (
         <SessionContext.Provider value={{
             sessions, currentSession, selectedSession, isRecording, isStopping,
+            isFinalizing, finalizingMessage,
             micLevel, sysLevel,
             // Pending background transcription state
             pendingTranscriptionChunks, isProcessingFinalChunks,

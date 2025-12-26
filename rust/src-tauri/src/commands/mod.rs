@@ -8,6 +8,7 @@ pub mod models;
 pub mod providers;
 pub mod session;
 pub mod settings;
+pub mod system;
 pub mod transcription;
 pub mod voiceprints;
 

@@ -264,9 +264,14 @@ impl TranscriptionEngine for GigaAMEngine {
 
 impl GigaAMEngine {
     /// Create new GigaAM engine with model and vocab paths
-    /// Automatically enables CoreML on Apple Silicon
+    /// Automatically enables CoreML on Apple Silicon (except for INT8 models)
     pub fn new(model_path: &str, vocab_path: &str) -> Result<Self> {
-        Self::new_with_options(model_path, vocab_path, true)
+        // INT8 models run faster on CPU than CoreML
+        // CoreML adds overhead for INT8 quantization conversion
+        let is_int8 = model_path.to_lowercase().contains("int8");
+        let use_coreml = !is_int8;
+        
+        Self::new_with_options(model_path, vocab_path, use_coreml)
     }
 
     /// Create GigaAM engine with explicit CoreML option
@@ -277,6 +282,7 @@ impl GigaAMEngine {
         let model_path_lower = model_path.to_lowercase();
         let is_v3 = model_path_lower.contains("v3");
         let is_e2e = model_path_lower.contains("e2e");
+        let is_int8 = model_path_lower.contains("int8");
 
         let model_type = if is_e2e {
             tracing::info!("GigaAM: detected E2E model (BPE tokenization)");
@@ -323,10 +329,16 @@ impl GigaAMEngine {
 
         // Detect if we're on Apple Silicon for CoreML support
         let is_apple_silicon = cfg!(target_os = "macos") && cfg!(target_arch = "aarch64");
-        let enable_coreml = use_coreml && is_apple_silicon;
+        
+        // INT8 models run faster on CPU - CoreML adds conversion overhead
+        let enable_coreml = use_coreml && is_apple_silicon && !is_int8;
+        
+        if is_int8 && use_coreml {
+            tracing::info!("GigaAM: INT8 model detected, using CPU (faster than CoreML for quantized models)");
+        }
 
         // Create ONNX session with CoreML if available
-        let session = if enable_coreml {
+        let (session, actual_coreml) = if enable_coreml {
             tracing::info!("GigaAM: Attempting CoreML acceleration (Apple Silicon)");
 
             // Try to create session with CoreML
@@ -340,27 +352,32 @@ impl GigaAMEngine {
             {
                 Ok(session) => {
                     tracing::info!("GigaAM: CoreML acceleration enabled");
-                    session
+                    (session, true)
                 }
                 Err(e) => {
                     tracing::warn!("GigaAM: CoreML failed ({}), falling back to CPU", e);
-                    Session::builder()?
+                    let session = Session::builder()?
                         .with_optimization_level(GraphOptimizationLevel::Level3)?
                         .with_intra_threads(4)?
                         .commit_from_file(model_path)
-                        .context("Failed to load GigaAM ONNX model")?
+                        .context("Failed to load GigaAM ONNX model")?;
+                    (session, false)
                 }
             }
         } else {
             tracing::info!("GigaAM: Using CPU inference");
-            Session::builder()?
+            let session = Session::builder()?
                 .with_optimization_level(GraphOptimizationLevel::Level3)?
                 .with_intra_threads(4)?
                 .commit_from_file(model_path)
-                .context("Failed to load GigaAM ONNX model")?
+                .context("Failed to load GigaAM ONNX model")?;
+            (session, false)
         };
 
-        tracing::info!("GigaAM model loaded successfully");
+        tracing::info!(
+            "GigaAM model loaded: type={:?}, int8={}, coreml={}",
+            model_type, is_int8, actual_coreml
+        );
 
         Ok(Self {
             session: Mutex::new(session),
@@ -370,7 +387,7 @@ impl GigaAMEngine {
             model_type,
             mel_processor,
             language: "ru".to_string(),
-            use_coreml: enable_coreml,
+            use_coreml: actual_coreml,
         })
     }
 

@@ -2179,6 +2179,7 @@ impl AppState {
 
     /// Get chunk audio as base64-encoded WAV
     /// Returns a data URL that can be used directly in an <audio> element
+    /// Preserves stereo channels (left=mic, right=system) for proper playback
     pub async fn get_chunk_audio(&self, session_id: &str, chunk_index: usize) -> Result<String> {
         // Get chunk timestamps
         let (start_ms, end_ms) = {
@@ -2196,15 +2197,15 @@ impl AppState {
             (chunk.start_ms, chunk.end_ms)
         };
         
-        // Extract audio samples from the MP3 file
-        let samples = self.extract_audio_segment(session_id, start_ms, end_ms).await?;
+        // Extract stereo audio samples from the MP3 file (preserves channels and sample rate)
+        let (left_samples, right_samples, sample_rate) = self.extract_audio_segment_for_playback(session_id, start_ms, end_ms).await?;
         
-        if samples.is_empty() {
+        if left_samples.is_empty() && right_samples.is_empty() {
             return Err(anyhow::anyhow!("No audio samples for chunk"));
         }
         
-        // Convert samples to WAV
-        let wav_data = Self::samples_to_wav(&samples);
+        // Convert stereo samples to WAV (preserves original sample rate)
+        let wav_data = Self::samples_to_wav_stereo(&left_samples, &right_samples, sample_rate);
 
         // Encode as base64 data URL
         let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_data);
@@ -2254,6 +2255,176 @@ impl AppState {
         }
 
         wav
+    }
+    
+    /// Convert interleaved stereo f32 samples to WAV format
+    /// Format: specified sample_rate, stereo, 16-bit PCM
+    fn samples_to_wav_stereo(left: &[f32], right: &[f32], sample_rate: u32) -> Vec<u8> {
+        const BITS_PER_SAMPLE: u16 = 16;
+        const CHANNELS: u16 = 2;
+
+        let num_samples = left.len().min(right.len()) as u32;
+        let data_size = num_samples * (BITS_PER_SAMPLE / 8) as u32 * CHANNELS as u32;
+        let file_size = 36 + data_size;
+
+        let mut wav = Vec::with_capacity(44 + data_size as usize);
+
+        // RIFF header
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&file_size.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+
+        // fmt chunk
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes()); // chunk size
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM format
+        wav.extend_from_slice(&CHANNELS.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        let byte_rate = sample_rate * CHANNELS as u32 * (BITS_PER_SAMPLE / 8) as u32;
+        wav.extend_from_slice(&byte_rate.to_le_bytes());
+        let block_align = CHANNELS * (BITS_PER_SAMPLE / 8);
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&BITS_PER_SAMPLE.to_le_bytes());
+
+        // data chunk
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+
+        // Interleave and convert f32 samples to i16 PCM (L, R, L, R, ...)
+        for i in 0..num_samples as usize {
+            // Left channel
+            let left_sample = left.get(i).copied().unwrap_or(0.0).clamp(-1.0, 1.0);
+            let left_pcm = (left_sample * 32767.0) as i16;
+            wav.extend_from_slice(&left_pcm.to_le_bytes());
+            
+            // Right channel
+            let right_sample = right.get(i).copied().unwrap_or(0.0).clamp(-1.0, 1.0);
+            let right_pcm = (right_sample * 32767.0) as i16;
+            wav.extend_from_slice(&right_pcm.to_le_bytes());
+        }
+
+        wav
+    }
+    
+    /// Extract stereo audio segment for playback (preserves original sample rate)
+    /// Returns (left_samples, right_samples, sample_rate)
+    async fn extract_audio_segment_for_playback(
+        &self,
+        session_id: &str,
+        start_ms: i64,
+        end_ms: i64,
+    ) -> Result<(Vec<f32>, Vec<f32>, u32)> {
+        use symphonia::core::audio::SampleBuffer;
+        use symphonia::core::codecs::DecoderOptions;
+        use symphonia::core::formats::FormatOptions;
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::meta::MetadataOptions;
+        use symphonia::core::probe::Hint;
+
+        let sessions_dir =
+            get_sessions_dir().ok_or_else(|| anyhow::anyhow!("Sessions directory not found"))?;
+
+        let mp3_path = sessions_dir.join(session_id).join("full.mp3");
+
+        if !mp3_path.exists() {
+            return Err(anyhow::anyhow!("Audio file not found: {:?}", mp3_path));
+        }
+
+        // Open and decode MP3
+        let file = std::fs::File::open(&mp3_path)?;
+        let mss = MediaSourceStream::new(Box::new(file), Default::default());
+
+        let mut hint = Hint::new();
+        hint.with_extension("mp3");
+
+        let format_opts = FormatOptions::default();
+        let metadata_opts = MetadataOptions::default();
+        let decoder_opts = DecoderOptions::default();
+
+        let probed =
+            symphonia::default::get_probe().format(&hint, mss, &format_opts, &metadata_opts)?;
+
+        let mut format = probed.format;
+
+        let track = format
+            .tracks()
+            .iter()
+            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+            .ok_or_else(|| anyhow::anyhow!("No audio track found"))?;
+
+        let track_id = track.id;
+        let source_sample_rate = track.codec_params.sample_rate.unwrap_or(44100);
+        let channels = track.codec_params.channels.map(|c| c.count()).unwrap_or(2);
+
+        let mut decoder =
+            symphonia::default::get_codecs().make(&track.codec_params, &decoder_opts)?;
+
+        // Calculate sample positions
+        let start_sample = (start_ms as f64 * source_sample_rate as f64 / 1000.0) as usize;
+        let end_sample = (end_ms as f64 * source_sample_rate as f64 / 1000.0) as usize;
+
+        // Separate buffers for left and right channels
+        let mut left_samples: Vec<f32> = Vec::new();
+        let mut right_samples: Vec<f32> = Vec::new();
+        let mut current_sample = 0usize;
+
+        loop {
+            let packet = match format.next_packet() {
+                Ok(packet) => packet,
+                Err(symphonia::core::errors::Error::IoError(e))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    break
+                }
+                Err(_) => break,
+            };
+
+            if packet.track_id() != track_id {
+                continue;
+            }
+
+            let decoded = match decoder.decode(&packet) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            let spec = *decoded.spec();
+            let duration = decoded.capacity() as u64;
+
+            let mut sample_buf = SampleBuffer::<f32>::new(duration, spec);
+            sample_buf.copy_interleaved_ref(decoded);
+            let samples = sample_buf.samples();
+
+            // Process samples (de-interleave to separate channels)
+            let frame_samples = samples.len() / channels;
+
+            for i in 0..frame_samples {
+                let sample_idx = current_sample + i;
+
+                // Only keep samples in our range
+                if sample_idx >= start_sample && sample_idx < end_sample {
+                    if channels >= 2 {
+                        // Stereo: left = mic, right = sys
+                        left_samples.push(samples[i * channels]);     // left channel
+                        right_samples.push(samples[i * channels + 1]); // right channel
+                    } else {
+                        // Mono: duplicate to both channels
+                        left_samples.push(samples[i * channels]);
+                        right_samples.push(samples[i * channels]);
+                    }
+                }
+            }
+
+            current_sample += frame_samples;
+
+            // Early exit if we've passed the end
+            if current_sample >= end_sample {
+                break;
+            }
+        }
+
+        // Return without resampling - preserve original sample rate for playback quality
+        Ok((left_samples, right_samples, source_sample_rate))
     }
 
     // ========================================================================

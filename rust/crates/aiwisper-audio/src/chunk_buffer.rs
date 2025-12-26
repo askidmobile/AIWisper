@@ -423,6 +423,70 @@ impl ChunkBuffer {
         self.chunking_enabled = false;
         self.start_time = Instant::now();
     }
+
+    /// Удалить обработанные семплы до указанной позиции
+    ///
+    /// Вызывается после успешной транскрипции чанка для освобождения памяти.
+    /// Это критически важно для длительных записей, чтобы буферы не росли бесконечно.
+    ///
+    /// # Arguments
+    /// * `up_to_ms` - Временная метка в миллисекундах до которой удалить семплы
+    ///
+    /// # Note
+    /// После вызова все временные метки в буфере остаются корректными,
+    /// так как мы обновляем внутренние счётчики.
+    pub fn drain_processed_samples(&mut self, up_to_ms: i64) {
+        // Конвертируем миллисекунды в количество семплов
+        let drain_samples = (up_to_ms * self.sample_rate as i64 / 1000) as usize;
+
+        // Проверяем что есть что удалять
+        if drain_samples == 0 {
+            return;
+        }
+
+        // Удаляем из основного буфера
+        let actual_drain = drain_samples.min(self.accumulated.len());
+        if actual_drain > 0 {
+            self.accumulated.drain(0..actual_drain);
+        }
+
+        // Удаляем из раздельных каналов если есть
+        if self.has_separate_channels {
+            let mic_drain = drain_samples.min(self.mic_accumulated.len());
+            if mic_drain > 0 {
+                self.mic_accumulated.drain(0..mic_drain);
+            }
+
+            let sys_drain = drain_samples.min(self.sys_accumulated.len());
+            if sys_drain > 0 {
+                self.sys_accumulated.drain(0..sys_drain);
+            }
+        }
+
+        // Корректируем счётчики
+        // emitted_samples - это позиция в ОРИГИНАЛЬНОМ буфере откуда мы уже выпустили чанки
+        // После drain нужно сдвинуть на количество удалённых семплов
+        let drain_i64 = actual_drain as i64;
+        self.emitted_samples = (self.emitted_samples - drain_i64).max(0);
+        self.total_samples = (self.total_samples - drain_i64).max(0);
+
+        tracing::info!(
+            "ChunkBuffer: drained {} samples (up to {} ms), remaining accumulated={}, mic={}, sys={}",
+            actual_drain,
+            up_to_ms,
+            self.accumulated.len(),
+            self.mic_accumulated.len(),
+            self.sys_accumulated.len()
+        );
+    }
+
+    /// Получить текущий размер буферов в байтах (для мониторинга памяти)
+    pub fn memory_usage_bytes(&self) -> usize {
+        let f32_size = std::mem::size_of::<f32>();
+        (self.accumulated.capacity() + 
+         self.mic_accumulated.capacity() + 
+         self.sys_accumulated.capacity()) * f32_size
+    }
 }
 
 /// Вычислить RMS (Root Mean Square) для определения громкости

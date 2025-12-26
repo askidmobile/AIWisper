@@ -28,6 +28,7 @@ interface TranscriptionViewProps {
     // New props for player
     isPlaying: boolean;
     isPlayingFullSession?: boolean; // true если воспроизводится full.mp3
+    playbackOffset?: number; // offset in seconds for chunk playback
     onPlaySession: (id: string) => void;
     onPauseSession: () => void;
     currentTime: number;
@@ -51,7 +52,7 @@ interface TranscriptionViewProps {
 
 export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     onPlayChunk, playingUrl, ollamaModel,
-    isPlaying, isPlayingFullSession, onPlaySession, onPauseSession, currentTime, duration, onSeek,
+    isPlaying, isPlayingFullSession, playbackOffset = 0, onPlaySession, onPauseSession, currentTime, duration, onSeek,
     sessionSpeakers = [],
     onRetranscribeAll,
     onRenameSpeaker,
@@ -350,6 +351,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                             session={displaySession}
                             isPlaying={isPlaying}
                             isPlayingFullSession={isPlayingFullSession}
+                            playbackOffset={playbackOffset}
                             onPlayPause={() => {
                                 if (isPlaying) {
                                     onPauseSession();

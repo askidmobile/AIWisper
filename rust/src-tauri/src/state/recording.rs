@@ -7,9 +7,10 @@
 //! - Transcription of chunks during recording
 
 use aiwisper_audio::{
-    resample, AudioCapture, AudioChannel, ChunkBuffer, Mp3Writer, SystemAudioCapture,
+    resample, AudioCapture, AudioChannel, ChunkBuffer, SegmentedMp3Writer, SystemAudioCapture,
     SystemCaptureConfig, SystemCaptureMethod, VadConfig,
 };
+use std::sync::mpsc;
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -67,7 +68,7 @@ pub struct RecordingSession {
 
 impl RecordingSession {
     /// Create a new recording session
-    pub fn new(language: &str, model_id: &str, is_stereo: bool) -> Result<Self> {
+    pub fn new(language: &str, model_id: &str, _is_stereo: bool) -> Result<Self> {
         let id = Uuid::new_v4().to_string();
         let start_time = chrono::Utc::now();
 
@@ -343,7 +344,7 @@ pub fn start_recording(
 /// Recording thread function
 fn recording_thread(
     session_id: String,
-    mp3_path: PathBuf,
+    _mp3_path: PathBuf,  // Теперь используется SegmentedMp3Writer с data_dir
     data_dir: PathBuf,
     device_id: Option<String>,
     capture_system: bool,
@@ -399,11 +400,12 @@ fn recording_thread(
     // MP3 channels: 1 for mic only, 2 for stereo (mic + sys)
     let channels = if sys_capture.is_some() { 2 } else { 1 };
 
-    // Create MP3 writer
-    let mut mp3_writer = match Mp3Writer::new(&mp3_path, SAMPLE_RATE, channels, "128k") {
+    // Create segmented MP3 writer (15 минут = 900 сек на сегмент)
+    // Это предотвращает бесконечный рост памяти при длительных записях
+    let mut mp3_writer = match SegmentedMp3Writer::new(&data_dir, SAMPLE_RATE, channels, "128k", 900) {
         Ok(w) => w,
         Err(e) => {
-            tracing::error!("Failed to create MP3 writer: {}", e);
+            tracing::error!("Failed to create segmented MP3 writer: {}", e);
             return RecordingResult {
                 session_id,
                 duration_ms: 0,
@@ -412,6 +414,9 @@ fn recording_thread(
             };
         }
     };
+
+    // Канал для сигналов очистки буфера после транскрипции
+    let (drain_tx, drain_rx) = mpsc::channel::<i64>();
 
     // Create chunk buffer with VAD config
     let vad_config = if capture_system {
@@ -609,7 +614,7 @@ fn recording_thread(
             // Чанк всё равно сохраним со статусом pending для последующей обработки
             let is_stopping = stop_flag.load(Ordering::SeqCst);
             
-            let mut chunk_meta = ChunkMeta::from_event(&event, &session_id);
+            let chunk_meta = ChunkMeta::from_event(&event, &session_id);
             let chunk_path = data_dir
                 .join("chunks")
                 .join(format!("chunk_{:04}.json", event.index));
@@ -660,6 +665,8 @@ fn recording_thread(
                 let bg_session_id = session_id.clone();
                 let bg_app_handle = app_handle.clone();
                 let bg_transcription_config = transcription_config.clone();
+                let bg_drain_tx = drain_tx.clone();
+                let chunk_end_ms = event.end_ms;
                 
                 if chunk_buffer.has_separate_channels() {
                     // Stereo mode: transcribe each channel separately
@@ -682,6 +689,8 @@ fn recording_thread(
                             if let Err(e) = transcribed.save(&bg_chunk_path) {
                                 tracing::error!("Failed to save transcribed chunk: {}", e);
                             }
+                            // Сигнал на очистку буфера после транскрипции
+                            let _ = bg_drain_tx.send(chunk_end_ms);
                         });
                     }
                 } else {
@@ -703,6 +712,8 @@ fn recording_thread(
                             if let Err(e) = transcribed.save(&bg_chunk_path) {
                                 tracing::error!("Failed to save transcribed chunk: {}", e);
                             }
+                            // Сигнал на очистку буфера после транскрипции
+                            let _ = bg_drain_tx.send(chunk_end_ms);
                         });
                     }
                 }
@@ -714,6 +725,12 @@ fn recording_thread(
             }
 
             chunks.push(chunk_meta);
+        }
+
+        // Обработка сигналов очистки буфера от фоновых потоков транскрипции
+        // Это критически важно для предотвращения бесконечного роста памяти
+        while let Ok(drain_up_to_ms) = drain_rx.try_recv() {
+            chunk_buffer.drain_processed_samples(drain_up_to_ms);
         }
 
         // Emit audio level (always emit, even if no samples yet)
@@ -855,20 +872,51 @@ fn recording_thread(
         let _ = sys.stop();
     }
 
-    // Stop mic capture and close MP3
+    // Stop mic capture
     let samples = mic_capture.stop();
     let sample_count = samples.len();
-    let _ = mp3_writer.close();
-
+    
     let duration_ms = mp3_writer.duration_ms();
+    let segment_count = mp3_writer.segment_count();
 
     tracing::info!(
-        "Recording stopped: session={}, {} samples, {} ms, {} chunks",
+        "Recording stopped: session={}, {} samples, {} ms, {} chunks, {} MP3 segments",
         session_id,
         sample_count,
         duration_ms,
-        chunks.len()
+        chunks.len(),
+        segment_count
     );
+
+    // Если несколько сегментов - нужна склейка
+    if segment_count > 1 {
+        // Emit finalizing event
+        let _ = app_handle.emit(
+            "session_finalizing",
+            serde_json::json!({
+                "sessionId": session_id,
+                "stage": "concatenating",
+                "message": "Сохранение записи...",
+            }),
+        );
+
+        tracing::info!("Concatenating {} MP3 segments...", segment_count);
+        
+        match mp3_writer.concatenate() {
+            Ok(final_path) => {
+                tracing::info!("MP3 segments concatenated successfully: {:?}", final_path);
+            }
+            Err(e) => {
+                tracing::error!("Failed to concatenate MP3 segments: {}", e);
+                // Сегменты остаются на диске, можно склеить позже
+            }
+        }
+    } else {
+        // Один сегмент - просто закрываем и переименовываем
+        if let Err(e) = mp3_writer.concatenate() {
+            tracing::error!("Failed to finalize single segment: {}", e);
+        }
+    }
 
     // Emit session_stopped event
     let _ = app_handle.emit(

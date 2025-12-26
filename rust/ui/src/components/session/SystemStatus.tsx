@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useBackendContext } from '../../context/BackendContext';
+import { useSessionContext } from '../../context/SessionContext';
 import { useSettingsContext } from '../../context/SettingsContext';
 
 type SystemStage =
@@ -28,6 +29,7 @@ interface SystemStatusState {
  */
 export const SystemStatus: React.FC = () => {
     const { subscribe } = useBackendContext();
+    const { isFinalizing, finalizingMessage } = useSessionContext();
     const { hybridTranscription } = useSettingsContext();
 
     const [lastStreamingUpdate, setLastStreamingUpdate] = useState<number | null>(null);
@@ -76,6 +78,16 @@ export const SystemStatus: React.FC = () => {
         const now = Date.now();
         const recent = 3000;
 
+        // Финализация (склейка MP3 сегментов) - высший приоритет
+        if (isFinalizing) {
+            return { 
+                stage: 'finalizing', 
+                text: finalizingMessage || 'Сохранение записи...', 
+                icon: '💾', 
+                color: '#f59e0b' 
+            };
+        }
+
         if (isLLMProcessing) {
             return { stage: 'llm', text: 'Обработка LLM...', icon: '🤖', color: '#a855f7' };
         }
@@ -109,7 +121,7 @@ export const SystemStatus: React.FC = () => {
         }
 
         return { stage: 'recording', text: 'Идёт запись аудио...', icon: '🎙', color: '#ef4444' };
-    }, [hybridTranscription.enabled, isHybridProcessing, isLLMProcessing, lastChunkCreated, lastChunkTranscribed, lastSpeakersUpdate, lastStreamingUpdate, streamingIsConfirmed]);
+    }, [isFinalizing, finalizingMessage, hybridTranscription.enabled, isHybridProcessing, isLLMProcessing, lastChunkCreated, lastChunkTranscribed, lastSpeakersUpdate, lastStreamingUpdate, streamingIsConfirmed]);
 
     return (
         <div

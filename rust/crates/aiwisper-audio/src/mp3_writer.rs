@@ -2,6 +2,11 @@
 //!
 //! Записывает аудио в MP3 файл через FFmpeg процесс.
 //! Стриминговая запись - данные пишутся в stdin FFmpeg.
+//!
+//! # Сегментированная запись
+//! `SegmentedMp3Writer` автоматически разбивает запись на сегменты
+//! по 15 минут для предотвращения переполнения памяти при длительных
+//! записях. При остановке сегменты склеиваются в один файл.
 
 use anyhow::{Context, Result};
 use std::io::Write;
@@ -238,6 +243,312 @@ fn find_ffmpeg() -> Result<PathBuf> {
     Ok(PathBuf::from("ffmpeg"))
 }
 
+/// Сегментированный MP3 writer для длительных записей
+///
+/// Автоматически разбивает запись на сегменты по `segment_duration_secs` секунд.
+/// При остановке склеивает все сегменты в один файл через FFmpeg concat.
+///
+/// # Преимущества:
+/// - Ограниченное потребление памяти при любой длительности записи
+/// - При crash сохраняются предыдущие сегменты
+/// - Быстрая склейка без перекодирования (copy codec)
+pub struct SegmentedMp3Writer {
+    base_dir: PathBuf,
+    sample_rate: u32,
+    channels: u16,
+    bitrate: String,
+
+    /// Текущий активный writer
+    current_writer: Option<Mp3Writer>,
+    /// Индекс текущего сегмента (0, 1, 2, ...)
+    current_segment: usize,
+    /// Семплы записанные в текущий сегмент
+    samples_in_segment: u64,
+
+    /// Длительность сегмента в секундах (по умолчанию 900 = 15 минут)
+    segment_duration_secs: u64,
+    /// Список созданных файлов сегментов
+    segment_files: Vec<PathBuf>,
+    
+    /// Общее количество записанных семплов (для duration_ms)
+    total_samples_written: u64,
+}
+
+impl SegmentedMp3Writer {
+    /// Создать сегментированный writer
+    ///
+    /// # Arguments
+    /// * `base_dir` - Директория сессии (full_000.mp3 будет создан внутри)
+    /// * `sample_rate` - Sample rate в Hz (обычно 24000)
+    /// * `channels` - Количество каналов (1 - mono, 2 - stereo)
+    /// * `bitrate` - Битрейт MP3 ("128k", "192k")
+    /// * `segment_duration_secs` - Длительность одного сегмента в секундах
+    pub fn new(
+        base_dir: impl AsRef<Path>,
+        sample_rate: u32,
+        channels: u16,
+        bitrate: &str,
+        segment_duration_secs: u64,
+    ) -> Result<Self> {
+        let base_dir = base_dir.as_ref().to_path_buf();
+        
+        tracing::info!(
+            "Creating SegmentedMp3Writer: dir={:?}, rate={}, channels={}, segment_duration={}s",
+            base_dir,
+            sample_rate,
+            channels,
+            segment_duration_secs
+        );
+
+        let mut writer = Self {
+            base_dir,
+            sample_rate,
+            channels,
+            bitrate: bitrate.to_string(),
+            current_writer: None,
+            current_segment: 0,
+            samples_in_segment: 0,
+            segment_duration_secs,
+            segment_files: Vec::new(),
+            total_samples_written: 0,
+        };
+
+        // Создаём первый сегмент
+        writer.create_next_segment()?;
+
+        Ok(writer)
+    }
+
+    /// Создать writer с длительностью сегмента 15 минут (900 секунд)
+    pub fn new_default(
+        base_dir: impl AsRef<Path>,
+        sample_rate: u32,
+        channels: u16,
+        bitrate: &str,
+    ) -> Result<Self> {
+        Self::new(base_dir, sample_rate, channels, bitrate, 900)
+    }
+
+    /// Создать новый сегмент
+    fn create_next_segment(&mut self) -> Result<()> {
+        // Закрыть текущий сегмент если есть
+        if let Some(mut writer) = self.current_writer.take() {
+            writer.close()?;
+        }
+
+        // Имя файла: full_000.mp3, full_001.mp3, ...
+        let segment_path = self.base_dir.join(format!("full_{:03}.mp3", self.current_segment));
+        
+        tracing::info!(
+            "Creating segment {}: {:?}",
+            self.current_segment,
+            segment_path
+        );
+
+        let writer = Mp3Writer::new(&segment_path, self.sample_rate, self.channels, &self.bitrate)?;
+        
+        self.segment_files.push(segment_path);
+        self.current_writer = Some(writer);
+        self.samples_in_segment = 0;
+
+        Ok(())
+    }
+
+    /// Проверить нужна ли ротация сегмента
+    fn check_rotation(&mut self) -> Result<()> {
+        let max_samples = self.segment_duration_secs * self.sample_rate as u64;
+        
+        if self.samples_in_segment >= max_samples {
+            tracing::info!(
+                "Segment {} reached {} samples, rotating to next segment",
+                self.current_segment,
+                self.samples_in_segment
+            );
+            
+            self.current_segment += 1;
+            self.create_next_segment()?;
+        }
+
+        Ok(())
+    }
+
+    /// Записать аудио семплы (float32)
+    pub fn write(&mut self, samples: &[f32]) -> Result<()> {
+        if samples.is_empty() {
+            return Ok(());
+        }
+
+        // Проверяем нужна ли ротация
+        self.check_rotation()?;
+
+        // Пишем в текущий сегмент
+        if let Some(ref mut writer) = self.current_writer {
+            writer.write(samples)?;
+            
+            let samples_per_channel = samples.len() as u64 / self.channels as u64;
+            self.samples_in_segment += samples_per_channel;
+            self.total_samples_written += samples_per_channel;
+        }
+
+        Ok(())
+    }
+
+    /// Записать стерео семплы из раздельных каналов
+    pub fn write_stereo(&mut self, mic_samples: &[f32], sys_samples: &[f32]) -> Result<()> {
+        let min_len = mic_samples.len().min(sys_samples.len());
+        if min_len == 0 {
+            return Ok(());
+        }
+
+        // Проверяем нужна ли ротация
+        self.check_rotation()?;
+
+        // Пишем в текущий сегмент
+        if let Some(ref mut writer) = self.current_writer {
+            writer.write_stereo(mic_samples, sys_samples)?;
+            
+            self.samples_in_segment += min_len as u64;
+            self.total_samples_written += min_len as u64;
+        }
+
+        Ok(())
+    }
+
+    /// Получить общую длительность в миллисекундах
+    pub fn duration_ms(&self) -> u64 {
+        self.total_samples_written * 1000 / self.sample_rate as u64
+    }
+
+    /// Получить количество созданных сегментов
+    pub fn segment_count(&self) -> usize {
+        self.segment_files.len()
+    }
+
+    /// Закрыть текущий сегмент
+    pub fn close(&mut self) -> Result<()> {
+        if let Some(mut writer) = self.current_writer.take() {
+            writer.close()?;
+        }
+
+        tracing::info!(
+            "SegmentedMp3Writer closed: {} segments, {} ms total",
+            self.segment_files.len(),
+            self.duration_ms()
+        );
+
+        Ok(())
+    }
+
+    /// Склеить все сегменты в один файл full.mp3
+    ///
+    /// Использует FFmpeg concat demuxer для быстрой склейки без перекодирования.
+    /// После успешной склейки удаляет временные файлы сегментов.
+    pub fn concatenate(&mut self) -> Result<PathBuf> {
+        // Закрываем текущий сегмент
+        self.close()?;
+
+        let final_path = self.base_dir.join("full.mp3");
+
+        if self.segment_files.is_empty() {
+            return Err(anyhow::anyhow!("No segments to concatenate"));
+        }
+
+        // Один сегмент - просто переименовать
+        if self.segment_files.len() == 1 {
+            let first = &self.segment_files[0];
+            std::fs::rename(first, &final_path)
+                .with_context(|| format!("Failed to rename {:?} to {:?}", first, final_path))?;
+            
+            tracing::info!(
+                "Single segment renamed to {:?}",
+                final_path
+            );
+            
+            self.segment_files.clear();
+            return Ok(final_path);
+        }
+
+        // Несколько сегментов - используем FFmpeg concat
+        tracing::info!(
+            "Concatenating {} segments into {:?}",
+            self.segment_files.len(),
+            final_path
+        );
+
+        // Создаём concat list file
+        let list_path = self.base_dir.join("concat_list.txt");
+        let mut list_content = String::new();
+        for segment in &self.segment_files {
+            // FFmpeg требует относительные или абсолютные пути
+            // Используем абсолютные для надёжности
+            let abs_path = segment.canonicalize()
+                .unwrap_or_else(|_| segment.clone());
+            list_content.push_str(&format!("file '{}'\n", abs_path.display()));
+        }
+        std::fs::write(&list_path, &list_content)
+            .context("Failed to write concat list")?;
+
+        // Запускаем FFmpeg concat
+        let ffmpeg = find_ffmpeg()?;
+        
+        let output = Command::new(&ffmpeg)
+            .args([
+                "-y",           // Overwrite output
+                "-f", "concat", // Concat demuxer
+                "-safe", "0",   // Allow absolute paths
+                "-i",
+            ])
+            .arg(&list_path)
+            .args([
+                "-c", "copy",   // Copy без перекодирования (быстро!)
+            ])
+            .arg(&final_path)
+            .output()
+            .context("Failed to run FFmpeg concat")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::error!("FFmpeg concat failed: {}", stderr);
+            return Err(anyhow::anyhow!("FFmpeg concat failed: {}", stderr));
+        }
+
+        tracing::info!(
+            "Successfully concatenated {} segments into {:?}",
+            self.segment_files.len(),
+            final_path
+        );
+
+        // Удаляем временные файлы
+        if let Err(e) = std::fs::remove_file(&list_path) {
+            tracing::warn!("Failed to remove concat list: {}", e);
+        }
+        
+        for segment in &self.segment_files {
+            if let Err(e) = std::fs::remove_file(segment) {
+                tracing::warn!("Failed to remove segment {:?}: {}", segment, e);
+            }
+        }
+        
+        self.segment_files.clear();
+
+        Ok(final_path)
+    }
+
+    /// Получить путь к финальному файлу (full.mp3)
+    pub fn final_path(&self) -> PathBuf {
+        self.base_dir.join("full.mp3")
+    }
+}
+
+impl Drop for SegmentedMp3Writer {
+    fn drop(&mut self) {
+        // Пытаемся закрыть текущий writer
+        if let Some(mut writer) = self.current_writer.take() {
+            let _ = writer.close();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +558,20 @@ mod tests {
     fn test_find_ffmpeg() {
         // Should not panic
         let _ = find_ffmpeg();
+    }
+
+    #[test]
+    fn test_segmented_writer_creation() {
+        let dir = tempdir().unwrap();
+        let writer = SegmentedMp3Writer::new_default(
+            dir.path(),
+            24000,
+            2,
+            "128k"
+        );
+        // Может не работать без FFmpeg, но не должен паниковать
+        if writer.is_ok() {
+            assert_eq!(writer.unwrap().segment_count(), 1);
+        }
     }
 }

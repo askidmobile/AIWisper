@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { flushSync } from 'react-dom';
 
+export type PlaybackType = 'full' | 'chunk';
+
 export const useAudioPlayer = () => {
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const [playingUrl, setPlayingUrl] = useState<string | null>(null);
@@ -8,6 +10,10 @@ export const useAudioPlayer = () => {
 
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
+    
+    // Track playback type and offset for waveform sync
+    const [playbackType, setPlaybackType] = useState<PlaybackType>('full');
+    const [playbackOffset, setPlaybackOffset] = useState(0); // offset in seconds from session start
     
     // VU meter levels (0-100)
     const [micLevel, setMicLevel] = useState(0);
@@ -170,8 +176,8 @@ export const useAudioPlayer = () => {
         playbackRafRef.current = requestAnimationFrame(analyzeAudio);
     }, [resetLevels]);
 
-    // Play function with Web Audio API setup
-    const play = useCallback((url: string) => {
+    // Internal play function
+    const playInternal = useCallback((url: string, type: PlaybackType, offsetMs: number) => {
         const audioEl = audioRef.current;
         if (!audioEl) return;
 
@@ -187,6 +193,8 @@ export const useAudioPlayer = () => {
             audioEl.currentTime = 0;
             setPlayingUrl(null);
             setCurrentTime(0);
+            setPlaybackType('full');
+            setPlaybackOffset(0);
             lastPlaybackTimeRef.current = 0;
             resetLevels();
             return;
@@ -194,6 +202,8 @@ export const useAudioPlayer = () => {
 
         audioEl.src = url;
         setCurrentTime(0);
+        setPlaybackType(type);
+        setPlaybackOffset(offsetMs / 1000); // Convert ms to seconds
         lastPlaybackTimeRef.current = 0;
 
         // Setup Web Audio API graph (only once)
@@ -208,8 +218,20 @@ export const useAudioPlayer = () => {
                 console.error('Failed to play audio:', err);
                 resetLevels();
                 setPlayingUrl(null);
+                setPlaybackType('full');
+                setPlaybackOffset(0);
             });
     }, [playingUrl, setupAudioGraph, analyzeAudio, resetLevels]);
+    
+    // Play function for full session (backward compatible)
+    const play = useCallback((url: string) => {
+        playInternal(url, 'full', 0);
+    }, [playInternal]);
+    
+    // Play function for chunk with offset
+    const playChunk = useCallback((url: string, startMs: number) => {
+        playInternal(url, 'chunk', startMs);
+    }, [playInternal]);
 
     // Pause function
     const pause = useCallback(() => {
@@ -225,6 +247,8 @@ export const useAudioPlayer = () => {
             audioRef.current.currentTime = 0;
             setPlayingUrl(null);
             setIsCurrentlyPlaying(false);
+            setPlaybackType('full');
+            setPlaybackOffset(0);
             resetLevels();
         }
     }, [resetLevels]);
@@ -240,6 +264,7 @@ export const useAudioPlayer = () => {
 
     return { 
         play, 
+        playChunk,
         pause,
         stop, 
         seek, 
@@ -248,6 +273,10 @@ export const useAudioPlayer = () => {
         playingUrl, 
         currentTime, 
         duration,
+        // Playback type and offset for waveform sync
+        playbackType,
+        playbackOffset,
+        isPlayingFullSession: playbackType === 'full',
         // VU meter levels from Web Audio API
         micLevel,
         sysLevel,

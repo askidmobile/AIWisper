@@ -21,7 +21,7 @@ pub mod system_audio;
 pub use capture::list_input_devices;
 pub use capture::AudioCapture;
 pub use chunk_buffer::{ChunkBuffer, ChunkEvent, VadConfig, VadMode};
-pub use mp3_writer::Mp3Writer;
+pub use mp3_writer::{Mp3Writer, SegmentedMp3Writer};
 pub use system_audio::{
     create_capture as create_system_capture, get_best_method as get_best_system_capture_method,
     is_available as is_system_capture_available, AudioChannel, ChannelData, SystemAudioCapture,

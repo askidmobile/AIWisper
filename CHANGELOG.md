@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.17] - 2025-12-26
+
+### Added
+- **GPU Diagnostics Command**: Новая команда `get_gpu_status` для диагностики GPU
+  - Показывает доступность Metal, CoreML, CUDA
+  - Автоматический вывод статуса GPU при старте приложения
+  - Полезно для отладки проблем с ускорением
+
+### Changed
+- **CoreML для Silero VAD**: Добавлена поддержка CoreML ускорения для Voice Activity Detection
+  - Автоматически использует Apple Neural Engine на Apple Silicon
+  - Fallback на CPU если CoreML недоступен
+  - Улучшенное логирование статуса CoreML
+
+- **GigaAM INT8 оптимизация**: INT8 квантизированные модели теперь используют CPU вместо CoreML
+  - CPU быстрее CoreML для квантизированных INT8 моделей
+  - Автоматическое определение INT8 по имени файла модели
+  - Улучшенное логирование типа модели и бэкенда
+
+### Technical
+- `rust/crates/aiwisper-ml/src/vad.rs`: Добавлен CoreML backend для Silero VAD
+- `rust/crates/aiwisper-ml/src/gigaam.rs`: INT8 модели используют CPU для лучшей производительности
+- `rust/src-tauri/src/commands/system.rs`: Новый файл с GPU диагностикой
+- `rust/src-tauri/src/lib.rs`: Регистрация команды и логирование GPU при старте
+- `scripts/build-tauri.sh`: Добавлено логирование GPU ускорения при сборке
+
 ## [2.0.16] - 2025-12-25
 
 ### Fixed

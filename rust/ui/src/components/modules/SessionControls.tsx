@@ -12,6 +12,7 @@ interface SessionControlsProps {
     session: Session;
     isPlaying: boolean;
     isPlayingFullSession?: boolean; // true если воспроизводится full.mp3, false если чанк
+    playbackOffset?: number; // offset in seconds for chunk playback (to sync with waveform)
     onPlayPause: () => void;
     onSeek: (time: number) => void;
     currentTime: number;
@@ -28,6 +29,7 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
     session,
     isPlaying,
     isPlayingFullSession = false,
+    playbackOffset = 0,
     onPlayPause,
     onSeek,
     currentTime,
@@ -447,9 +449,10 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                 style={{
                     display: 'flex',
                     alignItems: 'center',
-                    justifyContent: 'center',
                     gap: '0.75rem',
                     marginBottom: '1rem',
+                    flexWrap: 'nowrap',
+                    minWidth: 0,
                 }}
             >
                 {/* -10 sec */}
@@ -615,7 +618,7 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                 </div>
 
                 {/* Action Buttons */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: 'auto' }}>
+                <div className="action-buttons-container">
                     {/* Retranscribe Button */}
                     <button
                         className="btn-capsule btn-capsule-responsive"
@@ -1023,7 +1026,7 @@ export const SessionControls: React.FC<SessionControlsProps> = ({
                     /* Detailed Waveform View (Mic/Sys) */
                     <WaveformDisplay
                         currentTime={currentTime}
-                        playbackOffset={0}
+                        playbackOffset={playbackOffset}
                         totalDuration={waveformData?.duration || displayDuration}
                         isPlaying={isPlaying}
                         waveformData={waveformData}

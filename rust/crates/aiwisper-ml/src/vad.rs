@@ -1,10 +1,12 @@
 //! Voice Activity Detection using Silero VAD
 //!
 //! Silero VAD is a lightweight ONNX model for speech detection.
+//! Supports CoreML acceleration on macOS Apple Silicon.
 //! Reference: https://github.com/snakers4/silero-vad
 
 use crate::traits::VadEngine;
 use anyhow::{Context, Result};
+use ort::execution_providers::CoreMLExecutionProvider;
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use std::sync::Mutex;
 
@@ -60,10 +62,13 @@ pub struct SileroVad {
     state: Mutex<Vec<f32>>,
     /// Context - last N samples from previous chunk
     context: Mutex<Vec<f32>>,
+    /// Whether CoreML acceleration is enabled
+    use_coreml: bool,
 }
 
 impl SileroVad {
     /// Create new Silero VAD engine
+    /// Automatically enables CoreML on Apple Silicon
     pub fn new(config: SileroVadConfig) -> Result<Self> {
         tracing::info!("Loading Silero VAD model from: {}", config.model_path);
 
@@ -75,12 +80,44 @@ impl SileroVad {
             );
         }
 
-        // Create ONNX session
-        let session = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(2)?
-            .commit_from_file(&config.model_path)
-            .context("Failed to load Silero VAD model")?;
+        // Detect if we're on Apple Silicon for CoreML support
+        let is_apple_silicon = cfg!(target_os = "macos") && cfg!(target_arch = "aarch64");
+
+        // Create ONNX session with CoreML if available
+        let (session, use_coreml) = if is_apple_silicon {
+            tracing::info!("VAD: Attempting CoreML acceleration (Apple Silicon)");
+
+            match Session::builder()?
+                .with_execution_providers([CoreMLExecutionProvider::default()
+                    .with_subgraphs(true)
+                    .build()])?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(2)?
+                .commit_from_file(&config.model_path)
+            {
+                Ok(session) => {
+                    tracing::info!("VAD: CoreML acceleration enabled");
+                    (session, true)
+                }
+                Err(e) => {
+                    tracing::warn!("VAD: CoreML failed ({}), falling back to CPU", e);
+                    let session = Session::builder()?
+                        .with_optimization_level(GraphOptimizationLevel::Level3)?
+                        .with_intra_threads(2)?
+                        .commit_from_file(&config.model_path)
+                        .context("Failed to load Silero VAD model")?;
+                    (session, false)
+                }
+            }
+        } else {
+            tracing::info!("VAD: Using CPU inference");
+            let session = Session::builder()?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(2)?
+                .commit_from_file(&config.model_path)
+                .context("Failed to load Silero VAD model")?;
+            (session, false)
+        };
 
         // Context size: 64 for 16kHz, 32 for 8kHz
         let context_size = if config.sample_rate == 16000 { 64 } else { 32 };
@@ -89,9 +126,10 @@ impl SileroVad {
         let state_size = 2 * 1 * 128;
 
         tracing::info!(
-            "Silero VAD initialized: sample_rate={}, threshold={:.2}",
+            "Silero VAD initialized: sample_rate={}, threshold={:.2}, coreml={}",
             config.sample_rate,
-            config.threshold
+            config.threshold,
+            use_coreml
         );
 
         Ok(Self {
@@ -99,7 +137,13 @@ impl SileroVad {
             config,
             state: Mutex::new(vec![0.0; state_size]),
             context: Mutex::new(vec![0.0; context_size]),
+            use_coreml,
         })
+    }
+
+    /// Check if CoreML acceleration is enabled
+    pub fn is_coreml_enabled(&self) -> bool {
+        self.use_coreml
     }
 
     /// Reset LSTM state and context

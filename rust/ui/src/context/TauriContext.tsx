@@ -84,6 +84,7 @@ const EVENT_TO_MESSAGE: Record<string, string> = {
     'session-stopped': 'session_stopped',
     'session_started': 'session_started',
     'session_stopped': 'session_stopped',
+    'session_finalizing': 'session_finalizing',
 
     // ✅ События списка/завершения записи в Tauri
     // (backend эмитит их напрямую, без invoke)
