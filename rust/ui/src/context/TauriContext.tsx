@@ -408,7 +408,7 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
     }, [notify]);
 
-        // Setup Tauri event listeners
+    // Setup Tauri event listeners
     useEffect(() => {
         if (!isTauri()) {
             console.log('[Tauri] Not running in Tauri environment');
@@ -419,80 +419,98 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         setIsConnected(true);
 
         let cancelled = false;
+        // Track listeners created in THIS effect invocation only
+        const localUnlisteners: UnlistenFn[] = [];
 
         // Listen to all Tauri events and forward to handlers
         const setupListeners = async () => {
-            // На всякий случай чистим старые unlisten (React 18 StrictMode может вызывать эффект дважды в dev)
-            unlistenersRef.current.forEach(unlisten => {
-                try {
-                    unlisten();
-                } catch (e) {
-                    // Ignore - can happen during race conditions in Strict Mode
-                }
-            });
-            unlistenersRef.current = [];
-
             console.log('[Tauri] Setting up listeners for events:', Object.keys(EVENT_TO_MESSAGE));
+            
             for (const [tauriEvent, wsType] of Object.entries(EVENT_TO_MESSAGE)) {
-                const unlisten = await listen(tauriEvent, (event) => {
-                    // Skip logging for high-frequency events
-                    if (tauriEvent !== 'audio_level' && tauriEvent !== 'audio-level') {
-                        console.log(`[Tauri] ✅ Event received: ${tauriEvent} -> ${wsType}`, event.payload);
-                    }
+                // Check if cancelled BEFORE starting async operation
+                if (cancelled) {
+                    console.log('[Tauri] Setup cancelled, stopping listener registration');
+                    return;
+                }
+                
+                try {
+                    const unlisten = await listen(tauriEvent, (event) => {
+                        // Skip logging for high-frequency events
+                        if (tauriEvent !== 'audio_level' && tauriEvent !== 'audio-level') {
+                            console.log(`[Tauri] ✅ Event received: ${tauriEvent} -> ${wsType}`, event.payload);
+                        }
 
-                    // Унифицируем payload для sessions_list
-                    // Backend может эмитить либо {sessions: [...]}, либо голый массив
-                    if (wsType === 'sessions_list' && Array.isArray(event.payload)) {
-                        notify(wsType, { sessions: event.payload });
+                        // Унифицируем payload для sessions_list
+                        // Backend может эмитить либо {sessions: [...]}, либо голый массив
+                        if (wsType === 'sessions_list' && Array.isArray(event.payload)) {
+                            notify(wsType, { sessions: event.payload });
+                            return;
+                        }
+
+                        notify(wsType, event.payload);
+                    });
+
+                    // Check if cancelled AFTER async operation completes
+                    if (cancelled) {
+                        // Cleanup this listener immediately since effect was unmounted
+                        try { unlisten(); } catch { /* ignore */ }
                         return;
                     }
 
-                    notify(wsType, event.payload);
+                    localUnlisteners.push(unlisten);
+                } catch (e) {
+                    console.warn(`[Tauri] Failed to setup listener for ${tauriEvent}:`, e);
+                }
+            }
+
+            if (cancelled) return;
+
+            // Also listen for generic events
+            try {
+                const unlistenGeneric = await listen('message', (event) => {
+                    const payload = event.payload as any;
+                    if (payload?.type) {
+                        notify(payload.type, payload);
+                    }
                 });
 
-                // Если эффект уже размонтирован (StrictMode), сразу снимаем подписку
                 if (cancelled) {
-                    unlisten();
-                    continue;
+                    try { unlistenGeneric(); } catch { /* ignore */ }
+                    return;
                 }
 
-                unlistenersRef.current.push(unlisten);
+                localUnlisteners.push(unlistenGeneric);
+            } catch (e) {
+                console.warn('[Tauri] Failed to setup generic message listener:', e);
             }
 
             if (!cancelled) {
-                console.log('[Tauri] All listeners set up, total:', unlistenersRef.current.length);
+                console.log('[Tauri] All listeners set up, total:', localUnlisteners.length);
+                // Only update ref after all listeners are successfully set up
+                unlistenersRef.current = localUnlisteners;
             }
-
-            // Also listen for generic events
-            const unlistenGeneric = await listen('message', (event) => {
-                const payload = event.payload as any;
-                if (payload?.type) {
-                    notify(payload.type, payload);
-                }
-            });
-
-            if (cancelled) {
-                unlistenGeneric();
-                return;
-            }
-
-            unlistenersRef.current.push(unlistenGeneric);
         };
 
         setupListeners();
 
         return () => {
             cancelled = true;
-            // Cleanup listeners - wrap in try-catch to handle race conditions
-            // in React Strict Mode where Tauri's internal listener state may be inconsistent
-            unlistenersRef.current.forEach(unlisten => {
-                try {
-                    unlisten();
-                } catch (e) {
-                    // Ignore errors during cleanup - can happen in Strict Mode
-                    // when listeners are cleaned up before they're fully registered
-                }
-            });
+            console.log('[Tauri] Cleaning up event listeners, count:', localUnlisteners.length);
+            
+            // Cleanup listeners created in this effect invocation
+            // Use setTimeout to ensure Tauri's internal state is consistent
+            setTimeout(() => {
+                localUnlisteners.forEach(unlisten => {
+                    try {
+                        unlisten();
+                    } catch (e) {
+                        // Ignore errors during cleanup - can happen in Strict Mode
+                        // when Tauri's internal listener registry is in inconsistent state
+                    }
+                });
+            }, 0);
+            
+            // Clear the ref
             unlistenersRef.current = [];
         };
     }, [notify]);
