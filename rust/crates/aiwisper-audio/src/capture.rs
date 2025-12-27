@@ -7,8 +7,9 @@
 use aiwisper_types::AudioDevice;
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Максимальная длительность буфера в секундах (sliding window)
 /// 30 секунд достаточно для:
@@ -122,7 +123,8 @@ impl AudioCapture {
                     .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
                     .collect();
 
-                if let Ok(mut buf) = buffer.lock() {
+                {
+                    let mut buf = buffer.lock();
                     buf.extend_from_slice(&mono);
                     
                     // Sliding window: удаляем старые семплы если буфер переполнен
@@ -162,18 +164,18 @@ impl AudioCapture {
     pub fn stop(&mut self) -> Vec<f32> {
         self.stream = None;
 
-        let mut buffer = self.buffer.lock().unwrap();
+        let mut buffer = self.buffer.lock();
         std::mem::take(&mut *buffer)
     }
 
     /// Get current buffer without stopping
     pub fn get_samples(&self) -> Vec<f32> {
-        self.buffer.lock().unwrap().clone()
+        self.buffer.lock().clone()
     }
 
     /// Clear the buffer
     pub fn clear(&self) {
-        self.buffer.lock().unwrap().clear();
+        self.buffer.lock().clear();
     }
 
     /// Get sample rate
@@ -191,7 +193,7 @@ impl AudioCapture {
 
     /// Получить текущий размер буфера в семплах
     pub fn buffer_len(&self) -> usize {
-        self.buffer.lock().map(|b| b.len()).unwrap_or(0)
+        self.buffer.lock().len()
     }
 }
 

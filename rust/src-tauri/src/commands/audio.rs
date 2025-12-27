@@ -117,3 +117,22 @@ pub async fn get_channel_mute(
         .get_channel_mute(&channel)
         .map_err(|e| e.to_string())
 }
+
+/// Import an audio file (MP3/WAV/M4A/OGG/FLAC) and create a new session
+/// 
+/// Returns the created session. Transcription is not performed during import -
+/// use retranscribe_full after import to transcribe the audio.
+#[tauri::command]
+pub async fn import_audio(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    language: Option<String>,
+) -> Result<crate::commands::session::Session, String> {
+    tracing::info!("Import audio command: path={}, language={:?}", path, language);
+    
+    state
+        .import_audio(&path, language, app_handle)
+        .await
+        .map_err(|e| e.to_string())
+}

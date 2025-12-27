@@ -9,7 +9,8 @@ use aiwisper_types::{TranscriptSegment, TranscriptWord, TranscriptionResult};
 use anyhow::{Context, Result};
 use ort::execution_providers::CoreMLExecutionProvider;
 use ort::session::{builder::GraphOptimizationLevel, Session};
-use std::sync::Mutex;
+use parking_lot::Mutex;
+use realfft::RealFftPlanner;
 use std::time::Instant;
 
 /// GigaAM constants
@@ -105,7 +106,7 @@ impl TranscriptionEngine for GigaAMEngine {
         );
         
         let logits = {
-            let mut session_guard = self.session.lock().unwrap();
+            let mut session_guard = self.session.lock();
             
             // Try CTC input names first (most common for e2e-ctc models)
             let outputs = session_guard.run(ort::inputs![
@@ -728,6 +729,8 @@ pub struct MelProcessor {
     config: MelConfig,
     mel_filterbank: Vec<Vec<f32>>,
     window: Vec<f32>,
+    /// FFT planner (cached for reuse)
+    fft: std::sync::Arc<dyn realfft::RealToComplex<f32>>,
 }
 
 impl MelProcessor {
@@ -745,18 +748,26 @@ impl MelProcessor {
         // Create mel filterbank
         let mel_filterbank = create_mel_filterbank(config.sample_rate, config.n_fft, config.n_mels);
 
+        // Create FFT planner (O(n log n) instead of O(n²) DFT)
+        let mut planner = RealFftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(config.n_fft);
+
         Self {
             config,
             mel_filterbank,
             window,
+            fft,
         }
     }
 
-    /// Compute log-mel spectrogram
+    /// Compute log-mel spectrogram using FFT (O(n log n))
     pub fn compute(&self, samples: &[f32]) -> (Vec<Vec<f32>>, usize) {
+        use realfft::num_complex::Complex;
+
         let n_fft = self.config.n_fft;
         let hop_length = self.config.hop_length;
         let win_length = self.config.win_length;
+        let n_bins = n_fft / 2 + 1;
 
         // Pad signal if center=true
         let padded: Vec<f32> = if self.config.center {
@@ -770,7 +781,14 @@ impl MelProcessor {
         };
 
         // Calculate number of frames
-        let num_frames = (padded.len() - win_length) / hop_length + 1;
+        let num_frames = (padded.len().saturating_sub(win_length)) / hop_length + 1;
+        if num_frames == 0 {
+            return (vec![], 0);
+        }
+
+        // Pre-allocate buffers for FFT
+        let mut input_buffer = vec![0.0f32; n_fft];
+        let mut output_buffer = vec![Complex::new(0.0f32, 0.0); n_bins];
 
         // Compute STFT and mel spectrogram
         let mut mel_spec: Vec<Vec<f32>> = Vec::with_capacity(num_frames);
@@ -783,26 +801,27 @@ impl MelProcessor {
                 break;
             }
 
-            // Apply window and compute FFT
-            let mut windowed: Vec<f32> = padded[start..end]
-                .iter()
-                .zip(self.window.iter())
-                .map(|(s, w)| s * w)
-                .collect();
+            // Apply window and zero-pad to n_fft
+            input_buffer.fill(0.0);
+            for (i, (&sample, &window)) in padded[start..end].iter().zip(self.window.iter()).enumerate() {
+                input_buffer[i] = sample * window;
+            }
 
-            // Zero-pad to n_fft
-            windowed.resize(n_fft, 0.0);
+            // Compute FFT (O(n log n) instead of O(n²) DFT)
+            self.fft
+                .process(&mut input_buffer, &mut output_buffer)
+                .expect("FFT failed");
 
-            // Compute power spectrum using real FFT
-            let power_spec = compute_power_spectrum(&windowed);
-
-            // Apply mel filterbank
+            // Compute power spectrum: |X[k]|² = Re² + Im²
+            // Apply mel filterbank directly without intermediate allocation
             let mut mel_frame = vec![0.0f32; self.config.n_mels];
             for (m, filter) in self.mel_filterbank.iter().enumerate() {
-                let mut sum = 0.0;
-                for (f, &weight) in filter.iter().enumerate() {
-                    if f < power_spec.len() {
-                        sum += power_spec[f] * weight;
+                let mut sum = 0.0f32;
+                for (k, &weight) in filter.iter().enumerate() {
+                    if k < output_buffer.len() {
+                        let c = output_buffer[k];
+                        let power = c.re * c.re + c.im * c.im;
+                        sum += power * weight;
                     }
                 }
                 // Log mel with floor to avoid log(0)
@@ -815,31 +834,6 @@ impl MelProcessor {
         let num_frames = mel_spec.len();
         (mel_spec, num_frames)
     }
-}
-
-/// Compute power spectrum from windowed samples
-fn compute_power_spectrum(samples: &[f32]) -> Vec<f32> {
-    let n = samples.len();
-    let n_fft = n / 2 + 1;
-
-    // Simple DFT implementation (for correctness)
-    // In production, use rustfft for performance
-    let mut power = vec![0.0f32; n_fft];
-
-    for k in 0..n_fft {
-        let mut real = 0.0f32;
-        let mut imag = 0.0f32;
-
-        for (t, &sample) in samples.iter().enumerate() {
-            let angle = -2.0 * std::f32::consts::PI * (k * t) as f32 / n as f32;
-            real += sample * angle.cos();
-            imag += sample * angle.sin();
-        }
-
-        power[k] = real * real + imag * imag;
-    }
-
-    power
 }
 
 /// Create mel filterbank (compatible with torchaudio/librosa)

@@ -140,7 +140,7 @@ const AutoScrollButton: React.FC<AutoScrollButtonProps> = ({ enabled, onToggle }
 );
 
 /**
- * Элемент диалога
+ * Элемент диалога (мемоизирован для производительности при больших списках)
  */
 interface DialogueItemProps {
     segment: TranscriptSegment;
@@ -151,7 +151,7 @@ interface DialogueItemProps {
     setRef: (el: HTMLDivElement | null) => void;
 }
 
-const DialogueItem: React.FC<DialogueItemProps> = ({
+const DialogueItem: React.FC<DialogueItemProps> = React.memo(({
     segment,
     isCurrent,
     speakerInfo,
@@ -218,7 +218,16 @@ const DialogueItem: React.FC<DialogueItemProps> = ({
             </span>
         </div>
     );
-};
+}, (prevProps, nextProps) => {
+    // Кастомная функция сравнения для оптимизации
+    return (
+        prevProps.isCurrent === nextProps.isCurrent &&
+        prevProps.segment.text === nextProps.segment.text &&
+        prevProps.segment.start === nextProps.segment.start &&
+        prevProps.speakerInfo.name === nextProps.speakerInfo.name &&
+        prevProps.speakerInfo.color === nextProps.speakerInfo.color
+    );
+});
 
 /**
  * Форматирование таймстампа MM:SS.d

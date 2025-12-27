@@ -81,7 +81,7 @@ impl FluidASREngine {
     /// Создать новый FluidASR engine
     pub fn new() -> Result<Self> {
         let binary_path = Self::find_binary_path()
-            .context("transcription-fluid binary not found. Build it with: cd backend/audio/transcription && swift build -c release")?;
+            .context("transcription-fluid binary not found. Build it with: cd swift/transcription && swift build -c release")?;
 
         tracing::info!("FluidASREngine: using binary at {:?}", binary_path);
 
@@ -145,17 +145,18 @@ impl FluidASREngine {
             exe_dir.join("transcription-fluid"),
             // rust/src-tauri/resources для разработки
             PathBuf::from("rust/src-tauri/resources/transcription-fluid"),
-            // Development paths - Swift build directory
-            PathBuf::from("backend/audio/transcription/.build/release/transcription-fluid"),
-            PathBuf::from("../backend/audio/transcription/.build/release/transcription-fluid"),
-            PathBuf::from("../../backend/audio/transcription/.build/release/transcription-fluid"),
+            // Development paths - new swift/ location
+            PathBuf::from("swift/transcription/.build/release/transcription-fluid"),
+            PathBuf::from("../swift/transcription/.build/release/transcription-fluid"),
             // Абсолютный путь для разработки (fallback)
             PathBuf::from(
-                "/Users/askid/Projects/AIWisper/backend/audio/transcription/.build/release/transcription-fluid",
+                "/Users/askid/Projects/AIWisper/swift/transcription/.build/release/transcription-fluid",
             ),
             PathBuf::from(
                 "/Users/askid/Projects/AIWisper/rust/src-tauri/resources/transcription-fluid",
             ),
+            // Legacy paths (backward compatibility during migration)
+            PathBuf::from("backend/audio/transcription/.build/release/transcription-fluid"),
         ];
 
         for path in &candidates {

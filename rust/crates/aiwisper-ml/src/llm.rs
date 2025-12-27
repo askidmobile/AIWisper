@@ -75,8 +75,10 @@ struct OllamaResponse {
 #[derive(Deserialize)]
 struct OllamaResponseMessage {
     content: String,
-    /// Some models (like Qwen3) return thinking process in a separate field
+    /// Some models (like Qwen3) return thinking process in a separate field.
+    /// Field is needed for deserialization but not used directly.
     #[serde(default)]
+    #[allow(dead_code)]
     thinking: Option<String>,
 }
 

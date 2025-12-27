@@ -60,6 +60,7 @@ pub fn run() {
             commands::audio::request_microphone_access,
             commands::audio::set_channel_mute,
             commands::audio::get_channel_mute,
+            commands::audio::import_audio,
             // Transcription
             commands::transcription::transcribe_file,
             commands::transcription::get_transcript_stream,
@@ -92,12 +93,17 @@ pub fn run() {
             commands::session::export_session,
             commands::session::get_session_speakers,
             commands::session::generate_summary,
+            commands::session::rename_session_speaker,
+            commands::session::merge_session_speakers,
+            commands::session::search_sessions,
             // Voiceprints
             commands::voiceprints::list_voiceprints,
             commands::voiceprints::create_voiceprint,
             commands::voiceprints::rename_voiceprint,
             commands::voiceprints::delete_voiceprint,
             commands::voiceprints::get_speaker_sample,
+            commands::voiceprints::match_voiceprint,
+            commands::voiceprints::match_voiceprint_with_update,
             // Diarization
             commands::diarization::enable_diarization,
             commands::diarization::disable_diarization,

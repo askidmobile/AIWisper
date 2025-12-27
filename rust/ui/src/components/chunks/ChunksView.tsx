@@ -65,7 +65,7 @@ export const ChunksView: React.FC<ChunksViewProps> = ({
 };
 
 /**
- * Элемент чанка
+ * Элемент чанка (мемоизирован для производительности)
  */
 interface ChunkItemProps {
     chunk: Chunk;
@@ -77,7 +77,7 @@ interface ChunkItemProps {
     getSpeakerDisplayName: (speaker?: string) => SpeakerInfo;
 }
 
-const ChunkItem: React.FC<ChunkItemProps> = ({
+const ChunkItem: React.FC<ChunkItemProps> = React.memo(({
     chunk,
     isPlaying,
     isHighlighted,
@@ -202,7 +202,17 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
             )}
         </div>
     );
-};
+}, (prevProps, nextProps) => {
+    // Кастомная функция сравнения для оптимизации
+    return (
+        prevProps.chunk.id === nextProps.chunk.id &&
+        prevProps.chunk.status === nextProps.chunk.status &&
+        prevProps.chunk.transcription === nextProps.chunk.transcription &&
+        prevProps.isPlaying === nextProps.isPlaying &&
+        prevProps.isHighlighted === nextProps.isHighlighted &&
+        prevProps.isTranscribing === nextProps.isTranscribing
+    );
+});
 
 /**
  * Контент чанка (диалог или текст)

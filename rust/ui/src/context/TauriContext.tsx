@@ -70,6 +70,12 @@ const MESSAGE_TO_COMMAND: Record<string, string> = {
     'generate_summary': 'generate_summary',
     // Cancel
     'cancel_full_transcription': 'cancel_full_transcription',
+    // Search & Import
+    'search_sessions': 'search_sessions',
+    'import_audio': 'import_audio',
+    // Speaker management
+    'rename_session_speaker': 'rename_session_speaker',
+    'merge_session_speakers': 'merge_session_speakers',
 };
 
 /**
@@ -290,6 +296,26 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         muted: msg.muted,
                     };
                     break;
+                case 'search_sessions':
+                    args = { query: msg.query || '' };
+                    break;
+                case 'import_audio':
+                    args = { path: msg.path, language: msg.language || null };
+                    break;
+                case 'rename_session_speaker':
+                    args = {
+                        sessionId: msg.sessionId,
+                        speakerId: msg.speakerId,
+                        newName: msg.newName,
+                    };
+                    break;
+                case 'merge_session_speakers':
+                    args = {
+                        sessionId: msg.sessionId,
+                        sourceSpeakerId: msg.sourceSpeakerId,
+                        targetSpeakerId: msg.targetSpeakerId,
+                    };
+                    break;
             }
 
             console.log(`[Tauri] Invoking command: ${command}`, args);
@@ -399,6 +425,24 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                             sessionId: msg.sessionId, 
                             summary: result || '' 
                         });
+                    }
+                    break;
+                case 'search_sessions':
+                    notify('sessions_list', { sessions: result || [] });
+                    break;
+                case 'import_audio':
+                    // Result is the imported session
+                    if (result) {
+                        notify('session_imported', { session: result });
+                        // Also refresh session list
+                        sendMessage({ type: 'get_sessions' });
+                    }
+                    break;
+                case 'rename_session_speaker':
+                case 'merge_session_speakers':
+                    // Refresh session data
+                    if (msg.sessionId) {
+                        sendMessage({ type: 'get_session', sessionId: msg.sessionId });
                     }
                     break;
             }

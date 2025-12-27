@@ -10,7 +10,7 @@ pub mod recording;
 
 #[allow(unused_imports)]
 use aiwisper_audio::{are_channels_similar, is_silent, AudioCapture};
-use aiwisper_ml::TranscriptionEngine;
+use aiwisper_ml::{TranscriptionEngine, VoicePrintMatcher};
 use aiwisper_types::{
     AudioDevice, ModelInfo, RecordingState, Settings, TranscriptSegment, TranscriptionResult,
 };
@@ -149,12 +149,20 @@ fn save_settings_to_disk(settings: &Settings) -> anyhow::Result<()> {
 // Structures for parsing Go backend's meta.json format
 // ============================================================================
 
+/// Current session format version
+/// v1: Go backend format (no version field)
+/// v2: Rust backend format (with version field, normalized fields)
+const CURRENT_SESSION_VERSION: u32 = 2;
+
 /// Go backend session metadata (from meta.json)
 /// Fields are needed for JSON deserialization even if not all are used
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct GoSessionMeta {
+    /// Format version (v1 = Go, v2 = Rust)
+    #[serde(default = "default_version_1")]
+    version: u32,
     id: String,
     start_time: String,
     #[serde(default)]
@@ -181,8 +189,12 @@ struct GoSessionMeta {
     chunks: Vec<GoChunkMeta>,
 }
 
+fn default_version_1() -> u32 {
+    1 // Old Go format without version field
+}
+
 /// Go backend chunk metadata
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code)]
 struct GoChunkMeta {
@@ -204,7 +216,7 @@ struct GoChunkMeta {
 }
 
 /// Go backend dialogue segment
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GoDialogueSegment {
     #[serde(default)]
@@ -217,7 +229,138 @@ struct GoDialogueSegment {
     speaker: String,
 }
 
-/// Load sessions from disk (Go backend format)
+/// Statistics from session loading/migration
+#[derive(Debug, Default)]
+struct SessionLoadStats {
+    total_found: usize,
+    loaded_ok: usize,
+    migrated_v1_to_v2: usize,
+    validation_errors: usize,
+    parse_errors: usize,
+    read_errors: usize,
+}
+
+/// Validation result for a session
+#[derive(Debug)]
+enum SessionValidation {
+    /// Session is valid
+    Valid,
+    /// Session has minor issues but is usable
+    Warning(String),
+    /// Session has critical issues and should be skipped
+    Error(String),
+}
+
+/// Validate session metadata
+fn validate_session_meta(meta: &GoSessionMeta, session_dir: &std::path::Path) -> SessionValidation {
+    // Check required fields
+    if meta.id.is_empty() {
+        return SessionValidation::Error("Missing session ID".to_string());
+    }
+    
+    if meta.start_time.is_empty() {
+        return SessionValidation::Error("Missing start_time".to_string());
+    }
+    
+    // Validate start_time format (should be RFC3339)
+    if chrono::DateTime::parse_from_rfc3339(&meta.start_time).is_err() {
+        // Try to parse as other common formats
+        if chrono::NaiveDateTime::parse_from_str(&meta.start_time, "%Y-%m-%dT%H:%M:%S").is_err() {
+            return SessionValidation::Warning(format!(
+                "Invalid start_time format: {}",
+                meta.start_time
+            ));
+        }
+    }
+    
+    // Check if chunks directory exists (session without chunks is suspicious)
+    let chunks_dir = session_dir.join("chunks");
+    if !chunks_dir.exists() {
+        // Check if there are embedded chunks in meta.json (old Go format)
+        if meta.chunks.is_empty() && meta.chunks_count > 0 {
+            return SessionValidation::Warning(
+                "Missing chunks directory but chunksCount > 0".to_string()
+            );
+        }
+    }
+    
+    // Check for audio file (either full.mp3 or segments)
+    let has_audio = session_dir.join("full.mp3").exists()
+        || session_dir.join("segment_000.mp3").exists();
+    
+    if !has_audio && meta.total_duration > 0 {
+        return SessionValidation::Warning("Missing audio file".to_string());
+    }
+    
+    // Check for negative or unrealistic duration
+    if meta.total_duration < 0 {
+        return SessionValidation::Warning(format!(
+            "Negative duration: {}",
+            meta.total_duration
+        ));
+    }
+    
+    // Duration > 24 hours is suspicious
+    if meta.total_duration > 24 * 60 * 60 * 1000 {
+        return SessionValidation::Warning(format!(
+            "Suspiciously long duration: {} ms ({:.1} hours)",
+            meta.total_duration,
+            meta.total_duration as f64 / 3_600_000.0
+        ));
+    }
+    
+    SessionValidation::Valid
+}
+
+/// Migrate session from v1 (Go) to v2 (Rust) format
+fn migrate_session_v1_to_v2(meta: &mut GoSessionMeta, meta_path: &std::path::Path) -> bool {
+    if meta.version >= CURRENT_SESSION_VERSION {
+        return false; // Already migrated
+    }
+    
+    tracing::info!(
+        "Migrating session {} from v{} to v{}",
+        meta.id,
+        meta.version,
+        CURRENT_SESSION_VERSION
+    );
+    
+    // Update version
+    meta.version = CURRENT_SESSION_VERSION;
+    
+    // Normalize status field
+    if meta.status.is_empty() {
+        meta.status = "completed".to_string();
+    }
+    
+    // Ensure tags is not null
+    // (already handled by serde default)
+    
+    // Save updated meta.json
+    match serde_json::to_string_pretty(meta) {
+        Ok(content) => {
+            // Atomic write via temp file
+            let temp_path = meta_path.with_extension("json.tmp");
+            if let Err(e) = std::fs::write(&temp_path, &content) {
+                tracing::error!("Failed to write temp meta.json: {}", e);
+                return false;
+            }
+            if let Err(e) = std::fs::rename(&temp_path, meta_path) {
+                tracing::error!("Failed to rename temp meta.json: {}", e);
+                let _ = std::fs::remove_file(&temp_path);
+                return false;
+            }
+            tracing::debug!("Session {} migrated successfully", meta.id);
+            true
+        }
+        Err(e) => {
+            tracing::error!("Failed to serialize migrated meta: {}", e);
+            false
+        }
+    }
+}
+
+/// Load sessions from disk with validation and migration
 fn load_sessions_from_disk() -> Vec<crate::commands::session::Session> {
     let sessions_dir = match get_sessions_dir() {
         Some(dir) => dir,
@@ -233,6 +376,7 @@ fn load_sessions_from_disk() -> Vec<crate::commands::session::Session> {
     }
 
     let mut sessions = Vec::new();
+    let mut stats = SessionLoadStats::default();
 
     // Read all subdirectories
     let entries = match std::fs::read_dir(&sessions_dir) {
@@ -253,28 +397,75 @@ fn load_sessions_from_disk() -> Vec<crate::commands::session::Session> {
         if !meta_path.exists() {
             continue;
         }
+        
+        stats.total_found += 1;
 
         // Read and parse meta.json
-        match std::fs::read_to_string(&meta_path) {
-            Ok(content) => match serde_json::from_str::<GoSessionMeta>(&content) {
-                Ok(meta) => {
-                    let session = convert_go_session_to_rust(meta, &path);
-                    sessions.push(session);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to parse {:?}: {}", meta_path, e);
-                }
-            },
+        let content = match std::fs::read_to_string(&meta_path) {
+            Ok(c) => c,
             Err(e) => {
                 tracing::warn!("Failed to read {:?}: {}", meta_path, e);
+                stats.read_errors += 1;
+                continue;
+            }
+        };
+        
+        let mut meta: GoSessionMeta = match serde_json::from_str(&content) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("Failed to parse {:?}: {}", meta_path, e);
+                stats.parse_errors += 1;
+                continue;
+            }
+        };
+        
+        // Validate session
+        match validate_session_meta(&meta, &path) {
+            SessionValidation::Valid => {}
+            SessionValidation::Warning(msg) => {
+                tracing::warn!("Session {} validation warning: {}", meta.id, msg);
+                // Continue loading, it's just a warning
+            }
+            SessionValidation::Error(msg) => {
+                tracing::error!("Session {} validation failed: {}", meta.id, msg);
+                stats.validation_errors += 1;
+                continue;
             }
         }
+        
+        // Migrate if needed
+        if meta.version < CURRENT_SESSION_VERSION {
+            if migrate_session_v1_to_v2(&mut meta, &meta_path) {
+                stats.migrated_v1_to_v2 += 1;
+            }
+        }
+        
+        // Convert and add to list
+        let session = convert_go_session_to_rust(meta, &path);
+        sessions.push(session);
+        stats.loaded_ok += 1;
     }
 
     // Sort by created_at descending (newest first)
     sessions.sort_by(|a, b| b.start_time.cmp(&a.start_time));
 
-    tracing::info!("Loaded {} sessions from disk", sessions.len());
+    // Log statistics
+    tracing::info!(
+        "Session loading complete: {} found, {} loaded, {} migrated v1->v2, {} validation errors, {} parse errors, {} read errors",
+        stats.total_found,
+        stats.loaded_ok,
+        stats.migrated_v1_to_v2,
+        stats.validation_errors,
+        stats.parse_errors,
+        stats.read_errors
+    );
+    
+    if stats.validation_errors > 0 || stats.parse_errors > 0 {
+        tracing::warn!(
+            "Some sessions could not be loaded. Check logs for details."
+        );
+    }
+    
     sessions
 }
 
@@ -477,6 +668,9 @@ struct AppStateInner {
     
     /// Provider registry for STT and LLM cloud/local providers
     provider_registry: ProviderRegistry,
+    
+    /// VoicePrint matcher for speaker recognition
+    voiceprint_matcher: Option<VoicePrintMatcher>,
 }
 
 impl AppState {
@@ -495,6 +689,18 @@ impl AppState {
             settings.whisper_model
         );
 
+        // Initialize voiceprint matcher
+        let voiceprint_matcher = get_data_dir()
+            .and_then(|data_dir| {
+                match VoicePrintMatcher::new(data_dir) {
+                    Ok(matcher) => Some(matcher),
+                    Err(e) => {
+                        tracing::warn!("Failed to initialize VoicePrintMatcher: {}", e);
+                        None
+                    }
+                }
+            });
+
         Self {
             inner: Arc::new(AppStateInner {
                 audio_handle: RwLock::new(None),
@@ -508,6 +714,7 @@ impl AppState {
                 diarization_provider: RwLock::new(String::new()),
                 retranscription_cancel: RwLock::new(None),
                 provider_registry: ProviderRegistry::new(),
+                voiceprint_matcher,
             }),
         }
     }
@@ -1121,11 +1328,7 @@ impl AppState {
                 speed: "~10x".to_string(),
                 recommended: false,
                 download_url: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin".to_string()),
-                vocab_url: None,
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: None,
+
                 is_archive: false,
                 status: "not_downloaded".to_string(),
                 progress: 0.0,
@@ -1145,11 +1348,7 @@ impl AppState {
                 speed: "~7x".to_string(),
                 recommended: false,
                 download_url: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin".to_string()),
-                vocab_url: None,
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: None,
+
                 is_archive: false,
                 status: "not_downloaded".to_string(),
                 progress: 0.0,
@@ -1169,11 +1368,7 @@ impl AppState {
                 speed: "~4x".to_string(),
                 recommended: false,
                 download_url: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin".to_string()),
-                vocab_url: None,
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: None,
+
                 is_archive: false,
                 status: "not_downloaded".to_string(),
                 progress: 0.0,
@@ -1193,11 +1388,7 @@ impl AppState {
                 speed: "~2x".to_string(),
                 recommended: false,
                 download_url: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin".to_string()),
-                vocab_url: None,
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: None,
+
                 is_archive: false,
                 status: "not_downloaded".to_string(),
                 progress: 0.0,
@@ -1217,11 +1408,7 @@ impl AppState {
                 speed: "~8x".to_string(),
                 recommended: true,
                 download_url: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin".to_string()),
-                vocab_url: None,
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: None,
+
                 is_archive: false,
                 status: "not_downloaded".to_string(),
                 progress: 0.0,
@@ -1241,11 +1428,7 @@ impl AppState {
                 speed: "~1x".to_string(),
                 recommended: true,
                 download_url: Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin".to_string()),
-                vocab_url: None,
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: None,
+
                 is_archive: false,
                 status: "not_downloaded".to_string(),
                 progress: 0.0,
@@ -1266,11 +1449,7 @@ impl AppState {
                 speed: "~110x".to_string(),
                 recommended: true,
                 download_url: None, // Managed by FluidAudio - downloads automatically on first use
-                vocab_url: None,
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: None,
+
                 is_archive: false,
                 // Parakeet is always "downloaded" because FluidAudio manages it automatically
                 status: "downloaded".to_string(),
@@ -1292,11 +1471,6 @@ impl AppState {
                 speed: "~50x (быстрая)".to_string(),
                 recommended: true,
                 download_url: Some("https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_ctc.int8.onnx".to_string()),
-                vocab_url: Some("https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_vocab.txt".to_string()),
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: None,
                 is_archive: false,
                 status: "not_downloaded".to_string(),
                 progress: 0.0,
@@ -1316,11 +1490,6 @@ impl AppState {
                 speed: "~50x (быстрая)".to_string(),
                 recommended: true,
                 download_url: Some("https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_e2e_ctc.int8.onnx".to_string()),
-                vocab_url: Some("https://huggingface.co/istupakov/gigaam-v3-onnx/resolve/main/v3_e2e_ctc_vocab.txt".to_string()),
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: None,
                 is_archive: false,
                 status: "not_downloaded".to_string(),
                 progress: 0.0,
@@ -1341,11 +1510,6 @@ impl AppState {
                 speed: "~100x".to_string(),
                 recommended: false,
                 download_url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2".to_string()),
-                vocab_url: None,
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: Some("segmentation".to_string()),
                 is_archive: true,
                 status: "not_downloaded".to_string(),
                 progress: 0.0,
@@ -1365,11 +1529,6 @@ impl AppState {
                 speed: "~40x".to_string(),
                 recommended: true,
                 download_url: Some("https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34.onnx".to_string()),
-                vocab_url: None,
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: Some("embedding".to_string()),
                 is_archive: false,
                 status: "not_downloaded".to_string(),
                 progress: 0.0,
@@ -1390,11 +1549,7 @@ impl AppState {
                 speed: "~1000x".to_string(),
                 recommended: true,
                 download_url: Some("https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx".to_string()),
-                vocab_url: None,
-                is_rnnt: false,
-                decoder_url: None,
-                joint_url: None,
-                diarization_type: None,
+
                 is_archive: false,
                 status: "not_downloaded".to_string(),
                 progress: 0.0,
@@ -1583,11 +1738,6 @@ impl AppState {
                             speed: "varies".to_string(),
                             recommended: false,
                             download_url: None,
-                            vocab_url: None,
-                            is_rnnt: false,
-                            decoder_url: None,
-                            joint_url: None,
-                            diarization_type: None,
                             is_archive: false,
                             status: "downloaded".to_string(),
                             progress: 100.0,
@@ -1927,87 +2077,209 @@ impl AppState {
         Ok(speakers)
     }
 
+    /// Rename a speaker within a session
+    /// Updates all dialogue entries with the old speaker name to use the new name
+    pub async fn rename_session_speaker(
+        &self,
+        session_id: &str,
+        speaker_id: &str,
+        new_name: &str,
+    ) -> Result<()> {
+        // Update in-memory
+        {
+            let mut sessions = self.inner.sessions.write();
+            let session = sessions
+                .iter_mut()
+                .find(|s| s.id == session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+
+            let mut updated_count = 0;
+            for chunk in &mut session.chunks {
+                for segment in &mut chunk.dialogue {
+                    if let Some(speaker) = &segment.speaker {
+                        if speaker == speaker_id {
+                            segment.speaker = Some(new_name.to_string());
+                            updated_count += 1;
+                        }
+                    }
+                }
+            }
+
+            tracing::info!(
+                "Renamed speaker '{}' to '{}' in {} dialogue segments",
+                speaker_id,
+                new_name,
+                updated_count
+            );
+        }
+
+        // Persist changes to disk (save all chunks)
+        self.save_session_chunks_to_disk(session_id).await?;
+
+        Ok(())
+    }
+
+    /// Merge two speakers in a session
+    /// All dialogue entries from source_speaker_id will be reassigned to target_speaker_id
+    pub async fn merge_session_speakers(
+        &self,
+        session_id: &str,
+        source_speaker_id: &str,
+        target_speaker_id: &str,
+    ) -> Result<()> {
+        // Update in-memory
+        {
+            let mut sessions = self.inner.sessions.write();
+            let session = sessions
+                .iter_mut()
+                .find(|s| s.id == session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+
+            let mut merged_count = 0;
+            for chunk in &mut session.chunks {
+                for segment in &mut chunk.dialogue {
+                    if let Some(speaker) = &segment.speaker {
+                        if speaker == source_speaker_id {
+                            segment.speaker = Some(target_speaker_id.to_string());
+                            merged_count += 1;
+                        }
+                    }
+                }
+            }
+
+            tracing::info!(
+                "Merged speaker '{}' into '{}': {} dialogue segments updated",
+                source_speaker_id,
+                target_speaker_id,
+                merged_count
+            );
+        }
+
+        // Persist changes to disk
+        self.save_session_chunks_to_disk(session_id).await?;
+
+        Ok(())
+    }
+
+    /// Search sessions by query
+    /// Searches in session titles, tags, and transcription text
+    pub async fn search_sessions(
+        &self,
+        query: &str,
+    ) -> Result<Vec<crate::commands::session::SessionInfo>> {
+        let query_lower = query.to_lowercase();
+        let sessions = self.inner.sessions.read();
+
+        let results: Vec<crate::commands::session::SessionInfo> = sessions
+            .iter()
+            .filter(|s| {
+                // Search in title
+                if let Some(title) = &s.title {
+                    if title.to_lowercase().contains(&query_lower) {
+                        return true;
+                    }
+                }
+
+                // Search in tags
+                for tag in &s.tags {
+                    if tag.to_lowercase().contains(&query_lower) {
+                        return true;
+                    }
+                }
+
+                // Search in transcription text
+                for chunk in &s.chunks {
+                    if chunk.transcription.to_lowercase().contains(&query_lower) {
+                        return true;
+                    }
+                    // Also search in dialogue
+                    for segment in &chunk.dialogue {
+                        if segment.text.to_lowercase().contains(&query_lower) {
+                            return true;
+                        }
+                    }
+                }
+
+                false
+            })
+            .map(|s| crate::commands::session::SessionInfo {
+                id: s.id.clone(),
+                start_time: s.start_time.clone(),
+                status: s.status.clone(),
+                total_duration: s.total_duration,
+                chunks_count: s.chunks.len(),
+                title: s.title.clone(),
+                tags: s.tags.clone(),
+            })
+            .collect();
+
+        tracing::debug!(
+            "Search '{}' found {} sessions",
+            query,
+            results.len()
+        );
+
+        Ok(results)
+    }
+
+    /// Save all chunks of a session to disk
+    async fn save_session_chunks_to_disk(&self, session_id: &str) -> Result<()> {
+        let chunks = {
+            let sessions = self.inner.sessions.read();
+            let session = sessions
+                .iter()
+                .find(|s| s.id == session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            session.chunks.clone()
+        };
+
+        for chunk in &chunks {
+            Self::save_chunk_to_disk(session_id, chunk)?;
+        }
+
+        tracing::debug!(
+            "Saved {} chunks to disk for session {}",
+            chunks.len(),
+            session_id
+        );
+
+        Ok(())
+    }
+
     // ========================================================================
     // Voiceprints management
     // ========================================================================
 
-    /// List all voiceprints from speakers.json file
+    /// List all voiceprints
     pub async fn list_voiceprints(&self) -> Result<Vec<crate::commands::voiceprints::VoicePrint>> {
         use crate::commands::voiceprints::VoicePrint;
 
-        // Get path to speakers.json
-        let speakers_path =
-            dirs::data_local_dir().map(|p| p.join("aiwisper").join("speakers.json"));
+        if let Some(ref matcher) = self.inner.voiceprint_matcher {
+            let voiceprints: Vec<VoicePrint> = matcher
+                .get_all()
+                .into_iter()
+                .map(|vp| VoicePrint {
+                    id: vp.id,
+                    name: vp.name,
+                    embedding: vp.embedding,
+                    created_at: vp.created_at,
+                    updated_at: vp.updated_at,
+                    last_seen_at: vp.last_seen_at,
+                    seen_count: vp.seen_count,
+                    sample_path: vp.sample_path,
+                    source: vp.source,
+                    notes: vp.notes,
+                })
+                .collect();
 
-        if let Some(path) = speakers_path {
-            if path.exists() {
-                tracing::info!("Loading voiceprints from: {:?}", path);
-
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    // Parse speakers.json format: { "version": 1, "voiceprints": [...] }
-                    #[derive(serde::Deserialize)]
-                    struct SpeakersFile {
-                        #[allow(dead_code)]
-                        version: Option<i32>,
-                        voiceprints: Vec<VoicePrintFile>,
-                    }
-
-                    #[derive(serde::Deserialize)]
-                    #[serde(rename_all = "camelCase")]
-                    struct VoicePrintFile {
-                        id: String,
-                        name: String,
-                        embedding: Vec<f32>,
-                        #[serde(default)]
-                        created_at: Option<String>,
-                        #[serde(default)]
-                        updated_at: Option<String>,
-                        #[serde(default)]
-                        last_seen_at: Option<String>,
-                        #[serde(default)]
-                        seen_count: Option<i32>,
-                        #[serde(default)]
-                        sample_path: Option<String>,
-                        #[serde(default)]
-                        source: Option<String>,
-                        #[serde(default)]
-                        notes: Option<String>,
-                    }
-
-                    if let Ok(speakers_file) = serde_json::from_str::<SpeakersFile>(&content) {
-                        let now = chrono::Utc::now().to_rfc3339();
-                        let voiceprints: Vec<VoicePrint> = speakers_file
-                            .voiceprints
-                            .into_iter()
-                            .map(|vp| VoicePrint {
-                                id: vp.id,
-                                name: vp.name,
-                                embedding: vp.embedding,
-                                created_at: vp.created_at.unwrap_or_else(|| now.clone()),
-                                updated_at: vp.updated_at.unwrap_or_else(|| now.clone()),
-                                last_seen_at: vp.last_seen_at.unwrap_or_else(|| now.clone()),
-                                seen_count: vp.seen_count.unwrap_or(1),
-                                sample_path: vp.sample_path,
-                                source: vp.source,
-                                notes: vp.notes,
-                            })
-                            .collect();
-
-                        tracing::info!("Loaded {} voiceprints", voiceprints.len());
-                        return Ok(voiceprints);
-                    } else {
-                        tracing::warn!("Failed to parse speakers.json");
-                    }
-                }
-            } else {
-                tracing::debug!("speakers.json not found at {:?}", path);
-            }
+            tracing::debug!("Listed {} voiceprints", voiceprints.len());
+            return Ok(voiceprints);
         }
 
         Ok(vec![])
     }
 
-    /// Create a new voiceprint (stub)
+    /// Create a new voiceprint
     pub async fn create_voiceprint(
         &self,
         name: &str,
@@ -2016,36 +2288,54 @@ impl AppState {
     ) -> Result<crate::commands::voiceprints::VoicePrint> {
         use crate::commands::voiceprints::VoicePrint;
 
-        let now = chrono::Utc::now().to_rfc3339();
-        let voiceprint = VoicePrint {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: name.to_string(),
-            embedding,
-            created_at: now.clone(),
-            updated_at: now.clone(),
-            last_seen_at: now,
-            seen_count: 1,
-            sample_path: None,
-            source,
-            notes: None,
-        };
+        let matcher = self.inner.voiceprint_matcher.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("VoicePrintMatcher not initialized"))?;
 
-        // TODO: Save to storage
-        tracing::info!("Created voiceprint: {} (id: {})", name, voiceprint.id);
+        let vp = matcher.add(name, embedding, source)?;
 
-        Ok(voiceprint)
+        Ok(VoicePrint {
+            id: vp.id,
+            name: vp.name,
+            embedding: vp.embedding,
+            created_at: vp.created_at,
+            updated_at: vp.updated_at,
+            last_seen_at: vp.last_seen_at,
+            seen_count: vp.seen_count,
+            sample_path: vp.sample_path,
+            source: vp.source,
+            notes: vp.notes,
+        })
     }
 
-    /// Rename a voiceprint (stub)
-    pub async fn rename_voiceprint(&self, _id: &str, _name: &str) -> Result<()> {
-        // TODO: Implement voiceprint rename
+    /// Rename a voiceprint
+    pub async fn rename_voiceprint(&self, id: &str, name: &str) -> Result<()> {
+        let matcher = self.inner.voiceprint_matcher.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("VoicePrintMatcher not initialized"))?;
+
+        matcher.update_name(id, name)?;
+        tracing::info!("Renamed voiceprint {} to '{}'", id, name);
         Ok(())
     }
 
-    /// Delete a voiceprint (stub)
-    pub async fn delete_voiceprint(&self, _id: &str) -> Result<()> {
-        // TODO: Implement voiceprint deletion
+    /// Delete a voiceprint
+    pub async fn delete_voiceprint(&self, id: &str) -> Result<()> {
+        let matcher = self.inner.voiceprint_matcher.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("VoicePrintMatcher not initialized"))?;
+
+        matcher.delete(id)?;
         Ok(())
+    }
+
+    /// Find best matching voiceprint for an embedding
+    pub fn find_voiceprint_match(&self, embedding: &[f32]) -> Option<aiwisper_ml::MatchResult> {
+        self.inner.voiceprint_matcher.as_ref()
+            .and_then(|matcher| matcher.find_best_match(embedding))
+    }
+
+    /// Match voiceprint with auto-update on high confidence
+    pub fn match_voiceprint_with_update(&self, embedding: &[f32]) -> Option<aiwisper_ml::MatchResult> {
+        self.inner.voiceprint_matcher.as_ref()
+            .and_then(|matcher| matcher.match_with_auto_update(embedding))
     }
 
     /// Get audio sample for a speaker (stub - returns silence)
@@ -2305,6 +2595,243 @@ impl AppState {
         let provider = self.inner.diarization_provider.read().clone();
 
         Ok(crate::commands::diarization::DiarizationStatus { enabled, provider })
+    }
+
+    // ========================================================================
+    // Audio Import
+    // ========================================================================
+
+    /// Import an audio file (MP3/WAV/M4A/OGG/FLAC) and create a new session
+    /// 
+    /// This method:
+    /// 1. Loads the audio file and resamples to 16kHz mono
+    /// 2. Creates a new session with unique ID
+    /// 3. Copies/converts the audio to full.mp3 in the session folder
+    /// 4. Splits audio into ~10 second chunks
+    /// 5. Creates chunk metadata files
+    /// 6. Returns the created session (without transcription - that's done separately)
+    pub async fn import_audio(
+        &self,
+        path: &str,
+        language: Option<String>,
+        app_handle: tauri::AppHandle,
+    ) -> Result<crate::commands::session::Session> {
+        use crate::commands::session::{Session, SessionChunk};
+        use tauri::Emitter;
+        
+        tracing::info!("Importing audio file: {}", path);
+        
+        // 1. Validate file exists
+        let source_path = std::path::Path::new(path);
+        if !source_path.exists() {
+            return Err(anyhow::anyhow!("Audio file not found: {}", path));
+        }
+        
+        // 2. Get file extension for format detection
+        let ext = source_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        
+        let supported_formats = ["mp3", "wav", "m4a", "ogg", "flac"];
+        if !supported_formats.contains(&ext.as_str()) {
+            return Err(anyhow::anyhow!(
+                "Unsupported audio format: {}. Supported: {:?}",
+                ext,
+                supported_formats
+            ));
+        }
+        
+        // 3. Load audio file (resampled to 16kHz mono)
+        let samples = aiwisper_audio::load_audio_file(path)?;
+        let sample_count = samples.len();
+        let duration_ms = (sample_count as f64 / 16.0) as u64; // 16kHz -> ms
+        
+        tracing::info!(
+            "Loaded audio: {} samples, {:.1} seconds",
+            sample_count,
+            duration_ms as f64 / 1000.0
+        );
+        
+        // 4. Create session ID and directory
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now();
+        
+        let sessions_dir = get_sessions_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine sessions directory"))?;
+        let session_dir = sessions_dir.join(&session_id);
+        let chunks_dir = session_dir.join("chunks");
+        
+        std::fs::create_dir_all(&chunks_dir)?;
+        
+        // 5. Copy or convert audio to full.mp3
+        let mp3_path = session_dir.join("full.mp3");
+        if ext == "mp3" {
+            // Just copy the original MP3
+            std::fs::copy(source_path, &mp3_path)?;
+            tracing::info!("Copied MP3 to {:?}", mp3_path);
+        } else {
+            // Convert to MP3 using FFmpeg
+            let mp3_path_str = mp3_path.to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in path: {:?}", mp3_path))?;
+            let status = std::process::Command::new("ffmpeg")
+                .args([
+                    "-y",           // Overwrite output
+                    "-i", path,     // Input file
+                    "-codec:a", "libmp3lame",
+                    "-b:a", "128k", // Bitrate
+                    mp3_path_str,
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            
+            match status {
+                Ok(s) if s.success() => {
+                    tracing::info!("Converted to MP3: {:?}", mp3_path);
+                }
+                Ok(s) => {
+                    tracing::warn!(
+                        "FFmpeg exited with code {:?}, falling back to WAV",
+                        s.code()
+                    );
+                    // Fallback: save as WAV
+                    let wav_path = session_dir.join("full.wav");
+                    let wav_bytes = aiwisper_audio::samples_to_wav_bytes(&samples, 16000)?;
+                    std::fs::write(&wav_path, wav_bytes)?;
+                }
+                Err(e) => {
+                    tracing::warn!("FFmpeg not available: {}, saving as WAV", e);
+                    // Fallback: save as WAV
+                    let wav_path = session_dir.join("full.wav");
+                    let wav_bytes = aiwisper_audio::samples_to_wav_bytes(&samples, 16000)?;
+                    std::fs::write(&wav_path, wav_bytes)?;
+                }
+            }
+        }
+        
+        // 6. Split into chunks (~10 seconds each)
+        const SAMPLES_PER_CHUNK: usize = 16000 * 10; // 10 seconds at 16kHz
+        
+        let mut chunks: Vec<SessionChunk> = Vec::new();
+        let mut chunk_index = 0;
+        let mut offset = 0usize;
+        
+        while offset < samples.len() {
+            let end = (offset + SAMPLES_PER_CHUNK).min(samples.len());
+            
+            let start_ms = (offset as u64 * 1000) / 16000;
+            let end_ms = (end as u64 * 1000) / 16000;
+            let duration_ns = (end_ms - start_ms) as i64 * 1_000_000;
+            
+            let chunk_id = uuid::Uuid::new_v4().to_string();
+            
+            let chunk = SessionChunk {
+                id: chunk_id.clone(),
+                index: chunk_index,
+                start_ms: start_ms as i64,
+                end_ms: end_ms as i64,
+                duration: duration_ns,
+                transcription: String::new(),
+                mic_text: None,
+                sys_text: None,
+                dialogue: Vec::new(),
+                is_stereo: false, // Imported audio is mono
+                status: "pending".to_string(),
+                speaker: None,
+            };
+            
+            // Save chunk metadata
+            let chunk_file = chunks_dir.join(format!("chunk_{:04}.json", chunk_index));
+            let chunk_json = serde_json::json!({
+                "id": chunk.id,
+                "index": chunk.index,
+                "startMs": chunk.start_ms,
+                "endMs": chunk.end_ms,
+                "transcription": "",
+                "dialogue": [],
+                "status": "pending",
+            });
+            std::fs::write(&chunk_file, serde_json::to_string_pretty(&chunk_json)?)?;
+            
+            chunks.push(chunk);
+            chunk_index += 1;
+            offset = end;
+        }
+        
+        tracing::info!("Created {} chunks", chunks.len());
+        
+        // 7. Get source filename for title
+        let source_filename = source_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Импортированный файл");
+        
+        // 8. Create session metadata
+        let settings = self.inner.settings.read().clone();
+        let session = Session {
+            id: session_id.clone(),
+            start_time: now.to_rfc3339(),
+            end_time: Some(now.to_rfc3339()),
+            status: "completed".to_string(),
+            chunks,
+            data_dir: session_dir.to_string_lossy().to_string(),
+            total_duration: duration_ms,
+            title: Some(format!("{} · {:.1} мин", source_filename, duration_ms as f64 / 60000.0)),
+            tags: vec!["импорт".to_string()],
+            summary: None,
+            language: language.or_else(|| Some(settings.language.clone())),
+            model: Some(settings.whisper_model.clone()),
+        };
+        
+        // 9. Save meta.json
+        let meta_path = session_dir.join("meta.json");
+        let meta_json = serde_json::json!({
+            "id": session.id,
+            "startTime": session.start_time,
+            "endTime": session.end_time,
+            "status": session.status,
+            "totalDuration": session.total_duration,
+            "chunksCount": session.chunks.len(),
+            "title": session.title,
+            "tags": session.tags,
+            "language": session.language,
+            "model": session.model,
+            "sampleCount": sample_count,
+        });
+        std::fs::write(&meta_path, serde_json::to_string_pretty(&meta_json)?)?;
+        
+        tracing::info!("Saved session metadata to {:?}", meta_path);
+        
+        // 10. Add to in-memory sessions
+        self.inner.sessions.write().push(session.clone());
+        
+        // 11. Emit events
+        let _ = app_handle.emit(
+            "session_started",
+            serde_json::json!({
+                "sessionId": session_id,
+                "session": &session,
+            }),
+        );
+        
+        // Emit sessions list update
+        if let Ok(sessions) = self.list_sessions().await {
+            let _ = app_handle.emit(
+                "sessions_list",
+                serde_json::json!({ "sessions": sessions }),
+            );
+        }
+        
+        tracing::info!(
+            "Audio import complete: session={}, chunks={}, duration={:.1}s",
+            session_id,
+            session.chunks.len(),
+            duration_ms as f64 / 1000.0
+        );
+        
+        Ok(session)
     }
 }
 

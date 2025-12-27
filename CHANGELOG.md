@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.20] - 2025-12-27
+
+### Changed
+- **Pure Rust Migration Complete**: Завершена миграция с Go+Electron на Pure Rust+Tauri
+  - Все deprecated warnings исправлены
+  - `HybridMode::FullCompare` помечен `#[allow(deprecated)]`, неиспользуемая функция удалена
+  - Поле `thinking` в LLM response помечено `#[allow(dead_code)]` (нужно для десериализации)
+
+### Added
+- **Word-level Dialogue Merge**: Интеграция алгоритма пословного слияния диалогов
+  - Порт `dialogue_merge.go` в `rust/crates/aiwisper-ml/src/dialogue_merge.rs`
+  - Функция `merge_words_to_dialogue(mic_segments, sys_segments)` для stereo записей
+  - Поле `words` добавлено в `DialogueEntry` для word timestamps
+
+- **VoicePrint Module**: Порт voiceprint matching из Go
+  - `rust/crates/aiwisper-ml/src/voiceprint.rs` с cosine similarity
+  - Confidence scoring на основе similarity thresholds
+
+- **New Tauri Commands**: Расширены IPC команды
+  - `search_sessions` — поиск сессий по тексту
+  - `import_audio` — импорт аудиофайлов
+  - `rename_session_speaker` — переименование спикера
+  - `merge_session_speakers` — объединение спикеров
+
+- **React.memo Optimization**: Оптимизация рендеринга
+  - `DialogueItem` обёрнут в `React.memo` с кастомной функцией сравнения
+  - `ChunkItem` обёрнут в `React.memo` с кастомной функцией сравнения
+
+- **Swift Modules Reorganization**: Swift код перенесён в `swift/` директорию
+  - `swift/screencapture/` — ScreenCaptureKit
+  - `swift/coreaudio/` — CoreAudio Process Tap
+  - `swift/diarization/` — FluidAudio диаризация
+  - `swift/transcription/` — FluidAudio транскрипция
+
+### Technical
+- `rust/crates/aiwisper-ml/src/hybrid.rs`: Удалена функция `transcribe_full_compare()`
+- `rust/crates/aiwisper-ml/src/llm.rs`: `#[allow(dead_code)]` для `thinking` field
+- `rust/ui/src/context/TauriContext.tsx`: Добавлены маппинги для новых команд
+- `rust/src-tauri/src/state/recording.rs`: Интеграция `merge_words_to_dialogue`
+- Все 25 тестов в `aiwisper-ml` проходят
+- TypeScript typecheck проходит без ошибок
+
 ## [2.0.19] - 2025-12-27
 
 ### Fixed

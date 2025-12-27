@@ -141,6 +141,7 @@ impl RecordingSession {
         };
 
         let meta = serde_json::json!({
+            "version": 2,  // Rust backend format
             "id": self.id,
             "startTime": self.start_time.to_rfc3339(),
             "endTime": end_time.map(|t| t.to_rfc3339()),
@@ -178,7 +179,7 @@ pub struct ChunkMeta {
     pub dialogue: Vec<DialogueEntry>,
 }
 
-/// Dialogue entry for JSON
+/// Dialogue entry for JSON (with optional word-level timestamps)
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DialogueEntry {
     pub start: i64,
@@ -186,6 +187,8 @@ pub struct DialogueEntry {
     pub text: String,
     #[serde(default)]
     pub speaker: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<aiwisper_types::TranscriptWord>,
 }
 
 impl ChunkMeta {
@@ -463,7 +466,7 @@ fn recording_thread(
     );
 
     // Emit session_started event with full session info
-    // Must match Session interface from frontend/src/types/session.ts
+    // Must match Session interface from rust/ui/src/types/session.ts
     let _ = app_handle.emit(
         "session_started",
         serde_json::json!({
@@ -1130,14 +1133,28 @@ fn transcribe_chunk_samples(
         &config.hotwords,
     ) {
         Ok(segments) => {
-            // Convert segments to dialogue
+            // Convert segments to dialogue with word-level timestamps
             let dialogue: Vec<DialogueEntry> = segments
                 .into_iter()
-                .map(|seg| DialogueEntry {
-                    start: seg.start + chunk_meta.start_ms,
-                    end: seg.end + chunk_meta.start_ms,
-                    text: seg.text,
-                    speaker: seg.speaker.unwrap_or_else(|| "mic".to_string()),
+                .map(|seg| {
+                    // Offset word timestamps by chunk start
+                    let words_with_offset: Vec<aiwisper_types::TranscriptWord> = seg
+                        .words
+                        .into_iter()
+                        .map(|mut w| {
+                            w.start += chunk_meta.start_ms;
+                            w.end += chunk_meta.start_ms;
+                            w
+                        })
+                        .collect();
+
+                    DialogueEntry {
+                        start: seg.start + chunk_meta.start_ms,
+                        end: seg.end + chunk_meta.start_ms,
+                        text: seg.text,
+                        speaker: seg.speaker.unwrap_or_else(|| "mic".to_string()),
+                        words: words_with_offset,
+                    }
                 })
                 .collect();
 
@@ -1229,7 +1246,9 @@ fn transcribe_chunk_stereo(
         sys_is_silent
     );
 
-    let mut all_dialogue: Vec<DialogueEntry> = Vec::new();
+    // Collect segments from both channels for word-level merge
+    let mut mic_segments: Vec<aiwisper_types::TranscriptSegment> = Vec::new();
+    let mut sys_segments: Vec<aiwisper_types::TranscriptSegment> = Vec::new();
 
     // Transcribe mic channel (skip if silent)
     if !mic_samples.is_empty() && !mic_is_silent {
@@ -1248,13 +1267,10 @@ fn transcribe_chunk_stereo(
             &config.hybrid_secondary_model_id,
             &config.hotwords,
         ) {
-            for seg in segments {
-                all_dialogue.push(DialogueEntry {
-                    start: seg.start + chunk_meta.start_ms,
-                    end: seg.end + chunk_meta.start_ms,
-                    text: seg.text,
-                    speaker: "mic".to_string(),
-                });
+            // Tag segments with "mic" speaker for merge algorithm
+            for mut seg in segments {
+                seg.speaker = Some("mic".to_string());
+                mic_segments.push(seg);
             }
         }
     } else if mic_is_silent {
@@ -1289,60 +1305,75 @@ fn transcribe_chunk_stereo(
                             speaker_segments.len()
                         );
                         // Apply speaker labels to transcription segments
-                        for seg in segments {
-                            let speaker = find_speaker_for_segment(
+                        for mut seg in segments {
+                            let speaker_id = find_speaker_for_segment(
                                 seg.start as f32 / 1000.0,  // convert ms to seconds
                                 seg.end as f32 / 1000.0,
                                 &speaker_segments,
                             );
-                            all_dialogue.push(DialogueEntry {
-                                start: seg.start + chunk_meta.start_ms,
-                                end: seg.end + chunk_meta.start_ms,
-                                text: seg.text,
-                                speaker: format!("Собеседник {}", speaker + 1),
-                            });
+                            seg.speaker = Some(format!("Собеседник {}", speaker_id + 1));
+                            sys_segments.push(seg);
                         }
                     }
                     Ok(_) => {
                         // No diarization segments, use default "sys"
                         tracing::debug!("No diarization segments found, using 'sys'");
-                        for seg in segments {
-                            all_dialogue.push(DialogueEntry {
-                                start: seg.start + chunk_meta.start_ms,
-                                end: seg.end + chunk_meta.start_ms,
-                                text: seg.text,
-                                speaker: "sys".to_string(),
-                            });
+                        for mut seg in segments {
+                            seg.speaker = Some("sys".to_string());
+                            sys_segments.push(seg);
                         }
                     }
                     Err(e) => {
                         tracing::warn!("Diarization failed, falling back to 'sys': {}", e);
-                        for seg in segments {
-                            all_dialogue.push(DialogueEntry {
-                                start: seg.start + chunk_meta.start_ms,
-                                end: seg.end + chunk_meta.start_ms,
-                                text: seg.text,
-                                speaker: "sys".to_string(),
-                            });
+                        for mut seg in segments {
+                            seg.speaker = Some("sys".to_string());
+                            sys_segments.push(seg);
                         }
                     }
                 }
             } else {
                 // No diarization, use simple "sys" label
-                for seg in segments {
-                    all_dialogue.push(DialogueEntry {
-                        start: seg.start + chunk_meta.start_ms,
-                        end: seg.end + chunk_meta.start_ms,
-                        text: seg.text,
-                        speaker: "sys".to_string(),
-                    });
+                for mut seg in segments {
+                    seg.speaker = Some("sys".to_string());
+                    sys_segments.push(seg);
                 }
             }
         }
     }
 
-    // Sort by timestamp
-    all_dialogue.sort_by_key(|d| d.start);
+    // Use word-level dialogue merge algorithm
+    let merged_segments = aiwisper_ml::merge_words_to_dialogue(mic_segments, sys_segments);
+    
+    tracing::debug!(
+        "Dialogue merge for chunk {}: {} merged segments",
+        chunk_meta.index,
+        merged_segments.len()
+    );
+
+    // Convert merged segments to DialogueEntry with chunk offset
+    let all_dialogue: Vec<DialogueEntry> = merged_segments
+        .into_iter()
+        .map(|seg| {
+            // Offset words timestamps by chunk start
+            let words_with_offset: Vec<aiwisper_types::TranscriptWord> = seg
+                .words
+                .into_iter()
+                .map(|mut w| {
+                    w.start += chunk_meta.start_ms;
+                    w.end += chunk_meta.start_ms;
+                    w
+                })
+                .collect();
+
+            DialogueEntry {
+                start: seg.start + chunk_meta.start_ms,
+                end: seg.end + chunk_meta.start_ms,
+                text: seg.text,
+                speaker: seg.speaker.unwrap_or_else(|| "unknown".to_string()),
+                words: words_with_offset,
+            }
+        })
+        .collect();
 
     // Update chunk meta
     chunk_meta.transcription = all_dialogue

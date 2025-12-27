@@ -5,11 +5,11 @@
 
 use aiwisper_types::SpeakerSegment;
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 
 /// Diarization configuration
 #[derive(Debug, Clone)]
@@ -104,7 +104,7 @@ impl FluidDiarizationEngine {
 
         if !binary_path.exists() {
             anyhow::bail!(
-                "diarization-fluid binary not found at {:?}. Build it with: cd backend/audio/diarization && swift build -c release",
+                "diarization-fluid binary not found at {:?}. Build it with: cd swift/diarization && swift build -c release",
                 binary_path
             );
         }
@@ -142,11 +142,13 @@ impl FluidDiarizationEngine {
             exe_dir.as_ref().map(|d| d.join("../Resources/diarization-fluid")),
             // Tauri resources
             exe_dir.as_ref().map(|d| d.join("resources/diarization-fluid")),
-            // Development paths
+            // Development paths (new swift/ location)
             Some(PathBuf::from("rust/src-tauri/resources/diarization-fluid")),
-            Some(PathBuf::from("backend/audio/diarization/.build/release/diarization-fluid")),
+            Some(PathBuf::from("swift/diarization/.build/release/diarization-fluid")),
             Some(PathBuf::from("/Users/askid/Projects/AIWisper/rust/src-tauri/resources/diarization-fluid")),
-            Some(PathBuf::from("/Users/askid/Projects/AIWisper/backend/audio/diarization/.build/release/diarization-fluid")),
+            Some(PathBuf::from("/Users/askid/Projects/AIWisper/swift/diarization/.build/release/diarization-fluid")),
+            // Legacy paths (for backward compatibility during migration)
+            Some(PathBuf::from("backend/audio/diarization/.build/release/diarization-fluid")),
         ];
 
         for candidate in candidates.into_iter().flatten() {
@@ -264,7 +266,7 @@ impl FluidDiarizationEngine {
             .collect();
 
         // Update last speaker count
-        *self.last_num_speakers.lock().unwrap() = result.num_speakers as usize;
+        *self.last_num_speakers.lock() = result.num_speakers as usize;
 
         let elapsed = start_time.elapsed();
         let audio_duration = samples.len() as f64 / 16000.0;
@@ -286,7 +288,7 @@ impl FluidDiarizationEngine {
 
     /// Get number of speakers from last diarization
     pub fn num_speakers(&self) -> usize {
-        *self.last_num_speakers.lock().unwrap()
+        *self.last_num_speakers.lock()
     }
 
     /// Check if the engine is available (binary exists)

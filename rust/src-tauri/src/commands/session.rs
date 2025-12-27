@@ -318,6 +318,65 @@ pub async fn generate_summary(
     }
 }
 
+/// Rename a speaker within a session
+/// Updates all dialogue entries with the old speaker name to use the new name
+#[tauri::command]
+pub async fn rename_session_speaker(
+    state: State<'_, AppState>,
+    session_id: String,
+    speaker_id: String,
+    new_name: String,
+) -> Result<(), String> {
+    tracing::info!(
+        "Renaming speaker '{}' to '{}' in session {}",
+        speaker_id,
+        new_name,
+        session_id
+    );
+
+    state
+        .rename_session_speaker(&session_id, &speaker_id, &new_name)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Merge two speakers in a session
+/// All dialogue entries from source_speaker_id will be reassigned to target_speaker_id
+#[tauri::command]
+pub async fn merge_session_speakers(
+    state: State<'_, AppState>,
+    session_id: String,
+    source_speaker_id: String,
+    target_speaker_id: String,
+) -> Result<(), String> {
+    tracing::info!(
+        "Merging speaker '{}' into '{}' in session {}",
+        source_speaker_id,
+        target_speaker_id,
+        session_id
+    );
+
+    state
+        .merge_session_speakers(&session_id, &source_speaker_id, &target_speaker_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Search sessions by query
+/// Searches in session titles, tags, and transcription text
+#[tauri::command]
+pub async fn search_sessions(
+    state: State<'_, AppState>,
+    query: String,
+) -> Result<Vec<SessionInfo>, String> {
+    tracing::debug!("Searching sessions with query: {}", query);
+
+    state
+        .search_sessions(&query)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Call Ollama API to generate summary
 async fn generate_summary_with_ollama(
     transcript: &str,

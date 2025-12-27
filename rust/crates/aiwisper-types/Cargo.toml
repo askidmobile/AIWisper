@@ -6,3 +6,10 @@ edition.workspace = true
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+ts-rs = { version = "10", features = ["serde-compat"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+[features]
+default = []
+# Generate TypeScript bindings
+ts-bindings = []

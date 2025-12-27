@@ -8,7 +8,7 @@ use crate::traits::VadEngine;
 use anyhow::{Context, Result};
 use ort::execution_providers::CoreMLExecutionProvider;
 use ort::session::{builder::GraphOptimizationLevel, Session};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 /// Silero VAD configuration
 #[derive(Debug, Clone)]
@@ -148,10 +148,10 @@ impl SileroVad {
 
     /// Reset LSTM state and context
     pub fn reset_state(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.fill(0.0);
 
-        let mut context = self.context.lock().unwrap();
+        let mut context = self.context.lock();
         context.fill(0.0);
     }
 
@@ -164,8 +164,8 @@ impl SileroVad {
             32
         };
 
-        let mut context = self.context.lock().unwrap();
-        let mut state = self.state.lock().unwrap();
+        let mut context = self.context.lock();
+        let mut state = self.state.lock();
 
         // Create input buffer: context + samples
         let mut input_data = Vec::with_capacity(context_size + samples.len());
@@ -192,7 +192,7 @@ impl SileroVad {
 
         // Run inference - extract and copy data while holding lock, then release
         let (prob, new_state_vec) = {
-            let mut session_guard = self.session.lock().unwrap();
+            let mut session_guard = self.session.lock();
             let outputs = session_guard.run(ort::inputs![
                 "input" => input_tensor,
                 "state" => state_tensor,

@@ -81,6 +81,10 @@ build/
 .build/
 *.metallib
 
+# Swift build artifacts
+swift/*/.build/
+swift/*/Package.resolved
+
 # Rust
 rust/target/
 

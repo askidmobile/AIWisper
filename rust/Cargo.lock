@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper"
-version = "2.0.18"
+version = "2.0.19"
 dependencies = [
  "aiwisper-audio",
  "aiwisper-ml",
@@ -71,13 +71,14 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-audio"
-version = "2.0.18"
+version = "2.0.19"
 dependencies = [
  "aiwisper-types",
  "anyhow",
  "cpal",
  "hound",
  "nix 0.27.1",
+ "parking_lot",
  "rubato",
  "symphonia",
  "tempfile",
@@ -88,15 +89,17 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-ml"
-version = "2.0.18"
+version = "2.0.19"
 dependencies = [
  "aiwisper-types",
  "anyhow",
  "async-trait",
+ "chrono",
  "dirs 5.0.1",
  "ndarray 0.15.6",
  "ort",
  "parking_lot",
+ "realfft",
  "regex",
  "reqwest",
  "serde",
@@ -104,20 +107,23 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "uuid",
  "whisper-rs",
 ]
 
 [[package]]
 name = "aiwisper-types"
-version = "2.0.18"
+version = "2.0.19"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
+ "ts-rs",
 ]
 
 [[package]]
 name = "aiwisper-worker"
-version = "2.0.18"
+version = "2.0.19"
 dependencies = [
  "aiwisper-ml",
  "aiwisper-types",
@@ -5166,6 +5172,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "termcolor"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
+dependencies = [
+ "winapi-util",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5579,6 +5594,29 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "ts-rs"
+version = "10.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e640d9b0964e9d39df633548591090ab92f7a4567bc31d3891af23471a3365c6"
+dependencies = [
+ "lazy_static",
+ "thiserror 2.0.17",
+ "ts-rs-macros",
+]
+
+[[package]]
+name = "ts-rs-macros"
+version = "10.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e9d8656589772eeec2cf7a8264d9cda40fb28b9bc53118ceb9e8c07f8f38730"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
+ "termcolor",
+]
 
 [[package]]
 name = "typeid"

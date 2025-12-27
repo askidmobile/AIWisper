@@ -66,6 +66,12 @@ impl MacOSSystemCapture {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let repo_root = manifest_dir.join("../../..");
 
+        let swift_subdir = if binary_name == "coreaudio-tap" {
+            "coreaudio"
+        } else {
+            "screencapture"
+        };
+        
         let paths = [
             // Next to the executable
             std::env::current_exe()
@@ -75,43 +81,32 @@ impl MacOSSystemCapture {
             std::env::current_exe()
                 .ok()
                 .and_then(|p| p.parent().map(|p| p.join("../Resources").join(binary_name))),
-            // Development paths - Swift .build/release
+            // New swift/ location - development paths
             Some(PathBuf::from(format!(
-                "backend/audio/{}/.build/release/{}",
-                if binary_name == "coreaudio-tap" {
-                    "coreaudio"
-                } else {
-                    "screencapture"
-                },
+                "swift/{}/.build/release/{}",
+                swift_subdir,
                 binary_name
             ))),
-            // Development paths - Swift .build/arm64-apple-macosx/release (default on Apple Silicon)
             Some(PathBuf::from(format!(
-                "backend/audio/{}/.build/arm64-apple-macosx/release/{}",
-                if binary_name == "coreaudio-tap" {
-                    "coreaudio"
-                } else {
-                    "screencapture"
-                },
+                "swift/{}/.build/arm64-apple-macosx/release/{}",
+                swift_subdir,
                 binary_name
             ))),
             // Development paths anchored at repo root (more robust for `cargo tauri dev`)
             Some(repo_root.join(format!(
-                "backend/audio/{}/.build/release/{}",
-                if binary_name == "coreaudio-tap" {
-                    "coreaudio"
-                } else {
-                    "screencapture"
-                },
+                "swift/{}/.build/release/{}",
+                swift_subdir,
                 binary_name
             ))),
             Some(repo_root.join(format!(
-                "backend/audio/{}/.build/arm64-apple-macosx/release/{}",
-                if binary_name == "coreaudio-tap" {
-                    "coreaudio"
-                } else {
-                    "screencapture"
-                },
+                "swift/{}/.build/arm64-apple-macosx/release/{}",
+                swift_subdir,
+                binary_name
+            ))),
+            // Legacy paths (backward compatibility during migration)
+            Some(PathBuf::from(format!(
+                "backend/audio/{}/.build/release/{}",
+                swift_subdir,
                 binary_name
             ))),
         ];
@@ -123,13 +118,9 @@ impl MacOSSystemCapture {
         }
 
         anyhow::bail!(
-            "{} binary not found. Build it with: cd backend/audio/{} && swift build -c release",
+            "{} binary not found. Build it with: cd swift/{} && swift build -c release",
             binary_name,
-            if binary_name == "coreaudio-tap" {
-                "coreaudio"
-            } else {
-                "screencapture"
-            }
+            swift_subdir
         )
     }
 

@@ -243,11 +243,13 @@ impl HybridTranscriber {
     }
 
     /// Выполнить гибридную транскрипцию
+    #[allow(deprecated)]
     pub fn transcribe(&self, samples: &[f32]) -> Result<HybridTranscriptionResult> {
         match self.config.mode {
             HybridMode::Parallel => self.transcribe_parallel(samples),
             HybridMode::Confidence => self.transcribe_confidence_based(samples),
-            HybridMode::FullCompare => self.transcribe_full_compare(samples),
+            // FullCompare deprecated: делегирует в transcribe_parallel
+            HybridMode::FullCompare => self.transcribe_parallel(samples),
         }
     }
 
@@ -718,16 +720,6 @@ impl HybridTranscriber {
             retranscribed_count: 0,
             improvements: vec![],
         })
-    }
-
-    /// Полное сравнение через LLM
-    fn transcribe_full_compare(&self, samples: &[f32]) -> Result<HybridTranscriptionResult> {
-        // Синхронная версия не может вызывать LLM (требуется async)
-        // Используем parallel mode как fallback
-        tracing::warn!(
-            "[HybridTranscriber] FullCompare mode requires async, falling back to Parallel"
-        );
-        self.transcribe_parallel(samples)
     }
 
     /// Асинхронная транскрипция с поддержкой LLM

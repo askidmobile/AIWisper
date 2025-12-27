@@ -93,3 +93,49 @@ pub async fn get_speaker_sample(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// Match result from voiceprint matching
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchResultResponse {
+    pub voiceprint_id: String,
+    pub voiceprint_name: String,
+    pub similarity: f32,
+    pub confidence: String,
+}
+
+/// Match an embedding against known voiceprints
+#[tauri::command]
+pub async fn match_voiceprint(
+    state: State<'_, AppState>,
+    embedding: Vec<f32>,
+) -> Result<Option<MatchResultResponse>, String> {
+    tracing::debug!("Matching voiceprint with {} dimensional embedding", embedding.len());
+
+    let result = state.find_voiceprint_match(&embedding);
+    
+    Ok(result.map(|m| MatchResultResponse {
+        voiceprint_id: m.voiceprint.id,
+        voiceprint_name: m.voiceprint.name,
+        similarity: m.similarity,
+        confidence: m.confidence.to_string(),
+    }))
+}
+
+/// Match an embedding and auto-update on high confidence
+#[tauri::command]
+pub async fn match_voiceprint_with_update(
+    state: State<'_, AppState>,
+    embedding: Vec<f32>,
+) -> Result<Option<MatchResultResponse>, String> {
+    tracing::debug!("Matching voiceprint with auto-update, {} dimensions", embedding.len());
+
+    let result = state.match_voiceprint_with_update(&embedding);
+    
+    Ok(result.map(|m| MatchResultResponse {
+        voiceprint_id: m.voiceprint.id,
+        voiceprint_name: m.voiceprint.name,
+        similarity: m.similarity,
+        confidence: m.confidence.to_string(),
+    }))
+}

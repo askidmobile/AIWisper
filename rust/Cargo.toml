@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.19"
+version = "2.0.20"
 edition = "2021"
 authors = ["AIWisper Team"]
 license = "MIT"
@@ -28,6 +28,9 @@ serde_json = "1"
 # Error handling
 anyhow = "1"
 thiserror = "1"
+
+# Synchronization
+parking_lot = "0.12"
 
 # Logging
 tracing = "0.1"
