@@ -2,11 +2,14 @@
 # =============================================================================
 # AIWisper - Tauri Application Build Script
 # =============================================================================
-# Собирает Tauri приложение и исправляет DMG (скрывает VolumeIcon.icns)
+# Собирает Tauri приложение и исправляет DMG (удаляет VolumeIcon.icns)
 #
 # Использование:
-#   ./scripts/build-tauri.sh           # Полная сборка
-#   ./scripts/build-tauri.sh --debug   # Debug сборка
+#   ./scripts/build-tauri.sh                    # Release сборка (native arch)
+#   ./scripts/build-tauri.sh --debug            # Debug сборка
+#   ./scripts/build-tauri.sh --target arm64     # Release для Apple Silicon
+#   ./scripts/build-tauri.sh --target x64       # Release для Intel
+#   ./scripts/build-tauri.sh --target universal # Universal Binary (arm64 + x64)
 #
 # Результат: rust/target/release/bundle/dmg/AIWisper_*.dmg
 # =============================================================================
@@ -31,6 +34,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # Параметры
 DEBUG_BUILD=false
+TARGET_ARCH=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -38,8 +42,18 @@ while [[ $# -gt 0 ]]; do
             DEBUG_BUILD=true
             shift
             ;;
+        --target)
+            TARGET_ARCH="$2"
+            shift 2
+            ;;
         --help|-h)
-            echo "Usage: $0 [--debug]"
+            echo "Usage: $0 [--debug] [--target arm64|x64|universal]"
+            echo ""
+            echo "Options:"
+            echo "  --debug           Build debug version"
+            echo "  --target arm64    Build for Apple Silicon"
+            echo "  --target x64      Build for Intel"
+            echo "  --target universal Build Universal Binary (arm64 + x64)"
             exit 0
             ;;
         *)
@@ -75,20 +89,60 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     log_info "  - Note: INT8 models use CPU (faster than CoreML for quantized)"
 fi
 
+# Определяем target для cargo
+CARGO_TARGET=""
+case "$TARGET_ARCH" in
+    arm64|aarch64)
+        CARGO_TARGET="--target aarch64-apple-darwin"
+        log_info "Target: Apple Silicon (aarch64-apple-darwin)"
+        ;;
+    x64|x86_64|intel)
+        CARGO_TARGET="--target x86_64-apple-darwin"
+        log_info "Target: Intel (x86_64-apple-darwin)"
+        ;;
+    universal)
+        log_info "Target: Universal Binary (arm64 + x64)"
+        # Universal build требует отдельной обработки
+        ;;
+    "")
+        log_info "Target: Native architecture"
+        ;;
+    *)
+        log_error "Unknown target: $TARGET_ARCH"
+        exit 1
+        ;;
+esac
+
 if [ "$DEBUG_BUILD" = true ]; then
-    cargo tauri build --debug --bundles dmg
+    cargo tauri build --debug --bundles dmg $CARGO_TARGET
     BUNDLE_DIR="$RUST_DIR/target/debug/bundle"
 else
-    cargo tauri build --bundles dmg
-    BUNDLE_DIR="$RUST_DIR/target/release/bundle"
+    cargo tauri build --bundles dmg $CARGO_TARGET
+    if [ -n "$CARGO_TARGET" ]; then
+        # Для cross-compile target директория другая
+        case "$TARGET_ARCH" in
+            arm64|aarch64)
+                BUNDLE_DIR="$RUST_DIR/target/aarch64-apple-darwin/release/bundle"
+                ;;
+            x64|x86_64|intel)
+                BUNDLE_DIR="$RUST_DIR/target/x86_64-apple-darwin/release/bundle"
+                ;;
+        esac
+    else
+        BUNDLE_DIR="$RUST_DIR/target/release/bundle"
+    fi
 fi
 
 log_success "Tauri build completed"
 
 # =============================================================================
-# Постобработка DMG - скрываем VolumeIcon.icns
+# Постобработка DMG - УДАЛЯЕМ VolumeIcon.icns полностью
 # =============================================================================
-log_info "Post-processing DMG..."
+# Проблема: Tauri добавляет VolumeIcon.icns как видимый файл.
+# Решение: Удаляем его полностью. Иконка тома всё равно будет работать
+# через .DS_Store и атрибуты тома.
+# =============================================================================
+log_info "Post-processing DMG (removing VolumeIcon.icns)..."
 
 DMG_DIR="$BUNDLE_DIR/dmg"
 if [ -d "$DMG_DIR" ]; then
@@ -100,33 +154,31 @@ if [ -d "$DMG_DIR" ]; then
             MOUNT_POINT=$(mktemp -d)
             TEMP_DMG=$(mktemp).dmg
             
-            # Монтируем DMG
+            # Монтируем DMG read-only для проверки
             hdiutil attach "$dmg_file" -mountpoint "$MOUNT_POINT" -nobrowse -quiet
             
             # Проверяем наличие VolumeIcon.icns (с точкой или без)
             NEEDS_FIX=false
-            ICON_FILE=""
             
-            if [ -f "$MOUNT_POINT/.VolumeIcon.icns" ]; then
-                ICON_FILE="$MOUNT_POINT/.VolumeIcon.icns"
-                # Проверяем есть ли флаг hidden
-                if ! ls -lO "$ICON_FILE" 2>/dev/null | grep -q "hidden"; then
-                    NEEDS_FIX=true
-                    log_warn ".VolumeIcon.icns exists but not hidden"
-                else
-                    log_success ".VolumeIcon.icns already hidden"
-                fi
-            elif [ -f "$MOUNT_POINT/VolumeIcon.icns" ]; then
-                ICON_FILE="$MOUNT_POINT/VolumeIcon.icns"
+            if [ -f "$MOUNT_POINT/VolumeIcon.icns" ]; then
                 NEEDS_FIX=true
-                log_warn "VolumeIcon.icns is visible"
+                log_warn "Found visible VolumeIcon.icns"
+            elif [ -f "$MOUNT_POINT/.VolumeIcon.icns" ]; then
+                # Проверяем видимость через ls -la
+                if ls -la "$MOUNT_POINT/" | grep -q "VolumeIcon.icns"; then
+                    # Проверяем флаг hidden
+                    if ! ls -lO "$MOUNT_POINT/.VolumeIcon.icns" 2>/dev/null | grep -q "hidden"; then
+                        NEEDS_FIX=true
+                        log_warn "Found .VolumeIcon.icns without hidden flag"
+                    fi
+                fi
             fi
             
-            if [ "$NEEDS_FIX" = true ] && [ -n "$ICON_FILE" ]; then
-                log_info "Fixing VolumeIcon.icns visibility..."
-                
-                # Отмонтируем read-only
-                hdiutil detach "$MOUNT_POINT" -quiet
+            # Отмонтируем
+            hdiutil detach "$MOUNT_POINT" -quiet
+            
+            if [ "$NEEDS_FIX" = true ]; then
+                log_info "Removing VolumeIcon.icns from DMG..."
                 
                 # Конвертируем в read-write
                 hdiutil convert "$dmg_file" -format UDRW -o "$TEMP_DMG" -quiet
@@ -134,17 +186,11 @@ if [ -d "$DMG_DIR" ]; then
                 # Монтируем read-write версию
                 hdiutil attach "$TEMP_DMG" -mountpoint "$MOUNT_POINT" -nobrowse -quiet
                 
-                # Находим файл иконки
-                if [ -f "$MOUNT_POINT/VolumeIcon.icns" ]; then
-                    # Переименовываем с точкой
-                    mv "$MOUNT_POINT/VolumeIcon.icns" "$MOUNT_POINT/.VolumeIcon.icns"
-                fi
+                # УДАЛЯЕМ файл иконки полностью (вместо скрытия)
+                rm -f "$MOUNT_POINT/VolumeIcon.icns" 2>/dev/null || true
+                rm -f "$MOUNT_POINT/.VolumeIcon.icns" 2>/dev/null || true
                 
-                # Устанавливаем флаг hidden через chflags
-                if [ -f "$MOUNT_POINT/.VolumeIcon.icns" ]; then
-                    chflags hidden "$MOUNT_POINT/.VolumeIcon.icns"
-                    log_success "Set hidden flag on .VolumeIcon.icns"
-                fi
+                log_success "Removed VolumeIcon.icns"
                 
                 # Отмонтируем
                 hdiutil detach "$MOUNT_POINT" -quiet
@@ -158,7 +204,7 @@ if [ -d "$DMG_DIR" ]; then
                 
                 log_success "DMG fixed: $(basename "$dmg_file")"
             else
-                hdiutil detach "$MOUNT_POINT" -quiet 2>/dev/null || true
+                log_success "DMG is clean: $(basename "$dmg_file")"
             fi
             
             # Очистка
