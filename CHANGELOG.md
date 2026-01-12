@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.25] - 2025-01-12
+
+### Fixed
+- **Speaker Duration Bug "166666м 40с"**: Исправлен критический баг отображения длительности речи спикера
+  - **Проблема**: Некоторые спикеры показывали нереальную длительность "166666м 40с" вместо корректного времени
+  - **Причина**: `chunk.duration` хранится в наносекундах, но делился на 1000 (как миллисекунды) вместо 1_000_000_000
+  - **Решение**: Исправлено деление для корректного преобразования наносекунд в секунды
+
+- **Duplicate Speakers in List**: Исправлено дублирование спикеров (два "Вы" или два "Собеседника")
+  - **Проблема**: Legacy спикеры `"mic"`/`"sys"` добавлялись даже когда в dialogue уже были `SPEAKER_00`/`SPEAKER_01`
+  - **Решение**: Добавлена проверка на существующие mic/sys-type спикеры перед добавлением legacy записей
+
+- **Speaker Rename Not Working**: Исправлено переименование спикеров (диалог закрывался без сохранения)
+  - **Проблема**: После успешного вызова `rename_session_speaker` не эмитилось событие `speaker_renamed`
+  - **Решение**: Добавлен `notify('speaker_renamed', ...)` в TauriContext после успешного переименования
+
+### Added
+- **Speaker Audio Preview**: Реализовано предпрослушивание голоса спикера
+  - Кнопка воспроизведения теперь появляется для всех спикеров с сегментами
+  - Извлекается до 10 секунд аудио из самых длинных сегментов спикера
+  - Если у спикера только короткие фразы — воспроизводится доступное аудио
+  - Приоритет отдаётся длинным сегментам для лучшей идентификации голоса
+
+### Technical
+- `rust/src-tauri/src/state/mod.rs`:
+  - `get_session_speakers()`: Исправлено деление duration (ns → sec)
+  - `get_session_speakers()`: Добавлена проверка `has_mic_speaker`/`has_sys_speaker`
+  - `get_session_speakers()`: `has_sample: segment_count > 0`
+  - `get_speaker_sample()`: Полностью переписан — извлекает реальное аудио из MP3
+  
+- `rust/ui/src/context/TauriContext.tsx`:
+  - Добавлен `notify('speaker_renamed', ...)` после успешного переименования
+  - Добавлен `notify('speakers_merged', ...)` после объединения спикеров
+
 ## [2.0.24] - 2025-01-12
 
 ### Fixed

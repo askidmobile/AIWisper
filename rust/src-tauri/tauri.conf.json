@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AIWisper",
-  "version": "2.0.24",
+  "version": "2.0.25",
   "identifier": "com.aiwisper.desktop",
   "build": {
     "beforeDevCommand": "cd ../ui && npm run dev",

@@ -2091,14 +2091,24 @@ impl AppState {
             }
 
             // Also check mic_text and sys_text for legacy sessions
-            if chunk.mic_text.is_some() && !speakers_map.contains_key("mic") {
-                let duration_sec = chunk.duration as f64 / 1000.0;
+            // Check if we already have a mic-type speaker (mic, SPEAKER_00, or custom name containing "вы")
+            let has_mic_speaker = speakers_map.keys().any(|k| {
+                k == "mic" || k.starts_with("SPEAKER_00") || k.to_lowercase().contains("вы")
+            });
+            if chunk.mic_text.is_some() && !has_mic_speaker {
+                // chunk.duration is in nanoseconds, convert to seconds
+                let duration_sec = chunk.duration as f64 / 1_000_000_000.0;
                 speakers_map
                     .entry("mic".to_string())
                     .or_insert((1, duration_sec));
             }
-            if chunk.sys_text.is_some() && !speakers_map.contains_key("sys") {
-                let duration_sec = chunk.duration as f64 / 1000.0;
+            // Check if we already have a sys-type speaker (sys, SPEAKER_01+, or custom name)
+            let has_sys_speaker = speakers_map.keys().any(|k| {
+                k == "sys" || (k.starts_with("SPEAKER_") && !k.starts_with("SPEAKER_00"))
+            });
+            if chunk.sys_text.is_some() && !has_sys_speaker {
+                // chunk.duration is in nanoseconds, convert to seconds
+                let duration_sec = chunk.duration as f64 / 1_000_000_000.0;
                 speakers_map
                     .entry("sys".to_string())
                     .or_insert((1, duration_sec));
@@ -2139,7 +2149,8 @@ impl AppState {
                     is_mic,
                     segment_count,
                     total_duration,
-                    has_sample: false, // TODO: Check if sample audio exists
+                    // Speaker has sample if they have at least one segment with dialogue
+                    has_sample: segment_count > 0,
                 }
             })
             .collect();
@@ -2424,10 +2435,14 @@ impl AppState {
             .and_then(|matcher| matcher.match_with_auto_update(embedding))
     }
 
-    /// Get audio sample for a speaker (stub - returns silence)
+    /// Get audio sample for a speaker (up to 10 seconds of their speech)
+    /// Extracts audio segments where the speaker is talking
     pub async fn get_speaker_sample(&self, session_id: &str, speaker_id: i32) -> Result<String> {
+        use aiwisper_audio::Mp3Decoder;
+        use std::collections::HashMap;
+
         let sessions = self.inner.sessions.read();
-        let _session = sessions
+        let session = sessions
             .iter()
             .find(|s| s.id == session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
@@ -2438,11 +2453,164 @@ impl AppState {
             speaker_id
         );
 
-        // Generate 2 seconds of silence as a sample (32000 samples at 16kHz)
-        let silence_samples = vec![0.0f32; 32000];
-        let wav_data = Self::samples_to_wav(&silence_samples);
+        // First, find the speaker's original_key by reconstructing the speaker mapping
+        // This matches the logic in get_session_speakers
+        let mut speakers_map: HashMap<String, (usize, f64)> = HashMap::new();
+        
+        for chunk in &session.chunks {
+            for segment in &chunk.dialogue {
+                if let Some(speaker) = &segment.speaker {
+                    let duration_sec = (segment.end - segment.start) as f64 / 1000.0;
+                    let entry = speakers_map.entry(speaker.clone()).or_insert((0, 0.0));
+                    entry.0 += 1;
+                    entry.1 += duration_sec;
+                }
+            }
+        }
 
-        // Encode as base64 data URL
+        // Find the speaker key that matches speaker_id
+        let mut speaker_keys: Vec<(String, bool)> = speakers_map
+            .keys()
+            .map(|k| {
+                let is_mic = k == "mic"
+                    || k.starts_with("SPEAKER_00")
+                    || k.to_lowercase().contains("вы");
+                (k.clone(), is_mic)
+            })
+            .collect();
+        
+        // Sort same as get_session_speakers to match local_id assignment
+        speaker_keys.sort_by(|a, b| {
+            if a.1 && !b.1 { return std::cmp::Ordering::Less; }
+            if !a.1 && b.1 { return std::cmp::Ordering::Greater; }
+            std::cmp::Ordering::Equal
+        });
+
+        let target_key = if speaker_id == -1 {
+            // Mic speaker
+            speaker_keys.iter()
+                .find(|(_, is_mic)| *is_mic)
+                .map(|(k, _)| k.clone())
+        } else {
+            // Non-mic speaker by index
+            let non_mic_keys: Vec<_> = speaker_keys.iter()
+                .filter(|(_, is_mic)| !*is_mic)
+                .collect();
+            non_mic_keys.get(speaker_id as usize)
+                .map(|(k, _)| k.clone())
+        };
+
+        let target_key = target_key.ok_or_else(|| anyhow::anyhow!("Speaker not found: {}", speaker_id))?;
+        drop(sessions); // Release lock before file I/O
+
+        tracing::debug!("Found speaker key: {} for speaker_id: {}", target_key, speaker_id);
+
+        // Collect all segments for this speaker, sorted by duration (longest first)
+        let sessions = self.inner.sessions.read();
+        let session = sessions.iter().find(|s| s.id == session_id).unwrap();
+        
+        let mut segments: Vec<(i64, i64)> = Vec::new();
+        for chunk in &session.chunks {
+            for segment in &chunk.dialogue {
+                if segment.speaker.as_ref() == Some(&target_key) {
+                    segments.push((segment.start, segment.end));
+                }
+            }
+        }
+        drop(sessions);
+
+        if segments.is_empty() {
+            tracing::warn!("No segments found for speaker: {}", target_key);
+            // Return silence as fallback
+            let silence_samples = vec![0.0f32; 32000];
+            let wav_data = Self::samples_to_wav(&silence_samples);
+            let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_data);
+            return Ok(format!("data:audio/wav;base64,{}", base64));
+        }
+
+        // Sort segments by duration (longest first) to prioritize better samples
+        segments.sort_by(|a, b| {
+            let dur_a = a.1 - a.0;
+            let dur_b = b.1 - b.0;
+            dur_b.cmp(&dur_a)
+        });
+
+        // Collect up to 10 seconds of audio
+        const TARGET_DURATION_MS: i64 = 10_000;
+        let mut collected_duration_ms: i64 = 0;
+        let mut selected_segments: Vec<(i64, i64)> = Vec::new();
+
+        for (start, end) in &segments {
+            let segment_duration = end - start;
+            if collected_duration_ms + segment_duration <= TARGET_DURATION_MS {
+                selected_segments.push((*start, *end));
+                collected_duration_ms += segment_duration;
+            } else if collected_duration_ms < TARGET_DURATION_MS {
+                // Partial segment to fill remaining time
+                let remaining = TARGET_DURATION_MS - collected_duration_ms;
+                selected_segments.push((*start, start + remaining));
+                collected_duration_ms += remaining;
+                break;
+            }
+            
+            if collected_duration_ms >= TARGET_DURATION_MS {
+                break;
+            }
+        }
+
+        // Sort selected segments chronologically for natural playback
+        selected_segments.sort_by(|a, b| a.0.cmp(&b.0));
+
+        tracing::debug!(
+            "Selected {} segments totaling {}ms for speaker sample",
+            selected_segments.len(),
+            collected_duration_ms
+        );
+
+        // Check if audio file exists
+        let sessions_dir = get_sessions_dir()
+            .ok_or_else(|| anyhow::anyhow!("Sessions directory not found"))?;
+        let mp3_path = sessions_dir.join(session_id).join("full.mp3");
+
+        if !mp3_path.exists() {
+            tracing::warn!("Audio file not found: {:?}", mp3_path);
+            let silence_samples = vec![0.0f32; 32000];
+            let wav_data = Self::samples_to_wav(&silence_samples);
+            let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_data);
+            return Ok(format!("data:audio/wav;base64,{}", base64));
+        }
+
+        // Extract and concatenate audio segments
+        let mut all_samples: Vec<f32> = Vec::new();
+        
+        for (start_ms, end_ms) in &selected_segments {
+            match Mp3Decoder::decode_segment_mono(&mp3_path, *start_ms, *end_ms) {
+                Ok(samples) => {
+                    all_samples.extend(samples);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to decode segment {}ms-{}ms: {}", start_ms, end_ms, e);
+                }
+            }
+        }
+
+        if all_samples.is_empty() {
+            tracing::warn!("Failed to extract any audio samples");
+            let silence_samples = vec![0.0f32; 32000];
+            let wav_data = Self::samples_to_wav(&silence_samples);
+            let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_data);
+            return Ok(format!("data:audio/wav;base64,{}", base64));
+        }
+
+        tracing::info!(
+            "Generated speaker sample: {} samples ({:.1}s) for speaker {}",
+            all_samples.len(),
+            all_samples.len() as f64 / 16000.0,
+            target_key
+        );
+
+        // Convert to WAV and encode as base64
+        let wav_data = Self::samples_to_wav(&all_samples);
         let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_data);
         Ok(format!("data:audio/wav;base64,{}", base64))
     }

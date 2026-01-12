@@ -452,7 +452,23 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     }
                     break;
                 case 'rename_session_speaker':
+                    // Notify UI about speaker rename for immediate update
+                    notify('speaker_renamed', {
+                        sessionId: msg.sessionId,
+                        localId: msg.localSpeakerId,
+                        speakerId: msg.speakerId,
+                        newName: msg.newName || msg.speakerName,
+                        savedAsVoiceprint: msg.saveAsVoiceprint || false
+                    });
+                    // Also refresh session data and speakers list
+                    if (msg.sessionId) {
+                        sendMessage({ type: 'get_session', sessionId: msg.sessionId });
+                        sendMessage({ type: 'get_session_speakers', sessionId: msg.sessionId });
+                    }
+                    break;
                 case 'merge_session_speakers':
+                    // Notify UI about speakers merge
+                    notify('speakers_merged', { sessionId: msg.sessionId });
                     // Refresh session data and speakers list
                     if (msg.sessionId) {
                         sendMessage({ type: 'get_session', sessionId: msg.sessionId });
