@@ -611,6 +611,7 @@ fn convert_chunk_to_rust(chunk: GoChunkMeta, index: i32) -> crate::commands::ses
         is_stereo: true, // Go backend uses stereo
         status: "completed".to_string(),
         speaker: None,
+        excluded: false,
     }
 }
 
@@ -915,6 +916,7 @@ impl AppState {
                     is_stereo: false,
                     status: chunk.status.clone(),
                     speaker: Some("mic".to_string()),
+                    excluded: chunk.excluded,
                 }
             })
             .collect();
@@ -1960,6 +1962,62 @@ impl AppState {
         Ok(())
     }
 
+    /// Toggle chunk exclusion status (in-memory and persist to chunk JSON)
+    /// Returns the new excluded state
+    pub async fn toggle_chunk_exclude(&self, session_id: &str, chunk_id: &str) -> Result<bool> {
+        let mut new_excluded = false;
+        
+        // Update in-memory
+        {
+            let mut sessions = self.inner.sessions.write();
+            if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
+                if let Some(chunk) = session.chunks.iter_mut().find(|c| c.id == chunk_id) {
+                    chunk.excluded = !chunk.excluded;
+                    new_excluded = chunk.excluded;
+                    tracing::info!(
+                        "Toggled chunk {} excluded to {} in session {}",
+                        chunk_id, new_excluded, session_id
+                    );
+                } else {
+                    anyhow::bail!("Chunk not found: {}", chunk_id);
+                }
+            } else {
+                anyhow::bail!("Session not found: {}", session_id);
+            }
+        }
+
+        // Persist to chunk JSON file
+        if let Some(sessions_dir) = get_sessions_dir() {
+            let chunks_dir = sessions_dir.join(session_id).join("chunks");
+            
+            // Find chunk file by reading all chunk files and matching chunk_id
+            if chunks_dir.exists() {
+                for entry in std::fs::read_dir(&chunks_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.extension().map_or(false, |ext| ext == "json") {
+                        let content = std::fs::read_to_string(&path)?;
+                        let mut chunk_meta: serde_json::Value = serde_json::from_str(&content)?;
+                        
+                        if chunk_meta.get("id").and_then(|v| v.as_str()) == Some(chunk_id) {
+                            // Found the chunk, update excluded field
+                            chunk_meta["excluded"] = serde_json::Value::Bool(new_excluded);
+                            
+                            // Write back
+                            let updated = serde_json::to_string_pretty(&chunk_meta)?;
+                            std::fs::write(&path, updated)?;
+                            
+                            tracing::info!("Saved excluded={} to {:?}", new_excluded, path);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(new_excluded)
+    }
+
     /// Set session summary (in-memory and persist to meta.json)
     pub async fn set_session_summary(&self, session_id: &str, summary: &str) -> Result<()> {
         // Update in-memory
@@ -2965,6 +3023,7 @@ impl AppState {
                 is_stereo: false, // Imported audio is mono
                 status: "pending".to_string(),
                 speaker: None,
+                excluded: false,
             };
             
             // Save chunk metadata

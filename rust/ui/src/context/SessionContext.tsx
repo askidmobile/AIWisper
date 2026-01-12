@@ -32,6 +32,7 @@ interface SessionContextType {
     generateSummary: (sessionId: string, model: string, url: string, contextSize?: number) => void;
     improveTranscription: (sessionId: string, model: string, url: string) => void;
     cancelFullTranscription: () => void;
+    toggleChunkExclude: (sessionId: string, chunkId: string) => void;
 
     // Setters
     setSelectedSession: (session: Session | null) => void;
@@ -120,6 +121,15 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
             setIsStopping(false);
             setIsFinalizing(false);
             setFinalizingMessage(null);
+            
+            // ✅ ИСПРАВЛЕНИЕ: Принудительно сбрасываем pending чанки при остановке сессии
+            // Это предотвращает "зависание" уведомления о завершении транскрипции
+            setPendingTranscriptionChunks(prev => {
+                if (prev.size > 0) {
+                    console.log('[SessionContext] 🧹 Clearing', prev.size, 'pending transcription chunks on session_stopped');
+                }
+                return new Set();
+            });
             
             // ✅ ВАЖНО: Сохраняем currentSession в selectedSession ПЕРЕД обнулением,
             // чтобы последующие chunk_transcribed могли обновить её
@@ -275,6 +285,31 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
             setPendingTranscriptionChunks(prev => new Set(prev).add(msg.chunkId));
         });
 
+        // ✅ Обработчик ошибки транскрипции чанка
+        // Удаляем из pending чтобы не застревало уведомление о завершении
+        const unsubChunkError = subscribe('chunk_error', (msg: any) => {
+            console.log('[SessionContext] ❌ chunk_error:', msg.chunkId, msg.error);
+            setPendingTranscriptionChunks(prev => {
+                const next = new Set(prev);
+                next.delete(msg.chunkId);
+                return next;
+            });
+            // Обновляем статус чанка в сессии
+            const updateChunkError = (session: Session | null) => {
+                if (!session || session.id !== msg.sessionId) return session;
+                return {
+                    ...session,
+                    chunks: session.chunks.map(c => 
+                        c.id === msg.chunkId 
+                            ? { ...c, status: 'error' as const, error: msg.error }
+                            : c
+                    )
+                };
+            };
+            setCurrentSession(updateChunkError);
+            setSelectedSession(updateChunkError);
+        });
+
         const unsubAudioLevel = subscribe('audio_level', (msg: any) => {
             // Backend sends level already scaled 0-100
             setMicLevel(Math.min(msg.micLevel || 0, 100));
@@ -350,6 +385,35 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
             ));
         });
 
+        // Обработчик toggle exclude для чанков
+        const unsubChunkExcludeToggled = subscribe('chunk_exclude_toggled', (msg: any) => {
+            console.log('[SessionContext] chunk_exclude_toggled:', msg.chunkId, 'excluded:', msg.excluded);
+            // Обновляем excluded в selectedSession
+            setSelectedSession(prev => {
+                if (!prev || prev.id !== msg.sessionId) return prev;
+                return {
+                    ...prev,
+                    chunks: prev.chunks.map(c =>
+                        c.id === msg.chunkId
+                            ? { ...c, excluded: msg.excluded }
+                            : c
+                    )
+                };
+            });
+            // Также обновляем в currentSession если активна запись
+            setCurrentSession(prev => {
+                if (!prev || prev.id !== msg.sessionId) return prev;
+                return {
+                    ...prev,
+                    chunks: prev.chunks.map(c =>
+                        c.id === msg.chunkId
+                            ? { ...c, excluded: msg.excluded }
+                            : c
+                    )
+                };
+            });
+        });
+
         // Full transcription events
         const unsubFullStarted = subscribe('full_transcription_started', (msg: any) => {
             setIsFullTranscribing(true);
@@ -394,9 +458,9 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
         return () => {
             unsubList(); unsubStarted(); unsubStopped(); unsubFinalizing(); unsubRecordingCompleted(); unsubDetails();
-            unsubChunkCreated(); unsubChunkTranscribed(); unsubChunkTranscribing();
+            unsubChunkCreated(); unsubChunkTranscribed(); unsubChunkTranscribing(); unsubChunkError();
             unsubAudioLevel(); unsubSummary(); unsubImprove(); unsubRenamed();
-            unsubTitleUpdated(); unsubTagsUpdated();
+            unsubTitleUpdated(); unsubTagsUpdated(); unsubChunkExcludeToggled();
             unsubFullStarted(); unsubFullProgress(); unsubFullCompleted();
             unsubFullError(); unsubFullCancelled();
         };
@@ -462,6 +526,10 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
         sendMessage({ type: 'cancel_full_transcription' });
     };
 
+    const toggleChunkExclude = (sessionId: string, chunkId: string) => {
+        sendMessage({ type: 'toggle_chunk_exclude', sessionId, chunkId });
+    };
+
     return (
         <SessionContext.Provider value={{
             sessions, currentSession, selectedSession, isRecording, isStopping,
@@ -475,6 +543,7 @@ export const SessionProvider: React.FC<{ children: React.ReactNode }> = ({ child
             // Actions
             startSession, stopSession, deleteSession, selectSession,
             generateSummary, improveTranscription, cancelFullTranscription,
+            toggleChunkExclude,
             setSelectedSession
         }}>
             {children}

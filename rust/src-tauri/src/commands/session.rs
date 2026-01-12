@@ -65,6 +65,9 @@ pub struct SessionChunk {
     pub is_stereo: bool,
     pub status: String,
     pub speaker: Option<String>,
+    /// Исключён из экспорта/сводки (галлюцинация или ручное исключение)
+    #[serde(default)]
+    pub excluded: bool,
 }
 
 /// Dialogue segment for transcript
@@ -136,6 +139,22 @@ pub async fn update_session_tags(
 
     state
         .update_session_tags(&session_id, tags)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Toggle chunk exclusion status
+/// Returns the new excluded state
+#[tauri::command]
+pub async fn toggle_chunk_exclude(
+    state: State<'_, AppState>,
+    session_id: String,
+    chunk_id: String,
+) -> Result<bool, String> {
+    tracing::info!("Toggling exclude for chunk {} in session {}", chunk_id, session_id);
+
+    state
+        .toggle_chunk_exclude(&session_id, &chunk_id)
         .await
         .map_err(|e| e.to_string())
 }

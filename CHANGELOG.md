@@ -5,6 +5,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.23] - 2025-01-12
+
+### Fixed
+- **Transcription Queue Retry Mechanism**: Исправлена критическая ошибка застревания чанков в очереди транскрипции
+  - **Проблема**: При долгих записях большинство чанков показывали статус "pending" и никогда не транскрибировались
+  - **Причина**: Семафор ограничивал до 2 одновременных транскрипций, чанки без слота просто пропускались через `continue`
+  - **Решение**: 
+    - Добавлена структура `PendingTranscription` для хранения данных чанков
+    - Добавлена очередь `pending_transcriptions: VecDeque<PendingTranscription>`
+    - Механизм retry обрабатывает pending очередь каждую итерацию основного цикла
+    - Перед финализацией сессии все оставшиеся pending чанки обрабатываются
+    - Увеличено `MAX_CONCURRENT_TRANSCRIPTIONS` с 2 до 3
+
+- **Session Finalization Stuck**: Исправлена проблема с зависшим уведомлением "Завершение транскрипции"
+  - **Проблема**: Уведомление не исчезало после остановки записи
+  - **Решение**: Добавлен сброс `pendingTranscriptionChunks` в обработчике `session_stopped`
+  - Добавлен обработчик события `chunk_error` для удаления failed чанков из pending set
+
+### Added
+- **Chunk Exclusion Feature**: Возможность исключения чанков (галлюцинаций) из экспорта/сводки
+  - Кнопка Eye/EyeOff на каждом чанке для toggle exclude статуса
+  - Визуальное затемнение исключённых чанков (opacity 0.5, grayscale 40%)
+  - Исключённые чанки автоматически фильтруются при экспорте (TXT, SRT, VTT, JSON, MD)
+  - Новая команда `toggle_chunk_exclude` в backend
+  - Поле `excluded: bool` в `ChunkMeta` и `SessionChunk`
+
+- **Automatic Hallucination Filtering**: Автоматическое определение и исключение галлюцинаций Whisper
+  - Паттерны галлюцинаций: "продолжение следует", "субтитры сделал", "подписывайтесь", etc.
+  - Очень короткий текст (< 5 символов) автоматически помечается как галлюцинация
+  - Галлюцинации автоматически получают `excluded = true`
+  - Увеличен порог тишины `SILENCE_THRESHOLD` с 0.02 до 0.04 для лучшей фильтрации
+
+### Technical
+- `rust/src-tauri/src/state/recording.rs`:
+  - `PendingTranscription` struct и `pending_transcriptions` queue
+  - `HALLUCINATION_PATTERNS` constant и `is_hallucination()` function
+  - Retry logic в main recording loop
+  - Hallucination check в `transcribe_chunk_stereo()` и `transcribe_chunk_samples()`
+  
+- `rust/src-tauri/src/state/mod.rs`:
+  - `toggle_chunk_exclude()` method
+  - Updated `SessionChunk` constructors with `excluded` field
+  
+- `rust/src-tauri/src/commands/session.rs`:
+  - `toggle_chunk_exclude` command
+  - `excluded` field в `SessionChunk`
+  
+- `rust/crates/aiwisper-audio/src/lib.rs`:
+  - `DEFAULT_SILENCE_THRESHOLD` increased from 0.02 to 0.04
+  
+- `rust/ui/src/context/SessionContext.tsx`:
+  - `toggleChunkExclude()` function
+  - `chunk_exclude_toggled` и `chunk_error` event handlers
+  - `setPendingTranscriptionChunks(new Set())` в `session_stopped`
+  
+- `rust/ui/src/components/chunks/ChunksViewSimple.tsx`:
+  - Eye/EyeOff toggle button
+  - Visual dimming for excluded chunks
+  
+- `rust/ui/src/hooks/useExport.ts`:
+  - Filter `!c.excluded` в всех export functions
+
 ## [2.0.22] - 2025-01-12
 
 ### Fixed

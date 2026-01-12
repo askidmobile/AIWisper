@@ -33,6 +33,7 @@ const MESSAGE_TO_COMMAND: Record<string, string> = {
     'update_session_tags': 'update_session_tags',
     'add_session_tag': 'update_session_tags',      // Handled via update_session_tags
     'remove_session_tag': 'update_session_tags',   // Handled via update_session_tags
+    'toggle_chunk_exclude': 'toggle_chunk_exclude',
     'export_session': 'export_session',
     // Models
     'get_models': 'list_models',
@@ -107,6 +108,7 @@ const EVENT_TO_MESSAGE: Record<string, string> = {
     'chunk_created': 'chunk_created',
     'chunk_transcribed': 'chunk_transcribed',
     'chunk_transcribing': 'chunk_transcribing',
+    'chunk_error': 'chunk_error',
     // Retranscription events
     'full_transcription_started': 'full_transcription_started',
     'full_transcription_progress': 'full_transcription_progress',
@@ -194,6 +196,9 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     break;
                 case 'update_session_tags':
                     args = { sessionId: msg.sessionId, tags: msg.tags || [] };
+                    break;
+                case 'toggle_chunk_exclude':
+                    args = { sessionId: msg.sessionId, chunkId: msg.chunkId };
                     break;
                 case 'export_session':
                     args = { sessionId: msg.sessionId, format: msg.format, path: msg.path };
@@ -352,6 +357,14 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     // Notify UI to update session tags
                     notify('session_tags_updated', { sessionId: msg.sessionId, tags: args.tags });
                     break;
+                case 'toggle_chunk_exclude':
+                    // Result is new excluded state (boolean)
+                    notify('chunk_exclude_toggled', { 
+                        sessionId: msg.sessionId, 
+                        chunkId: msg.chunkId, 
+                        excluded: result 
+                    });
+                    return result;
                 case 'get_models':
                     console.log('[Tauri] get_models result:', result);
                     console.log('[Tauri] First model status:', Array.isArray(result) && result.length > 0 ? result[0].status : 'N/A');

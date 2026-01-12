@@ -90,6 +90,7 @@ pub fn run() {
             commands::session::delete_session,
             commands::session::rename_session,
             commands::session::update_session_tags,
+            commands::session::toggle_chunk_exclude,
             commands::session::export_session,
             commands::session::get_session_speakers,
             commands::session::generate_summary,

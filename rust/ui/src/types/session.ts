@@ -32,6 +32,7 @@ export interface Chunk {
     micFilePath?: string;
     sysFilePath?: string;
     filePath?: string;
+    excluded?: boolean;     // Исключён из экспорта/сводки (галлюцинация или ручное исключение)
 }
 
 export interface WaveformData {

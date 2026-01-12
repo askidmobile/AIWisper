@@ -24,7 +24,8 @@ const SAMPLE_RATE: u32 = 24000;
 const TRANSCRIPTION_SAMPLE_RATE: u32 = 16000;
 
 /// Максимальное количество параллельных транскрипций
-const MAX_CONCURRENT_TRANSCRIPTIONS: usize = 2;
+/// Увеличено с 2 до 3 для лучшей производительности при длинных записях
+const MAX_CONCURRENT_TRANSCRIPTIONS: usize = 3;
 
 /// Счётчик активных транскрипций (глобальный семафор)
 static ACTIVE_TRANSCRIPTIONS: LazyLock<Arc<AtomicUsize>> = LazyLock::new(|| Arc::new(AtomicUsize::new(0)));
@@ -53,6 +54,58 @@ fn release_transcription_slot() {
 /// Получить количество активных транскрипций
 pub fn get_active_transcriptions() -> usize {
     ACTIVE_TRANSCRIPTIONS.load(Ordering::SeqCst)
+}
+
+/// Известные паттерны галлюцинаций Whisper на тишине
+/// Модель часто генерирует эти фразы когда на входе тишина или очень тихий звук
+const HALLUCINATION_PATTERNS: &[&str] = &[
+    "продолжение следует",
+    "субтитры сделал",
+    "субтитры делал",
+    "подписывайтесь на канал",
+    "спасибо за просмотр",
+    "до новых встреч",
+    "редактор субтитров",
+    "не забывайте подписываться",
+    "ставьте лайки",
+    "нажмите на колокольчик",
+    // Короткие бессмысленные фразы
+    "пвет",
+    "идеаль",
+    "приветствую",
+    "привет всем",
+    // Английские галлюцинации
+    "thank you for watching",
+    "subscribe to the channel",
+    "see you next time",
+    "please subscribe",
+    "thanks for watching",
+];
+
+/// Проверяет, является ли текст галлюцинацией модели
+/// 
+/// Галлюцинацией считается:
+/// 1. Текст содержит известные паттерны галлюцинаций
+/// 2. Очень короткий текст (< 5 символов) — скорее всего артефакт
+fn is_hallucination(text: &str) -> bool {
+    let text_lower = text.to_lowercase();
+    let text_trimmed = text_lower.trim();
+    
+    // Очень короткий текст — подозрительно
+    if text_trimmed.len() < 5 {
+        tracing::debug!("Hallucination detected: too short text '{}'", text);
+        return true;
+    }
+    
+    // Проверяем известные паттерны
+    for pattern in HALLUCINATION_PATTERNS {
+        if text_trimmed.contains(pattern) {
+            tracing::info!("Hallucination detected: '{}' matches pattern '{}'", text, pattern);
+            return true;
+        }
+    }
+    
+    false
 }
 
 /// Configuration for transcription during recording
@@ -224,6 +277,9 @@ pub struct ChunkMeta {
     pub sys_text: Option<String>,
     #[serde(default)]
     pub dialogue: Vec<DialogueEntry>,
+    /// Исключён из экспорта/сводки (галлюцинация или ручное исключение)
+    #[serde(default)]
+    pub excluded: bool,
 }
 
 /// Dialogue entry for JSON (with optional word-level timestamps)
@@ -251,6 +307,7 @@ impl ChunkMeta {
             mic_text: None,
             sys_text: None,
             dialogue: Vec::new(),
+            excluded: false,
         }
     }
 
@@ -568,6 +625,17 @@ fn recording_thread(
     const SYS_EMPTY_WARNING_THRESHOLD: u32 = 40; // 2 секунды (40 * 50ms)
     let mut sys_disconnected = false;
     let mut sys_fallback_logged = false;
+    
+    // Очередь pending транскрипций для retry когда слоты заняты
+    struct PendingTranscription {
+        chunk_meta: ChunkMeta,
+        chunk_path: PathBuf,
+        mic_samples: Vec<f32>,
+        sys_samples: Vec<f32>,
+        sample_rate: u32,
+        is_stereo: bool,
+    }
+    let mut pending_transcriptions: std::collections::VecDeque<PendingTranscription> = std::collections::VecDeque::new();
 
     // Main recording loop
     loop {
@@ -578,6 +646,83 @@ fn recording_thread(
 
         // Sleep briefly
         std::thread::sleep(std::time::Duration::from_millis(50));
+        
+        // Обработка pending транскрипций (retry для тех, что не смогли захватить слот)
+        while !pending_transcriptions.is_empty() {
+            if !try_acquire_transcription_slot() {
+                break; // Слоты всё ещё заняты, попробуем на следующей итерации
+            }
+            
+            let pending = pending_transcriptions.pop_front().unwrap();
+            tracing::info!(
+                "Retrying transcription for chunk {} (pending queue: {} remaining)",
+                pending.chunk_meta.index,
+                pending_transcriptions.len()
+            );
+            
+            // Emit chunk_transcribing event
+            let _ = app_handle.emit(
+                "chunk_transcribing",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "chunkId": pending.chunk_meta.id,
+                    "chunkIndex": pending.chunk_meta.index,
+                }),
+            );
+            
+            // Клонируем данные для фонового потока
+            let bg_chunk_meta = pending.chunk_meta;
+            let bg_chunk_path = pending.chunk_path;
+            let bg_session_id = session_id.clone();
+            let bg_app_handle = app_handle.clone();
+            let bg_transcription_config = transcription_config.clone();
+            let bg_drain_tx = drain_tx.clone();
+            let bg_voiceprint_matcher = voiceprint_matcher.clone();
+            let chunk_end_ms = bg_chunk_meta.end_ms;
+            
+            if pending.is_stereo {
+                let mic_samples = pending.mic_samples;
+                let sys_samples = pending.sys_samples;
+                let sample_rate = pending.sample_rate;
+                
+                std::thread::spawn(move || {
+                    let transcribed = transcribe_chunk_stereo(
+                        bg_chunk_meta,
+                        &mic_samples,
+                        &sys_samples,
+                        sample_rate,
+                        &bg_transcription_config,
+                        &bg_session_id,
+                        &bg_app_handle,
+                        bg_voiceprint_matcher.as_deref(),
+                    );
+                    if let Err(e) = transcribed.save(&bg_chunk_path) {
+                        tracing::error!("Failed to save transcribed chunk: {}", e);
+                    }
+                    let _ = bg_drain_tx.send(chunk_end_ms);
+                    release_transcription_slot();
+                });
+            } else {
+                let chunk_samples = pending.mic_samples; // В моно режиме mic_samples содержит все данные
+                let sample_rate = pending.sample_rate;
+                
+                std::thread::spawn(move || {
+                    let transcribed = transcribe_chunk_samples(
+                        bg_chunk_meta,
+                        &chunk_samples,
+                        sample_rate,
+                        &bg_transcription_config,
+                        &bg_session_id,
+                        &bg_app_handle,
+                    );
+                    if let Err(e) = transcribed.save(&bg_chunk_path) {
+                        tracing::error!("Failed to save transcribed chunk: {}", e);
+                    }
+                    let _ = bg_drain_tx.send(chunk_end_ms);
+                    release_transcription_slot();
+                });
+            }
+        }
 
         // Get new mic samples (at mic_sample_rate)
         // ВАЖНО: используем get_samples() + clear() вместо индексации,
@@ -788,12 +933,32 @@ fn recording_thread(
             // Проверяем доступность слота для транскрипции (семафор)
             if !try_acquire_transcription_slot() {
                 tracing::warn!(
-                    "Transcription slot not available (max {} concurrent), chunk {} queued",
+                    "Transcription slot not available (max {} concurrent), chunk {} added to pending queue",
                     MAX_CONCURRENT_TRANSCRIPTIONS,
                     chunk_meta.index
                 );
-                // Чанк будет сохранён как pending, но транскрипция не запустится
-                // Это предотвращает перегрузку системы
+                
+                // Добавляем в очередь pending для retry на следующей итерации
+                let is_stereo = chunk_buffer.has_separate_channels();
+                let (mic_samples, sys_samples, sample_rate) = if is_stereo {
+                    let mic = chunk_buffer.get_mic_samples_range(event.start_ms, event.end_ms);
+                    let sys = chunk_buffer.get_sys_samples_range(event.start_ms, event.end_ms);
+                    (mic, sys, chunk_buffer.sample_rate())
+                } else {
+                    let samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
+                    (samples, Vec::new(), chunk_buffer.sample_rate())
+                };
+                
+                pending_transcriptions.push_back(PendingTranscription {
+                    chunk_meta: chunk_meta.clone(),
+                    chunk_path: chunk_path.clone(),
+                    mic_samples,
+                    sys_samples,
+                    sample_rate,
+                    is_stereo,
+                });
+                
+                // Сохраняем чанк как pending
                 if let Err(e) = chunk_meta.save(&chunk_path) {
                     tracing::error!("Failed to save chunk meta: {}", e);
                 }
@@ -927,6 +1092,90 @@ fn recording_thread(
         );
     }
 
+    // ===== ОБРАБОТКА PENDING ТРАНСКРИПЦИЙ =====
+    // Перед финальной обработкой буферов обрабатываем все pending транскрипции
+    if !pending_transcriptions.is_empty() {
+        tracing::info!(
+            "Processing {} pending transcriptions before session end",
+            pending_transcriptions.len()
+        );
+        
+        while let Some(pending) = pending_transcriptions.pop_front() {
+            // Ждём слот (блокирующе, т.к. сессия уже останавливается)
+            while !try_acquire_transcription_slot() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            
+            tracing::info!(
+                "Processing pending chunk {} (remaining: {})",
+                pending.chunk_meta.index,
+                pending_transcriptions.len()
+            );
+            
+            // Emit chunk_transcribing event
+            let _ = app_handle.emit(
+                "chunk_transcribing",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "chunkId": pending.chunk_meta.id,
+                    "chunkIndex": pending.chunk_meta.index,
+                }),
+            );
+            
+            let bg_chunk_meta = pending.chunk_meta;
+            let bg_chunk_path = pending.chunk_path;
+            let bg_session_id = session_id.clone();
+            let bg_app_handle = app_handle.clone();
+            let bg_transcription_config = transcription_config.clone();
+            let bg_drain_tx = drain_tx.clone();
+            let bg_voiceprint_matcher = voiceprint_matcher.clone();
+            let chunk_end_ms = bg_chunk_meta.end_ms;
+            
+            if pending.is_stereo {
+                let mic_samples = pending.mic_samples;
+                let sys_samples = pending.sys_samples;
+                let sample_rate = pending.sample_rate;
+                
+                std::thread::spawn(move || {
+                    let transcribed = transcribe_chunk_stereo(
+                        bg_chunk_meta,
+                        &mic_samples,
+                        &sys_samples,
+                        sample_rate,
+                        &bg_transcription_config,
+                        &bg_session_id,
+                        &bg_app_handle,
+                        bg_voiceprint_matcher.as_deref(),
+                    );
+                    if let Err(e) = transcribed.save(&bg_chunk_path) {
+                        tracing::error!("Failed to save transcribed chunk: {}", e);
+                    }
+                    let _ = bg_drain_tx.send(chunk_end_ms);
+                    release_transcription_slot();
+                });
+            } else {
+                let chunk_samples = pending.mic_samples;
+                let sample_rate = pending.sample_rate;
+                
+                std::thread::spawn(move || {
+                    let transcribed = transcribe_chunk_samples(
+                        bg_chunk_meta,
+                        &chunk_samples,
+                        sample_rate,
+                        &bg_transcription_config,
+                        &bg_session_id,
+                        &bg_app_handle,
+                    );
+                    if let Err(e) = transcribed.save(&bg_chunk_path) {
+                        tracing::error!("Failed to save transcribed chunk: {}", e);
+                    }
+                    let _ = bg_drain_tx.send(chunk_end_ms);
+                    release_transcription_slot();
+                });
+            }
+        }
+    }
+    
     // ===== ФИНАЛЬНАЯ ОБРАБОТКА БУФЕРОВ =====
     // После break из цикла могут остаться необработанные семплы:
     // 1. В mic_buffer/sys_buffer (невыровненные данные)
@@ -1331,11 +1580,22 @@ fn transcribe_chunk_samples(
             chunk_meta.dialogue = dialogue.clone();
             chunk_meta.status = "completed".to_string();
 
+            // Проверяем на галлюцинации и автоматически исключаем чанк
+            if is_hallucination(&chunk_meta.transcription) {
+                chunk_meta.excluded = true;
+                tracing::warn!(
+                    "Chunk {} auto-excluded: hallucination detected in '{}'",
+                    chunk_meta.index,
+                    chunk_meta.transcription
+                );
+            }
+
             tracing::info!(
-                "Chunk {} transcribed: {} segments, {} chars",
+                "Chunk {} transcribed: {} segments, {} chars{}",
                 chunk_meta.index,
                 dialogue.len(),
-                chunk_meta.transcription.len()
+                chunk_meta.transcription.len(),
+                if chunk_meta.excluded { " (auto-excluded)" } else { "" }
             );
 
             // Emit chunk_transcribed event
@@ -1354,6 +1614,7 @@ fn transcribe_chunk_samples(
                         "transcription": chunk_meta.transcription,
                         "dialogue": dialogue,
                         "isStereo": false,
+                        "excluded": chunk_meta.excluded,
                     }
                 }),
             );
@@ -1589,10 +1850,22 @@ fn transcribe_chunk_stereo(
     chunk_meta.dialogue = all_dialogue.clone();
     chunk_meta.status = "completed".to_string();
 
+    // Проверяем на галлюцинации и автоматически исключаем чанк
+    // Галлюцинации часто возникают на тихих участках записи
+    if is_hallucination(&chunk_meta.transcription) {
+        chunk_meta.excluded = true;
+        tracing::warn!(
+            "Chunk {} auto-excluded: hallucination detected in '{}'",
+            chunk_meta.index,
+            chunk_meta.transcription
+        );
+    }
+
     tracing::info!(
-        "Stereo chunk {} transcribed: {} segments total",
+        "Stereo chunk {} transcribed: {} segments total{}",
         chunk_meta.index,
-        all_dialogue.len()
+        all_dialogue.len(),
+        if chunk_meta.excluded { " (auto-excluded)" } else { "" }
     );
 
     // Emit chunk_transcribed event
@@ -1611,6 +1884,7 @@ fn transcribe_chunk_stereo(
                 "transcription": chunk_meta.transcription,
                 "dialogue": all_dialogue,
                 "isStereo": true,
+                "excluded": chunk_meta.excluded,
             }
         }),
     );

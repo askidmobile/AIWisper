@@ -34,8 +34,9 @@ export const useExport = () => {
     const copyToClipboard = useCallback(async (session: Session): Promise<boolean> => {
         if (!session?.chunks) return false;
         
+        // Фильтруем исключённые чанки (excluded)
         const dialogue = session.chunks
-            .filter(c => c.status === 'completed' && c.dialogue)
+            .filter(c => c.status === 'completed' && c.dialogue && !c.excluded)
             .flatMap(c => c.dialogue || [])
             .sort((a, b) => (a.start || 0) - (b.start || 0));
         
@@ -58,8 +59,9 @@ export const useExport = () => {
     const exportTXT = useCallback((session: Session): void => {
         if (!session?.chunks) return;
         
+        // Фильтруем исключённые чанки (excluded)
         const dialogue = session.chunks
-            .filter(c => c.status === 'completed' && c.dialogue)
+            .filter(c => c.status === 'completed' && c.dialogue && !c.excluded)
             .flatMap(c => c.dialogue || [])
             .sort((a, b) => (a.start || 0) - (b.start || 0));
         
@@ -87,8 +89,9 @@ export const useExport = () => {
     const exportSRT = useCallback((session: Session): void => {
         if (!session?.chunks) return;
         
+        // Фильтруем исключённые чанки (excluded)
         const dialogue = session.chunks
-            .filter(c => c.status === 'completed' && c.dialogue)
+            .filter(c => c.status === 'completed' && c.dialogue && !c.excluded)
             .flatMap(c => c.dialogue || [])
             .sort((a, b) => (a.start || 0) - (b.start || 0));
         
@@ -115,8 +118,9 @@ export const useExport = () => {
     const exportVTT = useCallback((session: Session): void => {
         if (!session?.chunks) return;
         
+        // Фильтруем исключённые чанки (excluded)
         const dialogue = session.chunks
-            .filter(c => c.status === 'completed' && c.dialogue)
+            .filter(c => c.status === 'completed' && c.dialogue && !c.excluded)
             .flatMap(c => c.dialogue || [])
             .sort((a, b) => (a.start || 0) - (b.start || 0));
         
@@ -143,8 +147,9 @@ export const useExport = () => {
     const exportJSON = useCallback((session: Session): void => {
         if (!session?.chunks) return;
         
+        // Фильтруем исключённые чанки (excluded)
         const dialogue = session.chunks
-            .filter(c => c.status === 'completed' && c.dialogue)
+            .filter(c => c.status === 'completed' && c.dialogue && !c.excluded)
             .flatMap(c => c.dialogue || [])
             .sort((a, b) => (a.start || 0) - (b.start || 0));
         
@@ -183,8 +188,9 @@ export const useExport = () => {
     const exportMarkdown = useCallback((session: Session): void => {
         if (!session?.chunks) return;
         
+        // Фильтруем исключённые чанки (excluded)
         const dialogue = session.chunks
-            .filter(c => c.status === 'completed' && c.dialogue)
+            .filter(c => c.status === 'completed' && c.dialogue && !c.excluded)
             .flatMap(c => c.dialogue || [])
             .sort((a, b) => (a.start || 0) - (b.start || 0));
         

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Chunk, TranscriptSegment } from '../../types/session';
 import { useBackendContext } from '../../context/BackendContext';
+import { useSessionContext } from '../../context/SessionContext';
 
 // Цвета для разных спикеров (как в legacy)
 const SPEAKER_COLORS = ['#2196f3', '#e91e63', '#ff9800', '#9c27b0', '#00bcd4', '#8bc34a'];
@@ -57,6 +58,7 @@ export const ChunksViewSimple: React.FC<ChunksViewSimpleProps> = ({
     onRetranscribe,
 }) => {
     const { isTauri, sendMessage } = useBackendContext();
+    const { toggleChunkExclude } = useSessionContext();
     const validChunks = (chunks || []).filter(chunk => chunk);
 
     if (validChunks.length === 0) {
@@ -92,6 +94,7 @@ export const ChunksViewSimple: React.FC<ChunksViewSimpleProps> = ({
                         isRetranscribeDisabled={isFullTranscribing}
                         onPlayChunk={onPlayChunk}
                         onRetranscribe={() => chunk.id && onRetranscribe(chunk.id)}
+                        onToggleExclude={(chunkId) => toggleChunkExclude(sessionId, chunkId)}
                     />
                 );
             })}
@@ -114,6 +117,7 @@ interface ChunkItemProps {
     isRetranscribeDisabled?: boolean; // Блокировка кнопки ретранскрибации
     onPlayChunk: (url: string, startMs?: number) => void;
     onRetranscribe: () => void;
+    onToggleExclude: (chunkId: string) => void;
 }
 
 const ChunkItem: React.FC<ChunkItemProps> = ({
@@ -128,6 +132,7 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
     isRetranscribeDisabled = false,
     onPlayChunk,
     onRetranscribe,
+    onToggleExclude,
 }) => {
     const [chunkAudioUrl, setChunkAudioUrl] = useState<string | null>(null);
     const [isLoadingAudio, setIsLoadingAudio] = useState(false);
@@ -190,18 +195,24 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
     const hasDialogue = chunk.dialogue && chunk.dialogue.length > 0;
     const hasMicSys = chunk.micText || chunk.sysText;
 
+    const isExcluded = chunk.excluded === true;
+    
     return (
         <div style={{
             padding: '0.75rem 1rem',
             marginBottom: '0.5rem',
-            backgroundColor: isTranscribing 
-                ? 'rgba(255, 152, 0, 0.1)' 
-                : isHighlighted 
-                    ? 'rgba(76, 175, 80, 0.1)' 
-                    : 'var(--surface)',
+            backgroundColor: isExcluded
+                ? 'rgba(100, 100, 100, 0.15)'
+                : isTranscribing 
+                    ? 'rgba(255, 152, 0, 0.1)' 
+                    : isHighlighted 
+                        ? 'rgba(76, 175, 80, 0.1)' 
+                        : 'var(--surface)',
             borderRadius: 'var(--radius-md)',
-            transition: 'background-color 0.3s ease',
+            transition: 'all 0.3s ease',
             border: '1px solid var(--glass-border-subtle)',
+            opacity: isExcluded ? 0.5 : 1,
+            filter: isExcluded ? 'grayscale(40%)' : 'none',
         }}>
             {/* Header */}
             <div style={{ 
@@ -269,6 +280,39 @@ const ChunkItem: React.FC<ChunkItemProps> = ({
                             <path d="M1 20v-6h6"/>
                             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
                         </svg>
+                    </button>
+                    
+                    {/* Кнопка исключения/возврата отрезка */}
+                    <button
+                        onClick={() => onToggleExclude(chunk.id)}
+                        title={isExcluded ? "Вернуть отрезок" : "Исключить отрезок"}
+                        style={{
+                            padding: '0.25rem 0.5rem',
+                            backgroundColor: isExcluded ? 'var(--warning)' : 'var(--surface-strong)',
+                            border: '1px solid var(--glass-border)',
+                            borderRadius: 'var(--radius-sm)',
+                            color: isExcluded ? 'white' : 'var(--text-muted)',
+                            cursor: 'pointer',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                        }}
+                    >
+                        {isExcluded ? (
+                            // EyeOff icon - отрезок исключён
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+                                <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                                <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/>
+                                <line x1="1" y1="1" x2="23" y2="23"/>
+                            </svg>
+                        ) : (
+                            // Eye icon - отрезок включён
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                <circle cx="12" cy="12" r="3"/>
+                            </svg>
+                        )}
                     </button>
                 </div>
             </div>
