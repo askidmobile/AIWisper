@@ -493,8 +493,17 @@ fn convert_go_session_to_rust(
 ) -> crate::commands::session::Session {
     use crate::commands::session::Session;
 
-    // Duration: Go stores totalDuration in milliseconds (e.g., 1220666 = ~20 min)
-    let total_duration = meta.total_duration as u64;
+    // Duration normalization: frontend expects nanoseconds
+    // Old Go sessions store in milliseconds (e.g., 1667320 = ~27 min)
+    // New sessions might already be in nanoseconds (e.g., 1667320000000 = ~27 min)
+    // Heuristic: if value > 10^12, it's likely already nanoseconds (would be >11 days in ms)
+    let total_duration = if meta.total_duration > 1_000_000_000_000 {
+        // Already in nanoseconds
+        meta.total_duration as u64
+    } else {
+        // Convert milliseconds to nanoseconds
+        (meta.total_duration as u64).saturating_mul(1_000_000)
+    };
 
     // Load chunks from chunks/ directory
     let chunks = load_chunks_from_dir(session_dir);
@@ -2077,12 +2086,27 @@ impl AppState {
             .find(|s| s.id == session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 
+        // Helper to check if a speaker key is mic-type
+        fn is_mic_speaker(k: &str) -> bool {
+            k == "mic" || k.starts_with("SPEAKER_00") || k.to_lowercase().contains("вы")
+        }
+        
+        // Helper to check if a speaker key is sys-type (non-mic)
+        fn is_sys_speaker(k: &str) -> bool {
+            k == "sys" || k == "Собеседник" || k.starts_with("Собеседник ") 
+                || (k.starts_with("SPEAKER_") && !k.starts_with("SPEAKER_00"))
+        }
+
         // Extract unique speakers from dialogue segments
         let mut speakers_map: HashMap<String, (usize, f64)> = HashMap::new();
 
         for chunk in &session.chunks {
             for segment in &chunk.dialogue {
                 if let Some(speaker) = &segment.speaker {
+                    // Skip empty speaker names
+                    if speaker.trim().is_empty() {
+                        continue;
+                    }
                     let duration_sec = (segment.end - segment.start) as f64 / 1000.0;
                     let entry = speakers_map.entry(speaker.clone()).or_insert((0, 0.0));
                     entry.0 += 1; // segment count
@@ -2091,10 +2115,8 @@ impl AppState {
             }
 
             // Also check mic_text and sys_text for legacy sessions
-            // Check if we already have a mic-type speaker (mic, SPEAKER_00, or custom name containing "вы")
-            let has_mic_speaker = speakers_map.keys().any(|k| {
-                k == "mic" || k.starts_with("SPEAKER_00") || k.to_lowercase().contains("вы")
-            });
+            // Check if we already have a mic-type speaker
+            let has_mic_speaker = speakers_map.keys().any(|k| is_mic_speaker(k));
             if chunk.mic_text.is_some() && !has_mic_speaker {
                 // chunk.duration is in nanoseconds, convert to seconds
                 let duration_sec = chunk.duration as f64 / 1_000_000_000.0;
@@ -2102,10 +2124,8 @@ impl AppState {
                     .entry("mic".to_string())
                     .or_insert((1, duration_sec));
             }
-            // Check if we already have a sys-type speaker (sys, SPEAKER_01+, or custom name)
-            let has_sys_speaker = speakers_map.keys().any(|k| {
-                k == "sys" || (k.starts_with("SPEAKER_") && !k.starts_with("SPEAKER_00"))
-            });
+            // Check if we already have a sys-type speaker
+            let has_sys_speaker = speakers_map.keys().any(|k| is_sys_speaker(k));
             if chunk.sys_text.is_some() && !has_sys_speaker {
                 // chunk.duration is in nanoseconds, convert to seconds
                 let duration_sec = chunk.duration as f64 / 1_000_000_000.0;
@@ -2120,9 +2140,7 @@ impl AppState {
             .into_iter()
             .enumerate()
             .map(|(idx, (speaker_key, (segment_count, total_duration)))| {
-                let is_mic = speaker_key == "mic"
-                    || speaker_key.starts_with("SPEAKER_00")
-                    || speaker_key.to_lowercase().contains("вы");
+                let is_mic = is_mic_speaker(&speaker_key);
                 let local_id = if is_mic { -1 } else { idx as i32 };
 
                 let display_name = if is_mic {
@@ -2453,6 +2471,11 @@ impl AppState {
             speaker_id
         );
 
+        // Helper to check if a speaker key is mic-type (same as in get_session_speakers)
+        fn is_mic_speaker_local(k: &str) -> bool {
+            k == "mic" || k.starts_with("SPEAKER_00") || k.to_lowercase().contains("вы")
+        }
+
         // First, find the speaker's original_key by reconstructing the speaker mapping
         // This matches the logic in get_session_speakers
         let mut speakers_map: HashMap<String, (usize, f64)> = HashMap::new();
@@ -2460,6 +2483,10 @@ impl AppState {
         for chunk in &session.chunks {
             for segment in &chunk.dialogue {
                 if let Some(speaker) = &segment.speaker {
+                    // Skip empty speaker names (same as get_session_speakers)
+                    if speaker.trim().is_empty() {
+                        continue;
+                    }
                     let duration_sec = (segment.end - segment.start) as f64 / 1000.0;
                     let entry = speakers_map.entry(speaker.clone()).or_insert((0, 0.0));
                     entry.0 += 1;
@@ -2472,9 +2499,7 @@ impl AppState {
         let mut speaker_keys: Vec<(String, bool)> = speakers_map
             .keys()
             .map(|k| {
-                let is_mic = k == "mic"
-                    || k.starts_with("SPEAKER_00")
-                    || k.to_lowercase().contains("вы");
+                let is_mic = is_mic_speaker_local(k);
                 (k.clone(), is_mic)
             })
             .collect();
@@ -2705,7 +2730,8 @@ impl AppState {
 
         // Fallback: Generate silence based on session duration
         tracing::warn!("Session {} has no audio files, generating silence", session_id);
-        let duration_sec = (session.total_duration as f32) / 1000.0;
+        // total_duration is in nanoseconds, convert to seconds
+        let duration_sec = (session.total_duration as f64) / 1_000_000_000.0;
         let num_samples = (duration_sec * 16000.0) as usize;
         let silence_samples = vec![0.0f32; num_samples];
         let wav_data = Self::samples_to_wav(&silence_samples);
@@ -3229,7 +3255,8 @@ impl AppState {
             status: "completed".to_string(),
             chunks,
             data_dir: session_dir.to_string_lossy().to_string(),
-            total_duration: duration_ms,
+            // Convert ms to ns for consistency with frontend expectation
+            total_duration: duration_ms.saturating_mul(1_000_000),
             title: Some(format!("{} · {:.1} мин", source_filename, duration_ms as f64 / 60000.0)),
             tags: vec!["импорт".to_string()],
             summary: None,

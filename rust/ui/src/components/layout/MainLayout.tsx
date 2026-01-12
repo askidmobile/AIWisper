@@ -335,7 +335,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     }, [selectedSession, sendMessage]);
 
     // Play speaker sample
-    const handlePlaySpeakerSample = useCallback((localId: number) => {
+    const handlePlaySpeakerSample = useCallback(async (localId: number) => {
         if (!selectedSession) return;
         
         // Останавливаем предыдущее воспроизведение
@@ -344,25 +344,45 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             speakerAudioRef.current = null;
         }
         
-        const url = `${API_BASE}/api/speaker-sample/${selectedSession.id}/${localId}`;
-        const audio = new Audio(url);
-        speakerAudioRef.current = audio;
         setPlayingSpeakerId(localId);
         
-        audio.onended = () => {
+        try {
+            // Use IPC to get speaker sample (returns base64 data URL)
+            const result = await sendMessage({
+                type: 'get_speaker_sample',
+                sessionId: selectedSession.id,
+                speakerId: localId
+            });
+            
+            // Result is a base64 data URL like "data:audio/wav;base64,..."
+            const audioUrl = typeof result === 'string' ? result : (result as any)?.audio || result;
+            
+            if (!audioUrl || typeof audioUrl !== 'string') {
+                console.error('[MainLayout] Invalid speaker sample result:', result);
+                setPlayingSpeakerId(null);
+                return;
+            }
+            
+            const audio = new Audio(audioUrl);
+            speakerAudioRef.current = audio;
+            
+            audio.onended = () => {
+                setPlayingSpeakerId(null);
+                speakerAudioRef.current = null;
+            };
+            audio.onerror = (e) => {
+                console.error('[MainLayout] Speaker sample playback error:', e);
+                setPlayingSpeakerId(null);
+                speakerAudioRef.current = null;
+            };
+            
+            await audio.play();
+        } catch (error) {
+            console.error('[MainLayout] Failed to play speaker sample:', error);
             setPlayingSpeakerId(null);
             speakerAudioRef.current = null;
-        };
-        audio.onerror = () => {
-            setPlayingSpeakerId(null);
-            speakerAudioRef.current = null;
-        };
-        
-        audio.play().catch(() => {
-            setPlayingSpeakerId(null);
-            speakerAudioRef.current = null;
-        });
-    }, [selectedSession, API_BASE]);
+        }
+    }, [selectedSession, sendMessage]);
 
     // Stop speaker sample
     const handleStopSpeakerSample = useCallback(() => {

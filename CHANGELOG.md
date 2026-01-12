@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.26] - 2025-01-13
+
+### Fixed
+- **WPM Calculation "104575007 сл/мин"**: Исправлен расчёт слов в минуту в статистике сессии
+  - **Проблема**: WPM показывал абсурдные значения типа "104575007 сл/мин"
+  - **Причина**: `totalDuration` в meta.json для старых Go-сессий хранится в миллисекундах, но UI делил на 1_000_000_000 ожидая наносекунды
+  - **Решение**: Добавлена эвристика определения формата (ms vs ns) с автоконвертацией в наносекунды
+
+- **Empty Speaker in List**: Исправлено появление спикера с пустым именем
+  - **Проблема**: Некоторые сегменты диалога имели пустое поле `speaker: ""`
+  - **Решение**: Добавлена фильтрация пустых имён спикеров в `get_session_speakers()`
+
+- **Speaker Audio Playback Not Working**: Исправлено воспроизведение аудио спикера
+  - **Проблема**: `handlePlaySpeakerSample` использовал HTTP URL, но Tauri не имеет HTTP сервера
+  - **Решение**: Переписано на IPC вызов через `sendMessage` с возвратом base64 data URL
+
+### Technical
+- `rust/src-tauri/src/state/mod.rs`:
+  - `load_session()`: Эвристика определения формата totalDuration (>10^12 = ns, иначе ms→ns)
+  - `get_session_speakers()`: Фильтрация `speaker.trim().is_empty()`
+  - `get_session_speakers()`: Хелперы `is_mic_speaker()` / `is_sys_speaker()` для консистентной классификации
+  - `get_speaker_sample()`: Исправлен fallback silence (ms→ns)
+  
+- `rust/ui/src/components/layout/MainLayout.tsx`:
+  - `handlePlaySpeakerSample()`: Переписан с HTTP на IPC (`sendMessage`)
+
 ## [2.0.25] - 2025-01-12
 
 ### Fixed
