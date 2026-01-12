@@ -493,17 +493,9 @@ fn convert_go_session_to_rust(
 ) -> crate::commands::session::Session {
     use crate::commands::session::Session;
 
-    // Duration normalization: frontend expects nanoseconds
-    // Old Go sessions store in milliseconds (e.g., 1667320 = ~27 min)
-    // New sessions might already be in nanoseconds (e.g., 1667320000000 = ~27 min)
-    // Heuristic: if value > 10^12, it's likely already nanoseconds (would be >11 days in ms)
-    let total_duration = if meta.total_duration > 1_000_000_000_000 {
-        // Already in nanoseconds
-        meta.total_duration as u64
-    } else {
-        // Convert milliseconds to nanoseconds
-        (meta.total_duration as u64).saturating_mul(1_000_000)
-    };
+    // Duration: stored in milliseconds in meta.json, passed to frontend as milliseconds
+    // All UI components expect milliseconds and divide by 1000 to get seconds
+    let total_duration = meta.total_duration as u64;
 
     // Load chunks from chunks/ directory
     let chunks = load_chunks_from_dir(session_dir);
@@ -2730,8 +2722,8 @@ impl AppState {
 
         // Fallback: Generate silence based on session duration
         tracing::warn!("Session {} has no audio files, generating silence", session_id);
-        // total_duration is in nanoseconds, convert to seconds
-        let duration_sec = (session.total_duration as f64) / 1_000_000_000.0;
+        // total_duration is in milliseconds, convert to seconds
+        let duration_sec = (session.total_duration as f64) / 1000.0;
         let num_samples = (duration_sec * 16000.0) as usize;
         let silence_samples = vec![0.0f32; num_samples];
         let wav_data = Self::samples_to_wav(&silence_samples);
@@ -3256,7 +3248,7 @@ impl AppState {
             chunks,
             data_dir: session_dir.to_string_lossy().to_string(),
             // Convert ms to ns for consistency with frontend expectation
-            total_duration: duration_ms.saturating_mul(1_000_000),
+            total_duration: duration_ms,
             title: Some(format!("{} · {:.1} мин", source_filename, duration_ms as f64 / 60000.0)),
             tags: vec!["импорт".to_string()],
             summary: None,

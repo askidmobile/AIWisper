@@ -3724,7 +3724,7 @@ function App() {
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-muted)', fontSize: '0.8rem', flexWrap: 'wrap' }}>
                                                 <span>{formatDate(selectedSession.startTime)}</span>
                                                 <span>•</span>
-                                                <span>{formatDuration(selectedSession.totalDuration / 1000000000)}</span>
+                                                <span>{formatDuration(selectedSession.totalDuration / 1000)}</span>
                                                 {selectedSession.chunks.length > 0 && selectedSession.chunks[0].isStereo && (
                                                     <>
                                                         <span>•</span>
@@ -4823,7 +4823,7 @@ function App() {
                                 {activeTab === 'stats' && displaySession && (
                                     <SessionStats
                                         dialogue={allDialogue}
-                                        totalDuration={displaySession.totalDuration / 1000000}
+                                        totalDuration={displaySession.totalDuration}
                                     />
                                 )}
                             </>

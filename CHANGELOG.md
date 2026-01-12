@@ -5,14 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.27] - 2025-01-13
+
+### Fixed
+- **Session Duration Display "679000:00:00"**: Исправлено отображение длительности в списке сессий
+  - **Проблема**: После v2.0.26 в списке сессий показывалась некорректная длительность типа "679000:00:00"
+  - **Причина**: v2.0.26 конвертировал `totalDuration` из ms в ns при загрузке, но UI компоненты (Sidebar, SessionControls) ожидали ms
+  - **Решение**: Стандартизирован формат — `totalDuration` везде в **миллисекундах**, UI компоненты делят на 1000 для получения секунд
+
+### Changed
+- **Duration Format Standardization**: Унифицирован формат времени во всём приложении
+  - `session.totalDuration` — **миллисекунды** (хранится в meta.json, передаётся во frontend)
+  - `chunk.duration` — **наносекунды** (для точности при работе с аудио)
+  - Все UI компоненты теперь консистентно используют `/1000` для totalDuration
+
+### Technical
+- `rust/src-tauri/src/state/mod.rs`:
+  - Убрана конвертация ms→ns в `load_session()` — totalDuration остаётся в ms
+  - `import_session()`: Убрана лишняя конвертация `duration_ms.saturating_mul(1_000_000)`
+  - `get_speaker_sample()`: Исправлен fallback silence — делим на 1000 вместо 1_000_000_000
+
+- `rust/ui/src/components/modules/SessionStats.tsx`:
+  - Комментарии и код обновлены: totalDuration в ms, делим на 1000
+
+- `rust/ui/src/components/session/SessionHeader.tsx`:
+  - `durationSeconds = session.totalDuration / 1000` (было /1000000000)
+
+- `rust/ui/src/App.legacy.tsx`:
+  - Строка 3727: `/1000` вместо `/1000000000`
+  - Строка 4826: Убрано деление — передаём totalDuration напрямую в SessionStats
+
 ## [2.0.26] - 2025-01-13
 
 ### Fixed
-- **WPM Calculation "104575007 сл/мин"**: Исправлен расчёт слов в минуту в статистике сессии
-  - **Проблема**: WPM показывал абсурдные значения типа "104575007 сл/мин"
-  - **Причина**: `totalDuration` в meta.json для старых Go-сессий хранится в миллисекундах, но UI делил на 1_000_000_000 ожидая наносекунды
-  - **Решение**: Добавлена эвристика определения формата (ms vs ns) с автоконвертацией в наносекунды
-
 - **Empty Speaker in List**: Исправлено появление спикера с пустым именем
   - **Проблема**: Некоторые сегменты диалога имели пустое поле `speaker: ""`
   - **Решение**: Добавлена фильтрация пустых имён спикеров в `get_session_speakers()`
@@ -23,10 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Technical
 - `rust/src-tauri/src/state/mod.rs`:
-  - `load_session()`: Эвристика определения формата totalDuration (>10^12 = ns, иначе ms→ns)
   - `get_session_speakers()`: Фильтрация `speaker.trim().is_empty()`
   - `get_session_speakers()`: Хелперы `is_mic_speaker()` / `is_sys_speaker()` для консистентной классификации
-  - `get_speaker_sample()`: Исправлен fallback silence (ms→ns)
   
 - `rust/ui/src/components/layout/MainLayout.tsx`:
   - `handlePlaySpeakerSample()`: Переписан с HTTP на IPC (`sendMessage`)

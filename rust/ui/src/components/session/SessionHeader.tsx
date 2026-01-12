@@ -80,7 +80,7 @@ export const SessionHeader: React.FC<SessionHeaderProps> = ({
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
     const isStereo = session.chunks.length > 0 && session.chunks[0].isStereo;
-    const durationSeconds = session.totalDuration / 1000000000;
+    const durationSeconds = session.totalDuration / 1000;
 
     return (
         <>

@@ -3,7 +3,7 @@ import { TranscriptSegment } from '../../types/session';
 
 interface SessionStatsProps {
     dialogue: TranscriptSegment[];
-    totalDuration: number; // в наносекундах (из Go time.Duration)
+    totalDuration: number; // в миллисекундах
     isCompact?: boolean;
 }
 
@@ -162,9 +162,9 @@ export const SessionStats: React.FC<SessionStatsProps> = ({
 
         speakers.sort((a, b) => b.words - a.words);
 
-        // totalDuration приходит в наносекундах из Go (time.Duration)
-        // Конвертируем в минуты: наносекунды -> секунды -> минуты
-        const durationMinutes = totalDuration / 1_000_000_000 / 60;
+        // totalDuration приходит в миллисекундах
+        // Конвертируем в минуты: миллисекунды -> секунды -> минуты
+        const durationMinutes = totalDuration / 1000 / 60;
         const avgWordsPerMinute = durationMinutes > 0 ? Math.round(totalWords / durationMinutes) : 0;
 
         return {
@@ -234,9 +234,9 @@ const FullStats: React.FC<{ stats: StatsData; totalDuration: number }> = ({ stat
         );
     }
 
-    // totalDuration в наносекундах
-    const formatDuration = (ns: number): string => {
-        const totalSeconds = Math.floor(ns / 1_000_000_000);
+    // totalDuration в миллисекундах
+    const formatDuration = (ms: number): string => {
+        const totalSeconds = Math.floor(ms / 1000);
         const seconds = totalSeconds % 60;
         const minutes = Math.floor(totalSeconds / 60) % 60;
         const hours = Math.floor(totalSeconds / 3600);
