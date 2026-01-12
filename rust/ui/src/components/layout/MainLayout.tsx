@@ -24,7 +24,7 @@ import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData } from '../../utils/waveform';
 
 // Версия приложения
-const APP_VERSION = '2.0.13';
+const APP_VERSION = '2.0.22';
 
 interface MainLayoutProps {
     addLog: (msg: string) => void;
@@ -295,15 +295,23 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     // Speaker rename handler
     const handleRenameSpeaker = useCallback((localId: number, newName: string, saveAsVoiceprint: boolean) => {
         if (!selectedSession) return;
+        
+        // Find speaker by localId to get originalKey
+        const speaker = sessionSpeakers.find(s => s.localId === localId);
+        if (!speaker) {
+            console.error(`[MainLayout] Speaker with localId ${localId} not found`);
+            return;
+        }
+        
         sendMessage({
             type: 'rename_session_speaker',
             sessionId: selectedSession.id,
-            localSpeakerId: localId,
-            speakerName: newName,
+            speakerId: speaker.originalKey, // Use original key (e.g. "SPEAKER_01", "mic", "sys")
+            newName: newName,
             saveAsVoiceprint
         });
-        console.log(`[MainLayout] Renaming speaker ${localId} to "${newName}"${saveAsVoiceprint ? ' (saving voiceprint)' : ''}`);
-    }, [selectedSession, sendMessage]);
+        console.log(`[MainLayout] Renaming speaker ${localId} (${speaker.originalKey}) to "${newName}"${saveAsVoiceprint ? ' (saving voiceprint)' : ''}`);
+    }, [selectedSession, sendMessage, sessionSpeakers]);
 
     // Merge speakers handler
     const handleMergeSpeakers = useCallback((

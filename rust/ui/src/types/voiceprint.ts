@@ -16,6 +16,7 @@ export interface VoicePrint {
 export interface SessionSpeaker {
     localId: number;        // ID в рамках сессии (-1 для "Вы", 0+ для собеседников)
     globalId?: string;      // UUID из VoicePrint (если распознан)
+    originalKey: string;    // Оригинальный ключ спикера (e.g. "SPEAKER_01", "mic", "sys")
     displayName: string;    // "Вы", "Иван", "Собеседник 1"
     isRecognized: boolean;  // Был ли распознан из базы
     isMic: boolean;         // Это микрофон (всегда "Вы")

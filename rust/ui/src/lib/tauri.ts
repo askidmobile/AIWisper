@@ -82,13 +82,15 @@ export interface SummaryCompletedEvent {
 }
 
 export interface SessionSpeaker {
-    id: string;
+    localId: number;
+    globalId?: string;
+    originalKey: string;
     displayName: string;
-    isMic: boolean;
     isRecognized: boolean;
-    voiceprintId?: string;
-    entryCount: number;
-    totalDurationMs: number;
+    isMic: boolean;
+    segmentCount: number;
+    totalDuration: number;
+    hasSample?: boolean;
 }
 
 export interface VoicePrint {

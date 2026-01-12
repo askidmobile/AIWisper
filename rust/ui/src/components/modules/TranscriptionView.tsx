@@ -83,6 +83,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
     const [activeTab, setActiveTab] = useState<TabType>('dialogue');
     const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
     const [showConfidence, setShowConfidence] = useState(false); // Показывать confidence слов
+    const [renamingSpeaker, setRenamingSpeaker] = useState<SessionSpeaker | null>(null); // Диалог переименования
 
     // Refs
     const transcriptionRef = useRef<HTMLDivElement>(null); // Scroll container
@@ -208,7 +209,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
 
     // Функция для получения отображаемого имени спикера
     // Приоритет: sessionSpeakers (кастомные имена) > дефолтные имена
-    const getSpeakerDisplayName = useCallback((speaker: string): { name: string; color: string } => {
+    const getSpeakerDisplayName = useCallback((speaker: string): { name: string; color: string; sessionSpeaker: SessionSpeaker | null } => {
         const defaultColors = {
             mic: '#4caf50',
             sys: '#2196f3',
@@ -233,6 +234,10 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                     const num = parseInt(speaker.replace('Собеседник ', ''), 10);
                     return !s.isMic && s.localId === (num - 1);
                 }
+                // Совпадение по originalKey (после переименования speaker в данных будет новым именем)
+                if (s.originalKey === speaker) {
+                    return true;
+                }
                 // Прямое совпадение по displayName (для уже переименованных)
                 return s.displayName === speaker;
             });
@@ -242,34 +247,36 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                 const color = found.isMic 
                     ? defaultColors.mic 
                     : defaultColors.speakers[Math.abs(colorIdx) % defaultColors.speakers.length];
-                return { name: found.displayName, color };
+                return { name: found.displayName, color, sessionSpeaker: found };
             }
         }
 
         // Дефолтная логика если не нашли в sessionSpeakers
         if (speaker === 'mic' || speaker === 'Вы') {
-            return { name: 'Вы', color: defaultColors.mic };
+            return { name: 'Вы', color: defaultColors.mic, sessionSpeaker: null };
         }
         if (speaker === 'sys' || speaker === 'Собеседник') {
-            return { name: 'Собеседник', color: defaultColors.sys };
+            return { name: 'Собеседник', color: defaultColors.sys, sessionSpeaker: null };
         }
         if (speaker.startsWith('Speaker ')) {
             const num = parseInt(speaker.replace('Speaker ', ''), 10) || 0;
             return { 
                 name: `Собеседник ${num + 1}`, 
-                color: defaultColors.speakers[Math.abs(num) % defaultColors.speakers.length] 
+                color: defaultColors.speakers[Math.abs(num) % defaultColors.speakers.length],
+                sessionSpeaker: null
             };
         }
         if (speaker.startsWith('Собеседник ')) {
             const num = parseInt(speaker.replace('Собеседник ', ''), 10) || 1;
             return { 
                 name: speaker, 
-                color: defaultColors.speakers[Math.abs(num - 1) % defaultColors.speakers.length] 
+                color: defaultColors.speakers[Math.abs(num - 1) % defaultColors.speakers.length],
+                sessionSpeaker: null
             };
         }
 
         // Кастомное имя - возвращаем как есть
-        return { name: speaker, color: defaultColors.sys };
+        return { name: speaker, color: defaultColors.sys, sessionSpeaker: null };
     }, [sessionSpeakers]);
 
     // Handlers
@@ -522,7 +529,7 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                             const timeStr = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}.${ms}`;
 
                                             // Получаем имя и цвет спикера (с учётом кастомных имён из sessionSpeakers)
-                                            const { name: speakerName, color: speakerColor } = getSpeakerDisplayName(seg.speaker || '');
+                                            const { name: speakerName, color: speakerColor, sessionSpeaker } = getSpeakerDisplayName(seg.speaker || '');
 
                                             const isCurrentSegment = idx === currentSegmentIndex;
 
@@ -568,7 +575,24 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                                                     >
                                                         [{timeStr}]
                                                     </span>{' '}
-                                                    <span style={{ color: speakerColor, fontWeight: 'bold' }}>{speakerName}:</span>{' '}
+                                                    <span 
+                                                        style={{ 
+                                                            color: speakerColor, 
+                                                            fontWeight: 'bold',
+                                                            cursor: sessionSpeaker && onRenameSpeaker ? 'pointer' : 'inherit',
+                                                            textDecoration: sessionSpeaker && onRenameSpeaker ? 'underline dotted' : 'none',
+                                                            textUnderlineOffset: '2px'
+                                                        }}
+                                                        onClick={(e) => {
+                                                            if (sessionSpeaker && onRenameSpeaker) {
+                                                                e.stopPropagation();
+                                                                setRenamingSpeaker(sessionSpeaker);
+                                                            }
+                                                        }}
+                                                        title={sessionSpeaker && onRenameSpeaker ? 'Нажмите для переименования' : undefined}
+                                                    >
+                                                        {speakerName}:
+                                                    </span>{' '}
                                                     <SegmentText segment={seg} showConfidence={showConfidence} isCurrentSegment={isCurrentSegment} />
                                                 </div>
                                             );
@@ -635,6 +659,138 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
                     </>
                 )}
             </div>
+
+            {/* Диалог переименования спикера (из транскрипции) */}
+            {renamingSpeaker && onRenameSpeaker && (
+                <div
+                    style={{
+                        position: 'fixed',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+                        backdropFilter: 'blur(8px)',
+                        WebkitBackdropFilter: 'blur(8px)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        zIndex: 1000,
+                    }}
+                    onClick={() => setRenamingSpeaker(null)}
+                >
+                    <div
+                        style={{
+                            background: 'var(--glass-bg-elevated)',
+                            backdropFilter: 'blur(var(--glass-blur)) saturate(var(--glass-saturation))',
+                            WebkitBackdropFilter: 'blur(var(--glass-blur)) saturate(var(--glass-saturation))',
+                            borderRadius: 'var(--radius-xl)',
+                            padding: '1.5rem',
+                            minWidth: '320px',
+                            boxShadow: 'var(--shadow-elevated)',
+                            border: '1px solid var(--glass-border)',
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <h3 style={{ margin: '0 0 1rem', color: 'var(--text-primary)' }}>
+                            Переименовать спикера
+                        </h3>
+
+                        <SpeakerRenameForm
+                            speaker={renamingSpeaker}
+                            onSave={(name, saveGlobal) => {
+                                onRenameSpeaker(renamingSpeaker.localId, name, saveGlobal);
+                                setRenamingSpeaker(null);
+                            }}
+                            onClose={() => setRenamingSpeaker(null)}
+                        />
+                    </div>
+                </div>
+            )}
         </main>
+    );
+};
+
+// Форма переименования спикера (вынесена для поддержки useState)
+const SpeakerRenameForm: React.FC<{
+    speaker: SessionSpeaker;
+    onSave: (name: string, saveGlobal: boolean) => void;
+    onClose: () => void;
+}> = ({ speaker, onSave, onClose }) => {
+    const [name, setName] = useState(speaker.displayName);
+    const [saveGlobal, setSaveGlobal] = useState(!speaker.isRecognized);
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        if (name.trim()) {
+            onSave(name.trim(), saveGlobal);
+        }
+    };
+
+    return (
+        <form onSubmit={handleSubmit}>
+            <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Введите имя"
+                autoFocus
+                style={{
+                    width: '100%',
+                    padding: '0.75rem',
+                    fontSize: '1rem',
+                    borderRadius: 'var(--radius-md)',
+                    border: '1px solid var(--border)',
+                    backgroundColor: 'var(--surface-strong)',
+                    color: 'var(--text-primary)',
+                    marginBottom: '1rem',
+                    boxSizing: 'border-box',
+                }}
+            />
+
+            <label
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    marginBottom: '1.5rem',
+                    cursor: 'pointer',
+                    color: 'var(--text-secondary)',
+                    fontSize: '0.9rem',
+                }}
+            >
+                <input
+                    type="checkbox"
+                    checked={saveGlobal}
+                    onChange={(e) => setSaveGlobal(e.target.checked)}
+                    style={{ width: '16px', height: '16px' }}
+                />
+                Запомнить голос (для будущих сессий)
+            </label>
+
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
+                <button
+                    type="button"
+                    onClick={onClose}
+                    className="btn-secondary"
+                    style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: 'var(--radius-md)',
+                    }}
+                >
+                    Отмена
+                </button>
+                <button
+                    type="submit"
+                    className="btn-primary"
+                    style={{
+                        padding: '0.6rem 1.2rem',
+                        borderRadius: 'var(--radius-md)',
+                    }}
+                >
+                    Сохранить
+                </button>
+            </div>
+        </form>
     );
 };

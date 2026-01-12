@@ -305,8 +305,8 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 case 'rename_session_speaker':
                     args = {
                         sessionId: msg.sessionId,
-                        speakerId: msg.speakerId,
-                        newName: msg.newName,
+                        speakerId: msg.speakerId || msg.localSpeakerId,
+                        newName: msg.newName || msg.speakerName,
                     };
                     break;
                 case 'merge_session_speakers':
@@ -440,9 +440,10 @@ export const TauriProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                     break;
                 case 'rename_session_speaker':
                 case 'merge_session_speakers':
-                    // Refresh session data
+                    // Refresh session data and speakers list
                     if (msg.sessionId) {
                         sendMessage({ type: 'get_session', sessionId: msg.sessionId });
+                        sendMessage({ type: 'get_session_speakers', sessionId: msg.sessionId });
                     }
                     break;
             }

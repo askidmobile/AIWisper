@@ -162,6 +162,7 @@ pub async fn export_session(
 pub struct SessionSpeaker {
     pub local_id: i32,
     pub global_id: Option<String>,
+    pub original_key: String, // Original speaker key (e.g. "SPEAKER_01", "mic", "sys")
     pub display_name: String,
     pub is_recognized: bool,
     pub is_mic: bool,

@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.22] - 2025-01-12
+
+### Fixed
+- **Speaker Rename Not Working**: Исправлена критическая ошибка переименования спикеров
+  - **Проблема**: Кнопка переименования (карандаш) на вкладке "Собеседники" не работала
+  - **Причина**: Несоответствие имён параметров между frontend и backend:
+    - Frontend отправлял `localSpeakerId` и `speakerName`
+    - TauriContext ожидал `speakerId` и `newName`
+    - Backend искал спикера по строковому ключу (`"SPEAKER_01"`), а не по числовому ID
+  - **Решение**: 
+    - Добавлено поле `originalKey` в `SessionSpeaker` (Rust и TypeScript) для хранения оригинального ключа спикера
+    - Исправлен маппинг параметров в TauriContext.tsx
+    - `handleRenameSpeaker` теперь использует `originalKey` вместо `localId`
+    - После переименования автоматически обновляется список спикеров
+
+### Added
+- **Click-to-Rename in Transcription View**: Возможность переименования спикера прямо из транскрипции
+  - Имя спикера в диалоге теперь кликабельно (пунктирное подчёркивание)
+  - При клике открывается диалог переименования с опцией сохранения voiceprint
+  - Работает только если передан обработчик `onRenameSpeaker`
+
+### Technical
+- `rust/src-tauri/src/commands/session.rs`: Добавлено поле `original_key: String` в `SessionSpeaker`
+- `rust/src-tauri/src/state/mod.rs`: Сохранение `speaker_key` в `original_key` при формировании списка спикеров
+- `rust/ui/src/types/voiceprint.ts`: Добавлено поле `originalKey: string` в интерфейс `SessionSpeaker`
+- `rust/ui/src/lib/tauri.ts`: Синхронизирован интерфейс `SessionSpeaker`
+- `rust/ui/src/context/TauriContext.tsx`: Исправлен маппинг параметров для `rename_session_speaker`, добавлен вызов `get_session_speakers` после переименования
+- `rust/ui/src/components/layout/MainLayout.tsx`: `handleRenameSpeaker` теперь находит спикера по `localId` и использует `originalKey`
+- `rust/ui/src/components/modules/TranscriptionView.tsx`: 
+  - `getSpeakerDisplayName` теперь возвращает также `sessionSpeaker`
+  - Добавлен диалог переименования `SpeakerRenameForm`
+  - Имя спикера кликабельно для вызова диалога
+
 ## [2.0.21] - 2025-01-12
 
 ### Added

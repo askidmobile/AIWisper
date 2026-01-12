@@ -2075,6 +2075,7 @@ impl AppState {
                 SessionSpeaker {
                     local_id,
                     global_id: None,
+                    original_key: speaker_key.clone(), // Save original key for renaming
                     display_name,
                     is_recognized: false,
                     is_mic,
