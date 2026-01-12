@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.24] - 2025-01-12
+
+### Fixed
+- **UI Not Rebuilt in Release**: Исправлена проблема когда UI не пересобирался при сборке релиза
+  - **Проблема**: `cargo tauri build` не пересобирал UI, т.к. `beforeBuildCommand` был пустым
+  - **Решение**: Добавлен `beforeBuildCommand: "cd ../ui && npm run build"` в tauri.conf.json
+
+### Changed
+- **Build Script Enhancement**: Скрипт `scripts/build-tauri.sh` теперь копирует DMG в папку `build/`
+  - DMG файлы автоматически копируются в `build/` в корне проекта после сборки
+  - Папка `build/` уже в `.gitignore` — артефакты не попадают в репозиторий
+
 ## [2.0.23] - 2025-01-12
 
 ### Fixed

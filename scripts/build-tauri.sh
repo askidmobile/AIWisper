@@ -216,13 +216,30 @@ else
 fi
 
 # =============================================================================
+# Копирование DMG в build/
+# =============================================================================
+log_info "Copying DMG to build/ directory..."
+
+BUILD_OUTPUT_DIR="$PROJECT_ROOT/build"
+mkdir -p "$BUILD_OUTPUT_DIR"
+
+if [ -d "$DMG_DIR" ]; then
+    for dmg_file in "$DMG_DIR"/*.dmg; do
+        if [ -f "$dmg_file" ]; then
+            cp "$dmg_file" "$BUILD_OUTPUT_DIR/"
+            log_success "Copied: $(basename "$dmg_file") -> build/"
+        fi
+    done
+fi
+
+# =============================================================================
 # Результат
 # =============================================================================
 log_success "========================================"
 log_success "Build completed!"
 log_success "========================================"
 
-if [ -d "$DMG_DIR" ]; then
-    log_info "Output files:"
-    ls -lh "$DMG_DIR"/*.dmg 2>/dev/null || true
+if [ -d "$BUILD_OUTPUT_DIR" ]; then
+    log_info "Output files in build/:"
+    ls -lh "$BUILD_OUTPUT_DIR"/*.dmg 2>/dev/null || true
 fi
