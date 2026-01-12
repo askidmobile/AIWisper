@@ -159,8 +159,12 @@ impl Mp3Writer {
 
     /// Close the writer and finalize MP3 file
     pub fn close(&mut self) -> Result<()> {
-        // Close stdin to signal EOF to FFmpeg
-        if let Some(stdin) = self.stdin.take() {
+        // Flush and close stdin to signal EOF to FFmpeg
+        if let Some(mut stdin) = self.stdin.take() {
+            // Явный flush перед закрытием чтобы не потерять данные в буфере
+            if let Err(e) = stdin.flush() {
+                tracing::warn!("Failed to flush FFmpeg stdin: {}", e);
+            }
             drop(stdin);
         }
 

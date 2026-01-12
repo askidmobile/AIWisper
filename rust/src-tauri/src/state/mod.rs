@@ -59,7 +59,7 @@ struct ConfigSettings {
     capture_system: bool,
     #[serde(default)]
     ollama_model: String,
-    #[serde(default)]
+    #[serde(default = "default_ollama_url")]
     ollama_url: String,
     #[serde(default)]
     auto_retranscribe: bool,
@@ -69,6 +69,18 @@ struct ConfigSettings {
     hybrid_enabled: bool,
     #[serde(default)]
     hybrid_secondary_model_id: String,
+    #[serde(default)]
+    hybrid_use_llm: bool,
+    #[serde(default = "default_hybrid_mode")]
+    hybrid_mode: String,
+}
+
+fn default_ollama_url() -> String {
+    "http://localhost:11434".to_string()
+}
+
+fn default_hybrid_mode() -> String {
+    "parallel".to_string()
 }
 
 /// Load settings from disk (config.json format)
@@ -91,6 +103,11 @@ fn load_settings_from_disk() -> Settings {
                             echo_cancellation: cs.echo_cancel > 0.0,
                             hybrid_enabled: cs.hybrid_enabled,
                             hybrid_secondary_model_id: cs.hybrid_secondary_model_id,
+                            // Новые поля для LLM enhancement в realtime
+                            hybrid_use_llm: cs.hybrid_use_llm,
+                            hybrid_mode: cs.hybrid_mode,
+                            ollama_model: cs.ollama_model,
+                            ollama_url: cs.ollama_url,
                         };
                     }
                     Err(e) => {
@@ -776,6 +793,9 @@ impl AppState {
         let diarization_enabled = *self.inner.diarization_enabled.read();
         let diarization_provider = self.inner.diarization_provider.read().clone();
         
+        // Get voiceprint data directory for speaker recognition
+        let voiceprint_data_dir = get_data_dir();
+        
         let transcription_config = recording::TranscriptionConfig {
             model_id: model_id.clone(),
             language: language.clone(),
@@ -784,6 +804,13 @@ impl AppState {
             hotwords: settings.hotwords.clone(),
             diarization_enabled,
             diarization_provider,
+            // Новые поля для LLM enhancement
+            hybrid_use_llm: settings.hybrid_use_llm,
+            hybrid_mode: settings.hybrid_mode.clone(),
+            ollama_model: settings.ollama_model.clone(),
+            ollama_url: settings.ollama_url.clone(),
+            // Data dir for voiceprint matching
+            voiceprint_data_dir,
         };
 
         // Start new recording with full MP3/chunk support
@@ -2367,7 +2394,7 @@ impl AppState {
 
     /// Get full audio for a session as base64-encoded data
     /// Returns a data URL that can be used directly in an <audio> element
-    /// Tries to load full.mp3 from disk first, falls back to generated silence
+    /// Tries to load full.mp3 from disk first, falls back to segment files, then silence
     pub async fn get_full_audio(&self, session_id: &str) -> Result<String> {
         let sessions = self.inner.sessions.read();
         let session = sessions
@@ -2375,9 +2402,11 @@ impl AppState {
             .find(|s| s.id == session_id)
             .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
 
-        // Try to load full.mp3 from disk
         if let Some(sessions_dir) = get_sessions_dir() {
-            let mp3_path = sessions_dir.join(session_id).join("full.mp3");
+            let session_dir = sessions_dir.join(session_id);
+            
+            // Try to load full.mp3 from disk
+            let mp3_path = session_dir.join("full.mp3");
             if mp3_path.exists() {
                 if let Ok(mp3_data) = std::fs::read(&mp3_path) {
                     let base64 = base64::Engine::encode(
@@ -2387,9 +2416,68 @@ impl AppState {
                     return Ok(format!("data:audio/mpeg;base64,{}", base64));
                 }
             }
+            
+            // Fallback: Try to load first segment file if full.mp3 is missing
+            // This handles cases where concatenation failed or was interrupted
+            let segment_path = session_dir.join("segment_000.mp3");
+            if segment_path.exists() {
+                tracing::warn!(
+                    "Session {} missing full.mp3, falling back to segment_000.mp3",
+                    session_id
+                );
+                
+                // Check if there are multiple segments - if so, try to concatenate them
+                let mut segment_paths: Vec<std::path::PathBuf> = Vec::new();
+                for i in 0..100 {  // Max 100 segments (~25 hours at 15min each)
+                    let seg_path = session_dir.join(format!("segment_{:03}.mp3", i));
+                    if seg_path.exists() {
+                        segment_paths.push(seg_path);
+                    } else {
+                        break;
+                    }
+                }
+                
+                if segment_paths.len() == 1 {
+                    // Single segment - just return it
+                    if let Ok(mp3_data) = std::fs::read(&segment_path) {
+                        let base64 = base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            &mp3_data,
+                        );
+                        return Ok(format!("data:audio/mpeg;base64,{}", base64));
+                    }
+                } else if segment_paths.len() > 1 {
+                    // Multiple segments - try to concatenate on-the-fly
+                    tracing::info!(
+                        "Session {} has {} segments, attempting concatenation",
+                        session_id,
+                        segment_paths.len()
+                    );
+                    
+                    // Try to concatenate using SegmentedMp3Writer
+                    if let Ok(concatenated) = Self::concatenate_segments(&session_dir, &segment_paths) {
+                        let base64 = base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            &concatenated,
+                        );
+                        return Ok(format!("data:audio/mpeg;base64,{}", base64));
+                    }
+                    
+                    // If concatenation fails, return first segment
+                    tracing::warn!("Concatenation failed, returning first segment only");
+                    if let Ok(mp3_data) = std::fs::read(&segment_path) {
+                        let base64 = base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            &mp3_data,
+                        );
+                        return Ok(format!("data:audio/mpeg;base64,{}", base64));
+                    }
+                }
+            }
         }
 
         // Fallback: Generate silence based on session duration
+        tracing::warn!("Session {} has no audio files, generating silence", session_id);
         let duration_sec = (session.total_duration as f32) / 1000.0;
         let num_samples = (duration_sec * 16000.0) as usize;
         let silence_samples = vec![0.0f32; num_samples];
@@ -2398,6 +2486,142 @@ impl AppState {
         // Encode as base64 data URL
         let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &wav_data);
         Ok(format!("data:audio/wav;base64,{}", base64))
+    }
+    
+    /// Helper to concatenate segment files using FFmpeg
+    fn concatenate_segments(session_dir: &std::path::Path, segment_paths: &[std::path::PathBuf]) -> Result<Vec<u8>> {
+        use std::process::Command;
+        
+        let final_path = session_dir.join("full.mp3");
+        
+        // Create concat list file
+        let list_path = session_dir.join("concat_list.txt");
+        let mut list_content = String::new();
+        for segment in segment_paths {
+            let abs_path = segment.canonicalize().unwrap_or_else(|_| segment.clone());
+            list_content.push_str(&format!("file '{}'\n", abs_path.display()));
+        }
+        std::fs::write(&list_path, &list_content)?;
+        
+        // Find FFmpeg - check common locations
+        let ffmpeg = Self::find_ffmpeg_binary()?;
+        
+        // Run FFmpeg concat
+        let output = Command::new(&ffmpeg)
+            .args(["-y", "-f", "concat", "-safe", "0", "-i"])
+            .arg(&list_path)
+            .args(["-c", "copy"])
+            .arg(&final_path)
+            .output()?;
+        
+        // Cleanup list file
+        let _ = std::fs::remove_file(&list_path);
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("FFmpeg concat failed: {}", stderr);
+        }
+        
+        // Read the concatenated file
+        let data = std::fs::read(&final_path)?;
+        
+        tracing::info!(
+            "Successfully concatenated {} segments into full.mp3 ({} bytes)",
+            segment_paths.len(),
+            data.len()
+        );
+        
+        Ok(data)
+    }
+    
+    /// Find FFmpeg binary
+    fn find_ffmpeg_binary() -> Result<std::path::PathBuf> {
+        // Check common locations on macOS
+        let paths = [
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg",
+        ];
+        
+        for path in paths {
+            let p = std::path::PathBuf::from(path);
+            if p.exists() {
+                return Ok(p);
+            }
+        }
+        
+        // Try PATH via `which`
+        if let Ok(output) = std::process::Command::new("which").arg("ffmpeg").output() {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return Ok(std::path::PathBuf::from(path));
+                }
+            }
+        }
+        
+        anyhow::bail!("FFmpeg not found")
+    }
+    
+    /// Get MP3 duration using ffprobe
+    /// Returns duration in milliseconds
+    #[allow(dead_code)]
+    fn get_mp3_duration_ms(mp3_path: &std::path::Path) -> Result<i64> {
+        use std::process::Command;
+        
+        // Find ffprobe (usually next to ffmpeg)
+        let ffprobe = if let Ok(ffmpeg) = Self::find_ffmpeg_binary() {
+            let dir = ffmpeg.parent().unwrap_or(std::path::Path::new("/usr/local/bin"));
+            dir.join("ffprobe")
+        } else {
+            std::path::PathBuf::from("ffprobe")
+        };
+        
+        let output = Command::new(&ffprobe)
+            .args([
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+            ])
+            .arg(mp3_path)
+            .output()?;
+        
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("ffprobe failed: {}", stderr);
+        }
+        
+        let duration_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let duration_sec: f64 = duration_str.parse()
+            .map_err(|e| anyhow::anyhow!("Failed to parse duration '{}': {}", duration_str, e))?;
+        
+        Ok((duration_sec * 1000.0) as i64)
+    }
+    
+    /// Verify MP3 file duration matches expected duration
+    /// Returns Ok(()) if duration is within tolerance, Err with details otherwise
+    #[allow(dead_code)]
+    pub fn verify_mp3_duration(mp3_path: &std::path::Path, expected_ms: i64, tolerance_ms: i64) -> Result<()> {
+        let actual_ms = Self::get_mp3_duration_ms(mp3_path)?;
+        let diff = (actual_ms - expected_ms).abs();
+        
+        if diff > tolerance_ms {
+            tracing::warn!(
+                "MP3 duration mismatch: expected {}ms, got {}ms (diff {}ms, tolerance {}ms)",
+                expected_ms, actual_ms, diff, tolerance_ms
+            );
+            anyhow::bail!(
+                "MP3 duration mismatch: expected {}ms, got {}ms (diff {}ms exceeds tolerance {}ms)",
+                expected_ms, actual_ms, diff, tolerance_ms
+            );
+        }
+        
+        tracing::debug!(
+            "MP3 duration verified: expected {}ms, got {}ms (diff {}ms within tolerance {}ms)",
+            expected_ms, actual_ms, diff, tolerance_ms
+        );
+        
+        Ok(())
     }
 
     /// Get chunk audio as base64-encoded WAV

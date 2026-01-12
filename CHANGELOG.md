@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.21] - 2025-01-12
+
+### Added
+- **Automatic Voiceprint Recognition**: Спикеры автоматически распознаются по голосу во время записи
+  - Интегрирован `diarize_with_embeddings()` для получения speaker embeddings при диаризации
+  - `VoicePrintMatcher` создаётся в recording thread и передаётся в `transcribe_chunk_stereo()`
+  - При совпадении (>50% similarity) спикер получает имя из базы voiceprints вместо "Собеседник N"
+  - При высокой уверенности (>85%) embedding автоматически обновляется в базе
+
+- **Graceful Shutdown for Transcriptions**: Корректное завершение всех транскрипций при остановке записи
+  - Recording thread ждёт завершения ВСЕХ pending transcriptions (не только последнего чанка)
+  - Таймаут 5 минут для защиты от зависания
+  - Событие `session_finalizing` с количеством pending транскрипций
+
+- **MP3 Fallback & Verification**: Автоматическое восстановление аудио при проблемах с full.mp3
+  - `get_full_audio()` пытается загрузить segment файлы если full.mp3 отсутствует
+  - Автоматическая склейка сегментов через FFmpeg при первом запросе
+  - Функции `get_mp3_duration_ms()` и `verify_mp3_duration()` для верификации длительности
+
+- **Toast Notifications for Settings**: Уведомления при сохранении настроек (добавлено в 2.0.20)
+  - Библиотека `sonner` для toast уведомлений
+  - Debounce 500ms для предотвращения спама
+  - Toast показывает успех или ошибку сохранения
+
+### Changed
+- **UI Indicator for Pending Transcriptions**: Улучшенный overlay при завершении записи
+  - Фиолетовый overlay "Завершение транскрипции (N)..." показывается пока есть pending chunks
+  - Показывает количество оставшихся транскрипций
+  - Условие изменено: overlay показывается когда `!isRecording && isProcessingFinalChunks`
+
+### Technical
+- `rust/src-tauri/src/state/recording.rs`:
+  - Новые функции: `diarize_samples_with_embeddings()`, graceful shutdown loop
+  - `TranscriptionConfig` расширен полем `voiceprint_data_dir: Option<PathBuf>`
+  - `transcribe_chunk_stereo()` принимает `voiceprint_matcher: Option<&VoicePrintMatcher>`
+  - Voiceprint matching интегрирован в диаризацию с логированием совпадений
+
+- `rust/src-tauri/src/state/mod.rs`:
+  - `get_full_audio()` с fallback на segment файлы и автоматической склейкой
+  - `concatenate_segments()`, `find_ffmpeg_binary()`, `get_mp3_duration_ms()`, `verify_mp3_duration()`
+
+- `rust/ui/src/components/layout/MainLayout.tsx`:
+  - Импорт `pendingTranscriptionChunks` для отображения количества
+  - Фиолетовый overlay с spinner вместо жёлтого
+
 ## [2.0.20] - 2025-12-27
 
 ### Changed

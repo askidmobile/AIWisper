@@ -1,4 +1,5 @@
 import React, { useCallback } from 'react';
+import { Toaster } from 'sonner';
 import { WebSocketProvider } from './context/WebSocketContext';
 import { SessionProvider } from './context/SessionContext';
 import { ModelProvider } from './context/ModelContext';
@@ -26,19 +27,32 @@ export const AppWithProviders: React.FC = () => {
     }, []);
 
     return (
-        <WebSocketProvider>
-            <ModelProvider>
-                <SessionProvider>
-                    <SettingsProvider>
-                        <DiarizationProvider>
-                            <AudioProvider>
-                                <MainLayout addLog={addLog} />
-                            </AudioProvider>
-                        </DiarizationProvider>
-                    </SettingsProvider>
-                </SessionProvider>
-            </ModelProvider>
-        </WebSocketProvider>
+        <>
+            <Toaster 
+                position="top-center"
+                toastOptions={{
+                    duration: 3000,
+                    style: {
+                        background: 'var(--bg-secondary, #2d2d2d)',
+                        color: 'var(--text-primary, #fff)',
+                        border: '1px solid var(--border-color, #3d3d3d)',
+                    },
+                }}
+            />
+            <WebSocketProvider>
+                <ModelProvider>
+                    <SessionProvider>
+                        <SettingsProvider>
+                            <DiarizationProvider>
+                                <AudioProvider>
+                                    <MainLayout addLog={addLog} />
+                                </AudioProvider>
+                            </DiarizationProvider>
+                        </SettingsProvider>
+                    </SessionProvider>
+                </ModelProvider>
+            </WebSocketProvider>
+        </>
     );
 };
 

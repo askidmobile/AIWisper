@@ -35,7 +35,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     const API_BASE = `http://localhost:${(typeof process !== 'undefined' && process.env?.AIWISPER_HTTP_PORT) || 18080}`;
     
     // Контексты
-    const { startSession, stopSession, isRecording, isStopping, isProcessingFinalChunks, selectedSession, micLevel, sysLevel, isFullTranscribing } = useSessionContext();
+    const { startSession, stopSession, isRecording, isProcessingFinalChunks, pendingTranscriptionChunks, selectedSession, micLevel, sysLevel, isFullTranscribing } = useSessionContext();
     const { activeModelId, models, fetchOllamaModels, downloadModel, cancelDownload, deleteModel, setActiveModel, ollamaModels, ollamaModelsLoading, ollamaError } = useModelContext();
     const { sendMessage, subscribe, isTauri } = useBackendContext();
     const { 
@@ -816,8 +816,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             {/* Recording Overlay */}
             <RecordingOverlay onStop={handleStartStop} />
             
-            {/* Processing Final Chunk Overlay - показывается когда запись остановлена, но ещё идёт фоновая транскрипция */}
-            {isStopping && isProcessingFinalChunks && (
+            {/* Processing Final Chunk Overlay - показывается когда есть pending транскрипции после остановки записи */}
+            {!isRecording && isProcessingFinalChunks && (
                 <div
                     style={{
                         position: 'fixed',
@@ -825,10 +825,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                         left: 0,
                         right: 0,
                         zIndex: 100,
-                        background: 'linear-gradient(180deg, rgba(245, 158, 11, 0.15) 0%, transparent 100%)',
+                        background: 'linear-gradient(180deg, rgba(139, 92, 246, 0.15) 0%, transparent 100%)',
                         backdropFilter: 'blur(8px)',
                         WebkitBackdropFilter: 'blur(8px)',
-                        borderBottom: '1px solid rgba(245, 158, 11, 0.2)',
+                        borderBottom: '1px solid rgba(139, 92, 246, 0.2)',
                         padding: '0.5rem 1.5rem',
                         paddingTop: '0.75rem',
                         display: 'flex',
@@ -843,8 +843,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                         style={{
                             width: '16px',
                             height: '16px',
-                            border: '2px solid rgba(245, 158, 11, 0.3)',
-                            borderTopColor: '#f59e0b',
+                            border: '2px solid rgba(139, 92, 246, 0.3)',
+                            borderTopColor: '#8b5cf6',
                             borderRadius: '50%',
                             animation: 'spin 1s linear infinite',
                         }}
@@ -852,10 +852,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                     <span style={{ 
                         fontSize: '0.85rem', 
                         fontWeight: 600, 
-                        color: '#f59e0b',
+                        color: '#8b5cf6',
                         letterSpacing: '0.02em' 
                     }}>
-                        Обрабатывается последний фрагмент...
+                        Завершение транскрипции ({pendingTranscriptionChunks.size})...
                     </span>
                 </div>
             )}
@@ -866,7 +866,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                 overflow: 'hidden', 
                 // При записи контент должен занимать всё доступное пространство
                 minHeight: isRecording ? 'calc(100vh - 48px)' : 0, 
-                marginTop: isRecording || (isStopping && isProcessingFinalChunks) ? '48px' : 0, 
+                marginTop: isRecording || (!isRecording && isProcessingFinalChunks) ? '48px' : 0, 
                 transition: 'margin-top 0.3s cubic-bezier(0.4, 0, 0.2, 1)' 
             }}>
                 <Sidebar onStartRecording={handleStartStop} />

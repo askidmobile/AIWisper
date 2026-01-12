@@ -4,12 +4,13 @@
 
 ![macOS](https://img.shields.io/badge/macOS-13+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-2.0.20-orange)
+![Version](https://img.shields.io/badge/version-2.0.21-orange)
 
 ## Возможности
 
 - **Транскрипция речи** — Whisper (многоязычный) и GigaAM (русский)
 - **Диаризация спикеров** — автоматическое определение кто говорит
+- **Распознавание по голосу** — автоматическая идентификация известных спикеров по voiceprint
 - **Запись системного звука** — транскрибация звонков, видео, подкастов
 - **Mute каналов** — отключение микрофона или системного звука во время записи
 - **Voice Isolation** — подавление фонового шума (macOS 15+)

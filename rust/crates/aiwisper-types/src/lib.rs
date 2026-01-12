@@ -666,6 +666,18 @@ pub struct Settings {
     /// Secondary model ID for hybrid transcription
     #[serde(default)]
     pub hybrid_secondary_model_id: String,
+    /// Use LLM for merging hybrid transcription results
+    #[serde(default)]
+    pub hybrid_use_llm: bool,
+    /// Hybrid transcription mode ("parallel" or "confidence")
+    #[serde(default)]
+    pub hybrid_mode: String,
+    /// Ollama model for LLM enhancement
+    #[serde(default)]
+    pub ollama_model: String,
+    /// Ollama URL
+    #[serde(default = "default_ollama_url")]
+    pub ollama_url: String,
 }
 
 impl Default for Settings {
@@ -681,6 +693,10 @@ impl Default for Settings {
             echo_cancellation: false,
             hybrid_enabled: false,
             hybrid_secondary_model_id: String::new(),
+            hybrid_use_llm: false,
+            hybrid_mode: "parallel".to_string(),
+            ollama_model: String::new(),
+            ollama_url: default_ollama_url(),
         }
     }
 }

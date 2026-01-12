@@ -315,10 +315,15 @@ impl ChunkBuffer {
     pub fn flush_all(&mut self) -> Option<ChunkEvent> {
         let available = self.accumulated.len() as i64 - self.emitted_samples;
 
-        // Минимум 1 секунда для flush
-        let min_flush_samples = self.sample_rate as i64;
+        // Минимум 100ms для flush (было 1 секунда - теряли данные при остановке)
+        let min_flush_samples = (self.sample_rate / 10) as i64;
 
         if available < min_flush_samples {
+            tracing::debug!(
+                "ChunkBuffer::flush_all: not enough samples ({} < {} min), skipping final chunk",
+                available,
+                min_flush_samples
+            );
             return None;
         }
 

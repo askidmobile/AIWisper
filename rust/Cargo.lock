@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper"
-version = "2.0.19"
+version = "2.0.21"
 dependencies = [
  "aiwisper-audio",
  "aiwisper-ml",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-audio"
-version = "2.0.19"
+version = "2.0.21"
 dependencies = [
  "aiwisper-types",
  "anyhow",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-ml"
-version = "2.0.19"
+version = "2.0.21"
 dependencies = [
  "aiwisper-types",
  "anyhow",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-types"
-version = "2.0.19"
+version = "2.0.21"
 dependencies = [
  "chrono",
  "serde",
@@ -123,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "aiwisper-worker"
-version = "2.0.19"
+version = "2.0.21"
 dependencies = [
  "aiwisper-ml",
  "aiwisper-types",

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
 import { HybridTranscriptionSettings } from '../types/models';
 
 // Electron IPC
@@ -154,20 +155,23 @@ export const useSettings = () => {
         loadSettings();
     }, []);
 
-    // Сохранение настроек при изменении
+    // Сохранение настроек при изменении с debounce для toast
     useEffect(() => {
         if (!isLoaded) return;
         
-        const saveSettings = async () => {
+        // Debounce таймер для toast уведомлений
+        const toastTimerId = setTimeout(async () => {
             // Tauri environment
             if (isTauri()) {
                 try {
                     if (tauriInvoke) {
                         await tauriInvoke('save_ui_settings', { settings });
                         console.log('[useSettings] Saved to Tauri');
+                        toast.success('Настройки сохранены', { id: 'settings-saved' });
                     }
                 } catch (err) {
                     console.error('[useSettings] Failed to save settings to Tauri:', err);
+                    toast.error('Ошибка сохранения настроек', { id: 'settings-error' });
                 }
                 return;
             }
@@ -176,8 +180,10 @@ export const useSettings = () => {
             if (ipcRenderer) {
                 try {
                     await ipcRenderer.invoke('save-settings', settings);
+                    toast.success('Настройки сохранены', { id: 'settings-saved' });
                 } catch (err) {
                     console.error('Failed to save settings:', err);
+                    toast.error('Ошибка сохранения настроек', { id: 'settings-error' });
                 }
                 return;
             }
@@ -185,11 +191,14 @@ export const useSettings = () => {
             // Fallback для localStorage
             try {
                 localStorage.setItem('aiwisper_settings', JSON.stringify(settings));
+                toast.success('Настройки сохранены', { id: 'settings-saved' });
             } catch (e) {
                 console.error('Failed to save settings to localStorage:', e);
+                toast.error('Ошибка сохранения настроек', { id: 'settings-error' });
             }
-        };
-        saveSettings();
+        }, 500); // 500ms debounce
+        
+        return () => clearTimeout(toastTimerId);
     }, [settings, isLoaded]);
 
     // Применяем тему к документу
