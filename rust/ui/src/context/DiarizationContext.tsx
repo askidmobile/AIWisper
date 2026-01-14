@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
+import { toast } from 'sonner';
 import { useBackendContext } from './BackendContext';
 import { useModelContext } from './ModelContext';
 import { DiarizationStatus, ModelState } from '../types/models';
@@ -95,8 +96,11 @@ const saveDiarizationSettings = async (diarSettings: DiarizationSettings) => {
             };
             localStorage.setItem(SETTINGS_KEY, JSON.stringify(updated));
         }
+
+        toast.success('Настройки сохранены', { id: 'settings-saved' });
     } catch (e) {
         console.error('Failed to save diarization settings:', e);
+        toast.error('Ошибка сохранения настроек', { id: 'settings-error' });
     }
 };
 

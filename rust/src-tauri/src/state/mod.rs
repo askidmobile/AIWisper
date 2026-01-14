@@ -4234,6 +4234,8 @@ impl AppState {
                     .join(" ");
                 chunk.mic_text = if mic_text.is_empty() { None } else { Some(mic_text.to_string()) };
                 chunk.sys_text = if sys_text.is_empty() { None } else { Some(sys_text.to_string()) };
+                // Отмечаем чанк завершённым
+                chunk.status = "completed".to_string();
 
                 let _ = Self::save_chunk_to_disk(session_id, chunk);
             }
@@ -4265,6 +4267,7 @@ impl AppState {
                 "dialogue": dialogue,
                 "micText": if mic_text.is_empty() { None } else { Some(mic_text) },
                 "sysText": if sys_text.is_empty() { None } else { Some(sys_text) },
+                "status": "completed",
             }
         })
     }
@@ -4299,9 +4302,12 @@ impl AppState {
                 "start": d.start,
                 "end": d.end,
                 "text": d.text,
-                "speaker": d.speaker.as_deref().unwrap_or(""),
+                "speaker": d.speaker.clone().unwrap_or_default(),
             })).collect::<Vec<_>>(),
+            "status": chunk.status,
+            "excluded": chunk.excluded,
         });
+
 
         std::fs::write(&chunk_file, serde_json::to_string_pretty(&chunk_json)?)?;
 

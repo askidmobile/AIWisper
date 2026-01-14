@@ -24,7 +24,7 @@ import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData } from '../../utils/waveform';
 
 // Версия приложения
-const APP_VERSION = '2.0.22';
+const APP_VERSION = '2.0.28';
 
 interface MainLayoutProps {
     addLog: (msg: string) => void;
@@ -70,6 +70,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
         streamingConfirmationThreshold,
         hybridTranscription, setHybridTranscription,
         ollamaUrl,
+        vadMode, setVADMode,
+        vadMethod, setVADMethod,
     } = useSettingsContext();
     
     // Streaming настройки используются в useEffect для WebSocket
@@ -112,10 +114,6 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     const [waveformStatus, setWaveformStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
     const [waveformError, setWaveformError] = useState<string | null>(null);
     const waveformSessionIdRef = useRef<string | null>(null);
-
-    // VAD settings
-    const [vadMode, setVADMode] = useState<'auto' | 'compression' | 'per-region' | 'off'>('auto');
-    const [vadMethod, setVADMethod] = useState<'auto' | 'energy' | 'silero'>('auto');
 
     // Load waveform data when session changes
     useEffect(() => {

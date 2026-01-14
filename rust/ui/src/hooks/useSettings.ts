@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import { HybridTranscriptionSettings } from '../types/models';
 
@@ -94,6 +94,7 @@ const defaultSettings: AppSettings = {
 export const useSettings = () => {
     const [settings, setSettings] = useState<AppSettings>(defaultSettings);
     const [isLoaded, setIsLoaded] = useState(false);
+    const initialSaveSkipped = useRef(false);
 
     // Загрузка настроек при старте
     useEffect(() => {
@@ -158,6 +159,11 @@ export const useSettings = () => {
     // Сохранение настроек при изменении с debounce для toast
     useEffect(() => {
         if (!isLoaded) return;
+
+        if (!initialSaveSkipped.current) {
+            initialSaveSkipped.current = true;
+            return;
+        }
         
         // Debounce таймер для toast уведомлений
         const toastTimerId = setTimeout(async () => {
