@@ -8,9 +8,13 @@
 //! Falls back to encrypted file storage if keyring is not available
 //! (e.g., in development mode without code signing).
 
+use base64::{engine::general_purpose, Engine as _};
+use chacha20poly1305::{aead::Aead, Key, KeyInit, XChaCha20Poly1305, XNonce};
 use keyring::Entry;
+use rand::rngs::OsRng;
+use rand::RngCore;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -21,6 +25,8 @@ const SERVICE_NAME: &str = "aiwisper";
 
 /// File name for fallback storage
 const FALLBACK_FILE: &str = "api_keys.json";
+/// File name for fallback encryption key
+const FALLBACK_KEY_FILE: &str = "api_keys.key";
 
 /// Provider type for key storage
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +44,13 @@ impl std::fmt::Display for ProviderType {
     }
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct EncryptedFallback {
+    version: u8,
+    nonce: String,
+    ciphertext: String,
+}
+
 /// Secure key storage manager
 #[derive(Debug, Clone)]
 pub struct KeyStore {
@@ -45,6 +58,8 @@ pub struct KeyStore {
     cache: Arc<RwLock<HashMap<String, String>>>,
     /// Path to fallback file
     fallback_path: PathBuf,
+    /// Fallback encryption key
+    fallback_key: Option<[u8; 32]>,
     /// Whether keyring is available
     keyring_available: Arc<RwLock<bool>>,
 }
@@ -62,27 +77,12 @@ impl KeyStore {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("aiwisper")
             .join(FALLBACK_FILE);
-        
+        let fallback_key_path = fallback_path.with_file_name(FALLBACK_KEY_FILE);
+        let fallback_key = Self::load_or_create_fallback_key(&fallback_key_path);
+
         // Load from fallback file synchronously on startup
         let cache = if fallback_path.exists() {
-            match std::fs::read_to_string(&fallback_path) {
-                Ok(content) => {
-                    match serde_json::from_str::<HashMap<String, String>>(&content) {
-                        Ok(keys) => {
-                            tracing::info!("Loaded {} API keys from fallback storage", keys.len());
-                            keys
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to parse fallback keys file: {}", e);
-                            HashMap::new()
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!("No fallback keys file found: {}", e);
-                    HashMap::new()
-                }
-            }
+            Self::load_fallback_cache(&fallback_path, fallback_key.as_ref())
         } else {
             HashMap::new()
         };
@@ -90,8 +90,157 @@ impl KeyStore {
         Self {
             cache: Arc::new(RwLock::new(cache)),
             fallback_path,
+            fallback_key,
             keyring_available: Arc::new(RwLock::new(true)), // Assume available until proven otherwise
         }
+    }
+
+    fn load_or_create_fallback_key(path: &Path) -> Option<[u8; 32]> {
+        if path.exists() {
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    if bytes.len() == 32 {
+                        let mut key = [0u8; 32];
+                        key.copy_from_slice(&bytes);
+                        return Some(key);
+                    }
+                    tracing::warn!("Fallback key has invalid length: {} bytes", bytes.len());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to read fallback key file: {}", e);
+                }
+            }
+        }
+
+        let mut key = [0u8; 32];
+        OsRng.fill_bytes(&mut key);
+
+        if let Err(e) = Self::write_key_file(path, &key) {
+            tracing::warn!("Failed to create fallback key file: {}", e);
+            return None;
+        }
+
+        Some(key)
+    }
+
+    fn write_key_file(path: &Path, key: &[u8; 32]) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, key)?;
+        Self::set_secure_permissions_sync(path)
+    }
+
+    fn load_fallback_cache(
+        path: &Path,
+        fallback_key: Option<&[u8; 32]>,
+    ) -> HashMap<String, String> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                if let Ok(encrypted) = serde_json::from_str::<EncryptedFallback>(&content) {
+                    return match fallback_key {
+                        Some(key) => match Self::decrypt_cache(&encrypted, key) {
+                            Ok(keys) => {
+                                tracing::info!("Loaded {} API keys from encrypted fallback", keys.len());
+                                keys
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to decrypt fallback keys: {}", e);
+                                HashMap::new()
+                            }
+                        },
+                        None => {
+                            tracing::warn!("Fallback keys are encrypted but key is unavailable");
+                            HashMap::new()
+                        }
+                    };
+                }
+
+                match serde_json::from_str::<HashMap<String, String>>(&content) {
+                    Ok(keys) => {
+                        tracing::info!("Loaded {} API keys from legacy fallback storage", keys.len());
+                        keys
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse fallback keys file: {}", e);
+                        HashMap::new()
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::debug!("No fallback keys file found: {}", e);
+                HashMap::new()
+            }
+        }
+    }
+
+    fn encrypt_cache(
+        cache: &HashMap<String, String>,
+        key: &[u8; 32],
+    ) -> Result<EncryptedFallback, String> {
+        let payload = serde_json::to_vec(cache)
+            .map_err(|e| format!("Failed to serialize fallback cache: {}", e))?;
+        let mut nonce_bytes = [0u8; 24];
+        OsRng.fill_bytes(&mut nonce_bytes);
+
+        let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
+        let ciphertext = cipher
+            .encrypt(XNonce::from_slice(&nonce_bytes), payload.as_ref())
+            .map_err(|e| format!("Failed to encrypt fallback cache: {}", e))?;
+
+        Ok(EncryptedFallback {
+            version: 1,
+            nonce: general_purpose::STANDARD.encode(nonce_bytes),
+            ciphertext: general_purpose::STANDARD.encode(ciphertext),
+        })
+    }
+
+    fn decrypt_cache(
+        payload: &EncryptedFallback,
+        key: &[u8; 32],
+    ) -> Result<HashMap<String, String>, String> {
+        let nonce_bytes = general_purpose::STANDARD
+            .decode(&payload.nonce)
+            .map_err(|e| format!("Failed to decode fallback nonce: {}", e))?;
+        if nonce_bytes.len() != 24 {
+            return Err(format!(
+                "Invalid fallback nonce length: {}",
+                nonce_bytes.len()
+            ));
+        }
+        let ciphertext = general_purpose::STANDARD
+            .decode(&payload.ciphertext)
+            .map_err(|e| format!("Failed to decode fallback ciphertext: {}", e))?;
+
+        let cipher = XChaCha20Poly1305::new(Key::from_slice(key));
+        let plaintext = cipher
+            .decrypt(XNonce::from_slice(&nonce_bytes), ciphertext.as_ref())
+            .map_err(|e| format!("Failed to decrypt fallback cache: {}", e))?;
+
+        serde_json::from_slice(&plaintext)
+            .map_err(|e| format!("Failed to parse decrypted fallback cache: {}", e))
+    }
+
+    fn set_secure_permissions_sync(path: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = std::fs::Permissions::from_mode(0o600);
+            std::fs::set_permissions(path, permissions)?;
+        }
+
+        Ok(())
+    }
+
+    async fn set_secure_permissions(path: &Path) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = std::fs::Permissions::from_mode(0o600);
+            tokio::fs::set_permissions(path, permissions).await?;
+        }
+
+        Ok(())
     }
     
     /// Save keys to fallback file
@@ -109,16 +258,34 @@ impl KeyStore {
             }
         }
         
-        match serde_json::to_string_pretty(&*cache) {
-            Ok(content) => {
-                if let Err(e) = tokio::fs::write(&self.fallback_path, content).await {
-                    tracing::error!("Failed to write fallback keys file: {}", e);
-                } else {
-                    tracing::info!("Saved {} API keys to fallback storage", cache.len());
+        let write_result = match self.fallback_key {
+            Some(key) => match Self::encrypt_cache(&*cache, &key) {
+                Ok(encrypted) => match serde_json::to_string_pretty(&encrypted) {
+                    Ok(content) => tokio::fs::write(&self.fallback_path, content).await.map_err(|e| e.to_string()),
+                    Err(e) => Err(format!("Failed to serialize encrypted fallback: {}", e)),
+                },
+                Err(e) => Err(e),
+            },
+            None => {
+                tracing::warn!("Fallback key unavailable, writing plaintext keys");
+                match serde_json::to_string_pretty(&*cache) {
+                    Ok(content) => tokio::fs::write(&self.fallback_path, content)
+                        .await
+                        .map_err(|e| e.to_string()),
+                    Err(e) => Err(format!("Failed to serialize keys: {}", e)),
                 }
             }
+        };
+
+        match write_result {
+            Ok(_) => {
+                if let Err(e) = Self::set_secure_permissions(&self.fallback_path).await {
+                    tracing::warn!("Failed to set fallback file permissions: {}", e);
+                }
+                tracing::info!("Saved {} API keys to fallback storage", cache.len());
+            }
             Err(e) => {
-                tracing::error!("Failed to serialize keys: {}", e);
+                tracing::error!("Failed to write fallback keys file: {}", e);
             }
         }
     }

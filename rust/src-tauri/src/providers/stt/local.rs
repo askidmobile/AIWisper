@@ -8,8 +8,11 @@ use parking_lot::RwLock;
 
 use crate::providers::traits::{
     HealthCheckResult, ProviderError, STTProvider, TranscriptionOptions, TranscriptionResult,
+    TranscriptionSegment,
 };
 use crate::providers::types::{LocalSTTConfig, STTProviderId};
+use aiwisper_ml::get_recommended_model_for_language;
+use std::io::Cursor;
 
 /// Local STT provider using on-device ML models
 pub struct LocalSTTProvider {
@@ -53,6 +56,47 @@ impl Default for LocalSTTProvider {
     }
 }
 
+fn decode_wav_bytes(audio_data: &[u8]) -> Result<Vec<f32>, ProviderError> {
+    let reader = hound::WavReader::new(Cursor::new(audio_data))
+        .map_err(|e| ProviderError::new("invalid_wav", format!("Invalid WAV data: {}", e)))?;
+
+    let spec = reader.spec();
+    let sample_rate = spec.sample_rate;
+    let channels = spec.channels as usize;
+
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .filter_map(|s| s.ok())
+            .collect(),
+        hound::SampleFormat::Int => {
+            let bits = spec.bits_per_sample;
+            let max_val = (1 << (bits - 1)) as f32;
+            reader
+                .into_samples::<i32>()
+                .filter_map(|s| s.ok())
+                .map(|s| s as f32 / max_val)
+                .collect()
+        }
+    };
+
+    let mono: Vec<f32> = if channels > 1 {
+        samples
+            .chunks(channels)
+            .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
+            .collect()
+    } else {
+        samples
+    };
+
+    if sample_rate != 16000 {
+        aiwisper_audio::resampling::resample(&mono, sample_rate, 16000)
+            .map_err(|e| ProviderError::new("resample_failed", e.to_string()))
+    } else {
+        Ok(mono)
+    }
+}
+
 #[async_trait]
 impl STTProvider for LocalSTTProvider {
     fn id(&self) -> STTProviderId {
@@ -68,8 +112,6 @@ impl STTProvider for LocalSTTProvider {
     }
 
     fn is_configured(&self) -> bool {
-        // Local provider is always configured if models are downloaded
-        // For now, we assume it's configured if initialized
         *self.initialized.read()
     }
 
@@ -78,35 +120,53 @@ impl STTProvider for LocalSTTProvider {
         audio_data: Vec<u8>,
         options: TranscriptionOptions,
     ) -> Result<TranscriptionResult, ProviderError> {
-        // Get config
         let config = self.config.read().clone();
-
-        // For now, this is a stub implementation
-        // In the future, this will call into aiwisper_ml crate
-        
-        // The actual transcription would:
-        // 1. Load the ML model if not already loaded
-        // 2. Convert audio_data (bytes) to samples
-        // 3. Run inference
-        // 4. Return results
-        
-        // Determine language
         let language = options.language.unwrap_or(config.language.clone());
-        
+        let model_id = if config.model_id.is_empty() {
+            get_recommended_model_for_language(&language).to_string()
+        } else {
+            config.model_id
+        };
+
         tracing::info!(
             "Local transcription requested: model={}, language={}, audio_size={}",
-            config.model_id,
+            model_id,
             language,
             audio_data.len()
         );
 
-        // Stub: return empty result
-        // TODO: Integrate with actual ML engine
+        let samples = decode_wav_bytes(&audio_data)?;
+        let duration = samples.len() as f64 / 16000.0;
+
+        let engine = aiwisper_ml::get_or_create_engine_cached(&model_id, &language)
+            .map_err(|e| ProviderError::new("engine_error", e.to_string()))?;
+        let segments = engine
+            .transcribe_with_segments(&samples)
+            .map_err(|e| ProviderError::new("transcription_failed", e.to_string()))?;
+
+        let text = segments
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let provider_segments = segments
+            .into_iter()
+            .map(|seg| TranscriptionSegment {
+                start: seg.start as f64 / 1000.0,
+                end: seg.end as f64 / 1000.0,
+                text: seg.text,
+                confidence: Some(seg.confidence as f64),
+                speaker: seg.speaker,
+                language: None,
+            })
+            .collect();
+
         Ok(TranscriptionResult {
-            text: String::new(),
-            segments: vec![],
-            language: Some(language),
-            duration: None,
+            text,
+            segments: provider_segments,
+            language: if language == "auto" { None } else { Some(language) },
+            duration: Some(duration),
             provider_id: self.id().to_string(),
         })
     }

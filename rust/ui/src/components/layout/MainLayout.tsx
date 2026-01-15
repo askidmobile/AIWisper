@@ -24,7 +24,7 @@ import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData } from '../../utils/waveform';
 
 // Версия приложения
-const APP_VERSION = '2.0.28';
+const APP_VERSION = '2.0.29';
 
 interface MainLayoutProps {
     addLog: (msg: string) => void;
@@ -667,8 +667,56 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
     const handleFileDrop = useCallback(async (file: File) => {
         try {
             if (isTauri) {
-                // TODO: Implement file import via Tauri IPC
-                addLog('Import not yet implemented in Tauri build');
+                const tauriPath = (file as File & { path?: string }).path || (file as File & { webkitRelativePath?: string }).webkitRelativePath;
+                if (!tauriPath) {
+                    addLog('Не удалось получить путь файла для импорта');
+                    throw new Error('Missing file path for Tauri import');
+                }
+
+                const imported = await sendMessage({
+                    type: 'import_audio',
+                    path: tauriPath,
+                    language,
+                });
+
+                const importedSessionId = imported?.id || imported?.sessionId;
+                addLog(`Файл импортирован, сессия: ${importedSessionId || 'создана'}`);
+
+                const activeModel = models.find(m => m.id === activeModelId);
+                const modelId = activeModel?.id || activeModelId;
+                const sttProvider = sttSettings.activeProvider || 'local';
+
+                const isModelReady = activeModel?.status === 'downloaded' || activeModel?.status === 'active';
+                if (sttProvider === 'local' && (!modelId || !isModelReady)) {
+                    addLog('Импорт завершён. Выберите модель для запуска транскрипции.');
+                    setShowModelManager(true);
+                    return;
+                }
+
+                if (!importedSessionId) {
+                    addLog('Импорт завершён. Сессия не найдена для транскрипции.');
+                    return;
+                }
+
+                sendMessage({
+                    type: 'retranscribe_full',
+                    sessionId: importedSessionId,
+                    model: modelId,
+                    language,
+                    sttProvider,
+                    diarizationEnabled: false,
+                    hybridEnabled: hybridTranscription.enabled,
+                    hybridSecondaryModelId: hybridTranscription.secondaryModelId,
+                    hybridConfidenceThreshold: hybridTranscription.confidenceThreshold,
+                    hybridContextWords: hybridTranscription.contextWords,
+                    hybridUseLLMForMerge: hybridTranscription.useLLMForMerge,
+                    hybridMode: hybridTranscription.mode,
+                    hybridHotwords: hybridTranscription.hotwords,
+                    hybridOllamaModel: ollamaModel,
+                    hybridOllamaUrl: ollamaUrl,
+                });
+
+                addLog(`Транскрипция запущена (${sttProvider})`);
                 return;
             }
             
@@ -695,7 +743,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             addLog(`Ошибка импорта: ${err.message}`);
             throw err; // Re-throw для отображения ошибки в useDragDrop
         }
-    }, [addLog, API_BASE, activeModelId, language, isTauri]);
+    }, [addLog, API_BASE, activeModelId, language, isTauri, sendMessage, models, sttSettings, hybridTranscription, ollamaModel, ollamaUrl, setShowModelManager]);
 
     const { isDragging, isProcessing, dragHandlers } = useDragDrop({
         onFileDrop: handleFileDrop,

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.29] - 2026-01-15
+
+### Added
+- **Шифрование fallback-ключей**: локальные API ключи теперь хранятся в зашифрованном виде (XChaCha20-Poly1305).
+- **Импорт в Tauri**: drag-and-drop импорт аудиофайлов через IPC с автозапуском ретранскрипции.
+- **ML worker**: реализованы диаризация и транскрипция в рабочем процессе.
+
+### Fixed
+- **Legacy duration**: нормализация totalDuration при миграции/валидации (ns → ms).
+- **Лимит транскрипций**: устранена гонка при инкременте активных задач.
+- **Local STT**: локальный провайдер теперь выполняет реальную транскрипцию.
+
+### Changed
+- **Загрузка моделей**: потоковая запись в файл вместо загрузки всего файла в память.
+
 ## [2.0.28] - 2026-01-14
 
 ### Fixed

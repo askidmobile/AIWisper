@@ -5,9 +5,11 @@
 //!
 //! Communication is via JSON over stdin/stdout.
 
-use aiwisper_types::{SpeakerSegment, WorkerCommand, WorkerResponse};
+use aiwisper_ml::{get_or_create_engine_cached, FluidDiarizationEngine};
+use aiwisper_types::{WorkerCommand, WorkerResponse};
 use anyhow::Result;
 use std::io::{self, BufRead, Write};
+use std::sync::OnceLock;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 fn main() {
@@ -27,10 +29,12 @@ fn main() {
     }
 }
 
-fn run_worker() -> Result<()> {
-    // TODO: Initialize ML engines here
-    // let diarizer = init_diarizer()?;
+fn get_diarizer() -> Result<&'static FluidDiarizationEngine> {
+    static DIARIZER: OnceLock<FluidDiarizationEngine> = OnceLock::new();
+    DIARIZER.get_or_try_init(|| FluidDiarizationEngine::with_defaults())
+}
 
+fn run_worker() -> Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
@@ -59,26 +63,27 @@ fn run_worker() -> Result<()> {
             WorkerCommand::Diarize { samples } => {
                 tracing::debug!("Diarizing {} samples", samples.len());
 
-                // TODO: Implement actual diarization
-                // For now, return mock result
-                let segments = vec![SpeakerSegment {
-                    start: 0.0,
-                    end: samples.len() as f32 / 16000.0,
-                    speaker: 0,
-                }];
-
-                WorkerResponse::Diarization {
-                    segments,
-                    num_speakers: 1,
+                match get_diarizer().and_then(|engine| engine.diarize_with_embeddings(&samples)) {
+                    Ok(result) => WorkerResponse::Diarization {
+                        segments: result.segments,
+                        num_speakers: result.num_speakers,
+                    },
+                    Err(e) => WorkerResponse::Error {
+                        message: format!("Diarization failed: {}", e),
+                    },
                 }
             }
 
             WorkerCommand::Transcribe { samples, engine } => {
                 tracing::debug!("Transcribing {} samples with {}", samples.len(), engine);
 
-                // TODO: Implement actual transcription
-                WorkerResponse::Error {
-                    message: "Transcription not yet implemented in worker".to_string(),
+                match get_or_create_engine_cached(&engine, "auto")
+                    .and_then(|engine| engine.transcribe(&samples))
+                {
+                    Ok(result) => WorkerResponse::Transcription(result),
+                    Err(e) => WorkerResponse::Error {
+                        message: format!("Transcription failed: {}", e),
+                    },
                 }
             }
 

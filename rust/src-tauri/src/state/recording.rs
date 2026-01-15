@@ -33,13 +33,22 @@ static ACTIVE_TRANSCRIPTIONS: LazyLock<Arc<AtomicUsize>> = LazyLock::new(|| Arc:
 /// Попытка захватить слот для транскрипции
 /// Возвращает true если слот захвачен, false если достигнут лимит
 fn try_acquire_transcription_slot() -> bool {
-    let current = ACTIVE_TRANSCRIPTIONS.load(Ordering::SeqCst);
-    if current >= MAX_CONCURRENT_TRANSCRIPTIONS {
-        return false;
+    let mut current = ACTIVE_TRANSCRIPTIONS.load(Ordering::SeqCst);
+    loop {
+        if current >= MAX_CONCURRENT_TRANSCRIPTIONS {
+            return false;
+        }
+
+        match ACTIVE_TRANSCRIPTIONS.compare_exchange(
+            current,
+            current + 1,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
     }
-    // Попытка атомарно увеличить счётчик
-    ACTIVE_TRANSCRIPTIONS.fetch_add(1, Ordering::SeqCst);
-    true
 }
 
 /// Освободить слот транскрипции

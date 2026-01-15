@@ -268,6 +268,23 @@ enum SessionValidation {
     Error(String),
 }
 
+/// Normalize legacy duration values to milliseconds
+fn normalize_duration_ms(raw_duration: i64) -> i64 {
+    if raw_duration <= 0 {
+        return raw_duration;
+    }
+
+    const MS_PER_HOUR: i64 = 60 * 60 * 1000;
+    const NS_PER_MS: i64 = 1_000_000;
+
+    // Некоторые старые метаданные сохраняли длительность в наносекундах
+    if raw_duration > 24 * MS_PER_HOUR && raw_duration % NS_PER_MS == 0 {
+        return raw_duration / NS_PER_MS;
+    }
+
+    raw_duration
+}
+
 /// Validate session metadata
 fn validate_session_meta(meta: &GoSessionMeta, session_dir: &std::path::Path) -> SessionValidation {
     // Check required fields
@@ -289,6 +306,8 @@ fn validate_session_meta(meta: &GoSessionMeta, session_dir: &std::path::Path) ->
             ));
         }
     }
+
+    let duration_ms = normalize_duration_ms(meta.total_duration);
     
     // Check if chunks directory exists (session without chunks is suspicious)
     let chunks_dir = session_dir.join("chunks");
@@ -305,24 +324,24 @@ fn validate_session_meta(meta: &GoSessionMeta, session_dir: &std::path::Path) ->
     let has_audio = session_dir.join("full.mp3").exists()
         || session_dir.join("segment_000.mp3").exists();
     
-    if !has_audio && meta.total_duration > 0 {
+    if !has_audio && duration_ms > 0 {
         return SessionValidation::Warning("Missing audio file".to_string());
     }
     
     // Check for negative or unrealistic duration
-    if meta.total_duration < 0 {
+    if duration_ms < 0 {
         return SessionValidation::Warning(format!(
             "Negative duration: {}",
-            meta.total_duration
+            duration_ms
         ));
     }
     
     // Duration > 24 hours is suspicious
-    if meta.total_duration > 24 * 60 * 60 * 1000 {
+    if duration_ms > 24 * 60 * 60 * 1000 {
         return SessionValidation::Warning(format!(
             "Suspiciously long duration: {} ms ({:.1} hours)",
-            meta.total_duration,
-            meta.total_duration as f64 / 3_600_000.0
+            duration_ms,
+            duration_ms as f64 / 3_600_000.0
         ));
     }
     
@@ -344,6 +363,16 @@ fn migrate_session_v1_to_v2(meta: &mut GoSessionMeta, meta_path: &std::path::Pat
     
     // Update version
     meta.version = CURRENT_SESSION_VERSION;
+
+    let normalized_duration = normalize_duration_ms(meta.total_duration);
+    if normalized_duration != meta.total_duration {
+        tracing::info!(
+            "Normalizing session duration from {} to {} ms",
+            meta.total_duration,
+            normalized_duration
+        );
+        meta.total_duration = normalized_duration;
+    }
     
     // Normalize status field
     if meta.status.is_empty() {
@@ -493,9 +522,9 @@ fn convert_go_session_to_rust(
 ) -> crate::commands::session::Session {
     use crate::commands::session::Session;
 
-    // Duration: stored in milliseconds in meta.json, passed to frontend as milliseconds
+    // Duration: normalize legacy values to milliseconds
     // All UI components expect milliseconds and divide by 1000 to get seconds
-    let total_duration = meta.total_duration as u64;
+    let total_duration = normalize_duration_ms(meta.total_duration).max(0) as u64;
 
     // Load chunks from chunks/ directory
     let chunks = load_chunks_from_dir(session_dir);
@@ -1635,12 +1664,35 @@ impl AppState {
             ));
         }
 
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to read model bytes: {}", e))?;
+        use futures::StreamExt;
+        use tokio::io::AsyncWriteExt;
 
-        std::fs::write(&model_path, &bytes)?;
+        let total_size = response.content_length();
+        let temp_path = model_path.with_extension("download");
+        let mut file = tokio::fs::File::create(&temp_path).await?;
+        let mut downloaded: u64 = 0;
+        let mut stream = response.bytes_stream();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read model bytes: {}", e))?;
+            file.write_all(&chunk).await?;
+            downloaded += chunk.len() as u64;
+
+            if let Some(total) = total_size {
+                if total > 0 {
+                    let progress = (downloaded as f64 / total as f64) * 100.0;
+                    tracing::debug!(
+                        "Model download progress: {:.1}% ({} / {} bytes)",
+                        progress,
+                        downloaded,
+                        total
+                    );
+                }
+            }
+        }
+
+        file.flush().await?;
+        tokio::fs::rename(&temp_path, &model_path).await?;
 
         tracing::info!("Model {} downloaded successfully", model_id);
 
