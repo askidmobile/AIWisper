@@ -9,15 +9,15 @@
 pub mod recording;
 
 #[allow(unused_imports)]
-use aiwisper_audio::{are_channels_similar, is_silent, AudioCapture};
-use aiwisper_ml::{TranscriptionEngine, VoicePrintMatcher};
+use aiwisper_audio::{are_channels_similar, calculate_rms, is_silent, AudioCapture};
+use aiwisper_ml::{SileroVad, SileroVadConfig, TranscriptionEngine, VoicePrintMatcher};
 use aiwisper_types::{
     AudioDevice, ModelInfo, RecordingState, Settings, TranscriptSegment, TranscriptionResult,
 };
 use anyhow::Result;
 use parking_lot::RwLock;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::{broadcast, oneshot};
 #[allow(unused_imports)]
 use uuid::Uuid;
@@ -3370,6 +3370,76 @@ impl Default for AppState {
 // ============================================================================
 
 impl AppState {
+    fn get_vad_model_path() -> Option<PathBuf> {
+        let models_dir = dirs::data_local_dir().map(|p| p.join("aiwisper").join("models"))?;
+        let registry = Self::get_model_registry();
+        let model = registry.iter().find(|m| m.id == "silero-vad-v5");
+        let possible_names = Self::get_model_file_names(
+            "silero-vad-v5",
+            model.and_then(|m| m.download_url.as_deref()),
+        );
+
+        for file_name in possible_names {
+            let model_path = models_dir.join(file_name);
+            if model_path.exists() {
+                return Some(model_path);
+            }
+        }
+
+        None
+    }
+
+    fn detect_vad_silence(samples: &[f32]) -> Result<(bool, usize)> {
+        static VAD_ENGINE: LazyLock<RwLock<Option<SileroVad>>> =
+            LazyLock::new(|| RwLock::new(None));
+
+        if VAD_ENGINE.read().is_none() {
+            let model_path = Self::get_vad_model_path()
+                .ok_or_else(|| anyhow::anyhow!("VAD модель не найдена"))?;
+            let mut config = SileroVadConfig::default();
+            config.model_path = model_path.to_string_lossy().to_string();
+            let vad = SileroVad::new(config)?;
+            *VAD_ENGINE.write() = Some(vad);
+        }
+
+        let vad_guard = VAD_ENGINE.read();
+        let vad = vad_guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("VAD модель не инициализирована"))?;
+        let segments = vad.detect_segments(samples)?;
+        Ok((segments.is_empty(), segments.len()))
+    }
+
+    fn detect_channel_silence(&self, samples: &[f32]) -> bool {
+        if samples.is_empty() {
+            return true;
+        }
+
+        let rms = calculate_rms(samples);
+        let rms_silent = is_silent(samples, Some(0.008));
+
+        match Self::detect_vad_silence(samples) {
+            Ok((vad_silent, segments)) => {
+                tracing::info!(
+                    "VAD тишина: segments={} rms={:.5} silent={}",
+                    segments,
+                    rms,
+                    vad_silent
+                );
+                vad_silent
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "VAD недоступен, fallback на RMS: {} (rms={:.5}, silent={})",
+                    err,
+                    rms,
+                    rms_silent
+                );
+                rms_silent
+            }
+        }
+    }
+
     /// Retranscribe a single chunk using stereo channel separation (like Go backend)
     pub async fn retranscribe_chunk(
         &self,
@@ -3460,8 +3530,8 @@ impl AppState {
         let use_cloud = stt_provider != "local" && !stt_provider.is_empty();
         
         // Check for silent channels to avoid hallucinations like "Продолжение следует..."
-        let mic_is_silent = is_silent(&mic_samples, None);
-        let sys_is_silent = is_silent(&sys_samples, None);
+        let mic_is_silent = self.detect_channel_silence(&mic_samples);
+        let sys_is_silent = self.detect_channel_silence(&sys_samples);
         
         tracing::info!(
             "Retranscribe chunk {}: mic={} sys={} samples, is_stereo={}, silent=(mic:{}, sys:{})",
@@ -3790,8 +3860,8 @@ impl AppState {
                 // Stereo mode: transcribe channels separately
                 // Skip silent channels to avoid hallucinations like "Продолжение следует..."
                 
-                let mic_is_silent = is_silent(&mic_samples, None);
-                let sys_is_silent = is_silent(&sys_samples, None);
+                let mic_is_silent = self.detect_channel_silence(&mic_samples);
+                let sys_is_silent = self.detect_channel_silence(&sys_samples);
                 
                 // Transcribe MIC channel -> "Вы" (skip if silent)
                 if !mic_samples.is_empty() && !mic_is_silent {

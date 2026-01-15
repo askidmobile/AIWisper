@@ -74,10 +74,9 @@ pub fn is_silent(samples: &[f32], threshold: Option<f32>) -> bool {
     // - Background noise from microphone
     // - System audio bleeding/crosstalk
     // - Low-level interference
-    // 0.04 ≈ -28dB - более агрессивный порог для предотвращения галлюцинаций
-    // типа "Продолжение следует...", "Спасибо", "Пвет" и т.д.
-    // Увеличен с 0.02 до 0.04 после тестирования на реальных записях
-    const DEFAULT_SILENCE_THRESHOLD: f32 = 0.04;
+    // 0.008 ≈ -41dB — мягкий порог, основное решение отдаём VAD
+    // Оставляем RMS как запасной фильтр от паразитного шума
+    const DEFAULT_SILENCE_THRESHOLD: f32 = 0.008;
     
     if samples.is_empty() {
         return true;

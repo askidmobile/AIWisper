@@ -10,10 +10,12 @@ use aiwisper_audio::{
     calculate_rms, is_silent, resample, AudioCapture, AudioChannel, ChunkBuffer, SegmentedMp3Writer,
     SystemAudioCapture, SystemCaptureConfig, SystemCaptureMethod, VadConfig,
 };
+use aiwisper_ml::{SileroVad, SileroVadConfig};
 use std::sync::mpsc;
 use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use parking_lot::RwLock;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 use uuid::Uuid;
@@ -115,6 +117,103 @@ fn is_hallucination(text: &str) -> bool {
     }
     
     false
+}
+
+fn find_vad_model_path() -> Option<PathBuf> {
+    let models_dir = dirs::data_local_dir()?.join("aiwisper").join("models");
+    let candidates = [
+        "silero_vad.onnx",
+        "silero-vad-v5.onnx",
+        "silero-vad-v5.bin",
+        "silero-vad-v5",
+    ];
+
+    for file_name in candidates {
+        let model_path = models_dir.join(file_name);
+        if model_path.exists() {
+            return Some(model_path);
+        }
+    }
+
+    None
+}
+
+fn get_vad_engine() -> Result<parking_lot::RwLockReadGuard<'static, Option<SileroVad>>> {
+    static VAD_ENGINE: LazyLock<RwLock<Option<SileroVad>>> =
+        LazyLock::new(|| RwLock::new(None));
+
+    if VAD_ENGINE.read().is_none() {
+        let model_path = find_vad_model_path()
+            .ok_or_else(|| anyhow::anyhow!("VAD модель не найдена"))?;
+        let mut config = SileroVadConfig::default();
+        config.model_path = model_path.to_string_lossy().to_string();
+        let vad = SileroVad::new(config)?;
+        *VAD_ENGINE.write() = Some(vad);
+    }
+
+    Ok(VAD_ENGINE.read())
+}
+
+fn is_silent_with_vad(samples: &[f32], sample_rate: u32) -> bool {
+    if samples.is_empty() {
+        return true;
+    }
+
+    let rms = calculate_rms(samples);
+    let rms_silent = is_silent(samples, Some(0.008));
+    let resampled = if sample_rate != TRANSCRIPTION_SAMPLE_RATE {
+        resample(samples, sample_rate, TRANSCRIPTION_SAMPLE_RATE)
+            .unwrap_or_else(|_| samples.to_vec())
+    } else {
+        samples.to_vec()
+    };
+
+    match get_vad_engine() {
+        Ok(engine_guard) => {
+            let vad = match engine_guard.as_ref() {
+                Some(vad) => vad,
+                None => {
+                    tracing::warn!(
+                        "VAD не инициализирован, fallback на RMS (rms={:.5}, silent={})",
+                        rms,
+                        rms_silent
+                    );
+                    return rms_silent;
+                }
+            };
+
+            match vad.detect_segments(&resampled) {
+                Ok(segments) => {
+                    let vad_silent = segments.is_empty();
+                    tracing::info!(
+                        "VAD тишина: segments={} rms={:.5} silent={}",
+                        segments.len(),
+                        rms,
+                        vad_silent
+                    );
+                    vad_silent
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "VAD ошибка, fallback на RMS: {} (rms={:.5}, silent={})",
+                        err,
+                        rms,
+                        rms_silent
+                    );
+                    rms_silent
+                }
+            }
+        }
+        Err(err) => {
+            tracing::warn!(
+                "VAD недоступен, fallback на RMS: {} (rms={:.5}, silent={})",
+                err,
+                rms,
+                rms_silent
+            );
+            rms_silent
+        }
+    }
 }
 
 /// Configuration for transcription during recording
@@ -1662,8 +1761,8 @@ fn transcribe_chunk_stereo(
     use tauri::Emitter;
 
     // Check for silent channels to avoid hallucinations like "Продолжение следует..."
-    let mic_is_silent = is_silent(mic_samples, None);
-    let sys_is_silent = is_silent(sys_samples, None);
+    let mic_is_silent = is_silent_with_vad(mic_samples, source_sample_rate);
+    let sys_is_silent = is_silent_with_vad(sys_samples, source_sample_rate);
     
     // Calculate RMS for debugging
     let mic_rms = calculate_rms(mic_samples);
