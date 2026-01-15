@@ -2018,26 +2018,27 @@ impl AppState {
     /// Toggle chunk exclusion status (in-memory and persist to chunk JSON)
     /// Returns the new excluded state
     pub async fn toggle_chunk_exclude(&self, session_id: &str, chunk_id: &str) -> Result<bool> {
-        let mut new_excluded = false;
-        
-        // Update in-memory
-        {
+        let new_excluded = {
             let mut sessions = self.inner.sessions.write();
-            if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
-                if let Some(chunk) = session.chunks.iter_mut().find(|c| c.id == chunk_id) {
-                    chunk.excluded = !chunk.excluded;
-                    new_excluded = chunk.excluded;
-                    tracing::info!(
-                        "Toggled chunk {} excluded to {} in session {}",
-                        chunk_id, new_excluded, session_id
-                    );
-                } else {
-                    anyhow::bail!("Chunk not found: {}", chunk_id);
-                }
-            } else {
-                anyhow::bail!("Session not found: {}", session_id);
-            }
-        }
+            let session = sessions
+                .iter_mut()
+                .find(|s| s.id == session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+            let chunk = session
+                .chunks
+                .iter_mut()
+                .find(|c| c.id == chunk_id)
+                .ok_or_else(|| anyhow::anyhow!("Chunk not found: {}", chunk_id))?;
+
+            chunk.excluded = !chunk.excluded;
+            tracing::info!(
+                "Toggled chunk {} excluded to {} in session {}",
+                chunk_id,
+                chunk.excluded,
+                session_id
+            );
+            chunk.excluded
+        };
 
         // Persist to chunk JSON file
         if let Some(sessions_dir) = get_sessions_dir() {

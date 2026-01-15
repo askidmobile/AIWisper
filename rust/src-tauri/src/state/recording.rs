@@ -1982,13 +1982,6 @@ fn transcribe_samples_sync(
     }
 }
 
-/// Run diarization on audio samples using FluidAudio
-/// Returns segments only (for backwards compatibility)
-fn diarize_samples(samples: &[f32]) -> Result<Vec<aiwisper_types::SpeakerSegment>> {
-    let result = diarize_samples_with_embeddings(samples)?;
-    Ok(result.segments)
-}
-
 /// Run diarization on audio samples and return full result with speaker embeddings
 /// Used for voiceprint matching
 fn diarize_samples_with_embeddings(samples: &[f32]) -> Result<aiwisper_ml::DiarizationResult> {

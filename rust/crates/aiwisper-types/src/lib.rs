@@ -3,9 +3,10 @@
 //! This crate contains all shared data structures used across
 //! the AIWisper application.
 //!
-//! Types are annotated with `#[ts(export)]` for TypeScript generation via ts-rs.
+//! Types are annotated with `#[cfg_attr(feature = "ts-bindings", ts(export))]` for TypeScript generation via ts-rs.
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts-bindings")]
 use ts_rs::TS;
 
 // ============================================================================
@@ -13,8 +14,9 @@ use ts_rs::TS;
 // ============================================================================
 
 /// Session status
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum SessionStatus {
     Active,
@@ -24,8 +26,9 @@ pub enum SessionStatus {
 }
 
 /// Session information (lightweight, for lists)
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     pub id: String,
@@ -33,42 +36,44 @@ pub struct SessionInfo {
     pub status: String,
     pub total_duration: u64,
     pub chunks_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub tags: Option<Vec<String>>,
 }
 
 /// Full session data
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
     pub start_time: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub end_time: Option<String>,
     pub status: String,
     pub chunks: Vec<Chunk>,
     pub data_dir: String,
     pub total_duration: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub title: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub summary: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub language: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub sample_count: Option<u64>,
 }
 
 /// Chunk status
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum ChunkStatus {
     Pending,
@@ -78,8 +83,9 @@ pub enum ChunkStatus {
 }
 
 /// Audio chunk with transcription
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct Chunk {
     pub id: String,
@@ -87,24 +93,25 @@ pub struct Chunk {
     pub start_ms: i64,
     pub end_ms: i64,
     pub duration: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub transcription: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub mic_text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub sys_text: Option<String>,
     #[serde(default)]
     pub dialogue: Vec<DialogueEntry>,
     #[serde(default)]
     pub is_stereo: bool,
     pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub error: Option<String>,
 }
 
 /// Dialogue entry with speaker information
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct DialogueEntry {
     pub start: i64,
@@ -112,7 +119,7 @@ pub struct DialogueEntry {
     pub text: String,
     #[serde(default)]
     pub speaker: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub words: Option<Vec<TranscriptWord>>,
 }
 
@@ -121,8 +128,9 @@ pub struct DialogueEntry {
 // ============================================================================
 
 /// Transcription result
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptionResult {
     /// Full transcribed text
@@ -130,7 +138,7 @@ pub struct TranscriptionResult {
     /// Segments with timestamps
     pub segments: Vec<TranscriptSegment>,
     /// Detected language (ISO 639-1 code)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub language: Option<String>,
     /// Processing time in milliseconds
     pub processing_time_ms: u64,
@@ -139,8 +147,9 @@ pub struct TranscriptionResult {
 }
 
 /// A segment of transcribed text with timing information
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptSegment {
     /// Start time in milliseconds
@@ -150,7 +159,7 @@ pub struct TranscriptSegment {
     /// Transcribed text
     pub text: String,
     /// Speaker identifier (e.g., "Speaker 0")
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub speaker: Option<String>,
     /// Word-level timestamps
     #[serde(default)]
@@ -161,8 +170,9 @@ pub struct TranscriptSegment {
 }
 
 /// A single word with timing information
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct TranscriptWord {
     /// Start time in milliseconds
@@ -181,8 +191,9 @@ pub struct TranscriptWord {
 // ============================================================================
 
 /// Speaker segment from diarization
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 pub struct SpeakerSegment {
     /// Start time in seconds
     pub start: f32,
@@ -193,8 +204,9 @@ pub struct SpeakerSegment {
 }
 
 /// Session speaker info (for UI)
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSpeaker {
     /// Speaker ID within session (e.g., "mic", "sys", "Собеседник 1")
@@ -206,7 +218,7 @@ pub struct SessionSpeaker {
     /// Whether speaker was recognized via voiceprint
     pub is_recognized: bool,
     /// Associated voiceprint ID (if recognized)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub voiceprint_id: Option<String>,
     /// Number of dialogue entries for this speaker
     pub entry_count: u32,
@@ -215,8 +227,9 @@ pub struct SessionSpeaker {
 }
 
 /// VoicePrint for speaker recognition
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct VoicePrint {
     pub id: String,
@@ -224,8 +237,8 @@ pub struct VoicePrint {
     pub created_at: String,
     pub updated_at: String,
     /// Speaker embedding vector (for matching)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(skip)]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
+    #[cfg_attr(feature = "ts-bindings", ts(skip))]
     pub embedding: Option<Vec<f32>>,
     /// Number of samples used to create this voiceprint
     pub sample_count: u32,
@@ -236,8 +249,9 @@ pub struct VoicePrint {
 // ============================================================================
 
 /// Audio input device information
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct AudioDevice {
     /// Device ID
@@ -253,8 +267,9 @@ pub struct AudioDevice {
 }
 
 /// Waveform data for visualization
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct WaveformData {
     pub peaks: Vec<Vec<f32>>,
@@ -267,8 +282,9 @@ pub struct WaveformData {
 }
 
 /// Audio level event (for VU meters)
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct AudioLevelEvent {
     pub mic_level: f32,
@@ -285,8 +301,9 @@ pub struct AudioLevelEvent {
 // ============================================================================
 
 /// Model type
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum ModelType {
     Ggml,
@@ -295,8 +312,9 @@ pub enum ModelType {
 }
 
 /// Engine type for transcription
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum EngineType {
     Whisper,
@@ -309,8 +327,9 @@ pub enum EngineType {
 }
 
 /// Model status
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ModelStatus {
     NotDownloaded,
@@ -321,8 +340,9 @@ pub enum ModelStatus {
 }
 
 /// Model information with all fields matching frontend expectations
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     /// Model ID (e.g., "ggml-base")
@@ -343,7 +363,7 @@ pub struct ModelInfo {
     /// Supported languages
     pub languages: Vec<String>,
     /// Word Error Rate (optional)
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub wer: Option<String>,
     /// Speed multiplier (e.g., "~7x")
     pub speed: String,
@@ -351,7 +371,7 @@ pub struct ModelInfo {
     #[serde(default)]
     pub recommended: bool,
     /// Download URL
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub download_url: Option<String>,
     /// Is model in archive format
     #[serde(default)]
@@ -362,10 +382,10 @@ pub struct ModelInfo {
     #[serde(default)]
     pub progress: f64,
     /// Error message if any
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub error: Option<String>,
     /// Path to downloaded model
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub path: Option<String>,
 }
 
@@ -374,8 +394,9 @@ pub struct ModelInfo {
 // ============================================================================
 
 /// Application settings
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub language: String,
@@ -386,11 +407,11 @@ pub struct AppSettings {
     pub use_voice_isolation: bool,
     #[serde(default)]
     pub capture_system: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub vad_mode: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub vad_method: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub theme: Option<String>,
     #[serde(default = "default_ollama_model")]
     pub ollama_model: String,
@@ -398,11 +419,11 @@ pub struct AppSettings {
     pub ollama_url: String,
     #[serde(default)]
     pub diarization_enabled: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub diarization_provider: Option<String>,
     #[serde(default)]
     pub show_session_stats: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub hybrid_transcription: Option<HybridSettings>,
 }
 
@@ -415,8 +436,9 @@ fn default_ollama_url() -> String {
 }
 
 /// Hybrid transcription settings
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct HybridSettings {
     pub enabled: bool,
@@ -471,8 +493,9 @@ impl Default for AppSettings {
 // ============================================================================
 
 /// Session started event payload
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStartedEvent {
     pub session_id: String,
@@ -480,18 +503,20 @@ pub struct SessionStartedEvent {
 }
 
 /// Session stopped event payload
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStoppedEvent {
     pub session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub session: Option<Session>,
 }
 
 /// Chunk created event payload
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkCreatedEvent {
     pub session_id: String,
@@ -499,8 +524,9 @@ pub struct ChunkCreatedEvent {
 }
 
 /// Chunk transcribed event payload
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkTranscribedEvent {
     pub session_id: String,
@@ -508,8 +534,9 @@ pub struct ChunkTranscribedEvent {
 }
 
 /// Model download progress event
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct ModelDownloadProgressEvent {
     pub model_id: String,
@@ -519,8 +546,9 @@ pub struct ModelDownloadProgressEvent {
 }
 
 /// Recording result (returned when stopping recording)
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingResult {
     pub session_id: String,
@@ -534,30 +562,33 @@ pub struct RecordingResult {
 // ============================================================================
 
 /// Arguments for start_recording command
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct StartRecordingArgs {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub device_id: Option<String>,
     pub capture_system: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub language: Option<String>,
 }
 
 /// Arguments for import_audio command
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct ImportAudioArgs {
     pub path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "std::option::Option::is_none")]
     pub language: Option<String>,
 }
 
 /// Arguments for rename_session_speaker command
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct RenameSpeakerArgs {
     pub session_id: String,
@@ -566,8 +597,9 @@ pub struct RenameSpeakerArgs {
 }
 
 /// Arguments for merge_session_speakers command
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct MergeSpeakersArgs {
     pub session_id: String,
@@ -576,8 +608,9 @@ pub struct MergeSpeakersArgs {
 }
 
 /// Arguments for search_sessions command
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-bindings", ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct SearchSessionsArgs {
     pub query: String,
@@ -588,6 +621,7 @@ pub struct SearchSessionsArgs {
 // ============================================================================
 
 /// Worker command for IPC
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum WorkerCommand {
@@ -600,6 +634,7 @@ pub enum WorkerCommand {
 }
 
 /// Worker response for IPC
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum WorkerResponse {
@@ -621,6 +656,7 @@ pub enum WorkerResponse {
 // ============================================================================
 
 /// Recording state
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingState {
@@ -633,6 +669,7 @@ pub struct RecordingState {
 }
 
 /// Diarization model type
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum DiarizationType {
@@ -641,6 +678,7 @@ pub enum DiarizationType {
 }
 
 /// Settings (legacy format, kept for compatibility)
+#[cfg_attr(feature = "ts-bindings", derive(TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
