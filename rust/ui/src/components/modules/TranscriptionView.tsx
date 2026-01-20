@@ -216,30 +216,35 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
             speakers: ['#2196f3', '#00bcd4', '#3f51b5', '#03a9f4', '#673ab7', '#5c6bc0']
         };
 
+        const normalizedSpeaker = speaker.trim();
+        if (!normalizedSpeaker || normalizedSpeaker === 'unknown') {
+            return { name: 'Неизвестно', color: '#9ca3af', sessionSpeaker: null };
+        }
+
         // Проверяем кастомные имена из sessionSpeakers
         if (sessionSpeakers.length > 0) {
             // Ищем по разным форматам спикера
             const found = sessionSpeakers.find(s => {
-                if (speaker === 'mic' || speaker === 'Вы') {
+                if (normalizedSpeaker === 'mic' || normalizedSpeaker === 'Вы') {
                     return s.isMic;
                 }
-                if (speaker === 'sys' || speaker === 'Собеседник') {
+                if (normalizedSpeaker === 'sys' || normalizedSpeaker === 'Собеседник') {
                     return !s.isMic && s.localId === 0;
                 }
-                if (speaker.startsWith('Speaker ')) {
-                    const num = parseInt(speaker.replace('Speaker ', ''), 10);
+                if (normalizedSpeaker.startsWith('Speaker ')) {
+                    const num = parseInt(normalizedSpeaker.replace('Speaker ', ''), 10);
                     return !s.isMic && s.localId === num;
                 }
-                if (speaker.startsWith('Собеседник ')) {
-                    const num = parseInt(speaker.replace('Собеседник ', ''), 10);
+                if (normalizedSpeaker.startsWith('Собеседник ')) {
+                    const num = parseInt(normalizedSpeaker.replace('Собеседник ', ''), 10);
                     return !s.isMic && s.localId === (num - 1);
                 }
                 // Совпадение по originalKey (после переименования speaker в данных будет новым именем)
-                if (s.originalKey === speaker) {
+                if (s.originalKey === normalizedSpeaker) {
                     return true;
                 }
                 // Прямое совпадение по displayName (для уже переименованных)
-                return s.displayName === speaker;
+                return s.displayName === normalizedSpeaker;
             });
 
             if (found) {
@@ -252,31 +257,31 @@ export const TranscriptionView: React.FC<TranscriptionViewProps> = ({
         }
 
         // Дефолтная логика если не нашли в sessionSpeakers
-        if (speaker === 'mic' || speaker === 'Вы') {
+        if (normalizedSpeaker === 'mic' || normalizedSpeaker === 'Вы') {
             return { name: 'Вы', color: defaultColors.mic, sessionSpeaker: null };
         }
-        if (speaker === 'sys' || speaker === 'Собеседник') {
+        if (normalizedSpeaker === 'sys' || normalizedSpeaker === 'Собеседник') {
             return { name: 'Собеседник', color: defaultColors.sys, sessionSpeaker: null };
         }
-        if (speaker.startsWith('Speaker ')) {
-            const num = parseInt(speaker.replace('Speaker ', ''), 10) || 0;
+        if (normalizedSpeaker.startsWith('Speaker ')) {
+            const num = parseInt(normalizedSpeaker.replace('Speaker ', ''), 10) || 0;
             return { 
                 name: `Собеседник ${num + 1}`, 
                 color: defaultColors.speakers[Math.abs(num) % defaultColors.speakers.length],
                 sessionSpeaker: null
             };
         }
-        if (speaker.startsWith('Собеседник ')) {
-            const num = parseInt(speaker.replace('Собеседник ', ''), 10) || 1;
+        if (normalizedSpeaker.startsWith('Собеседник ')) {
+            const num = parseInt(normalizedSpeaker.replace('Собеседник ', ''), 10) || 1;
             return { 
-                name: speaker, 
+                name: normalizedSpeaker, 
                 color: defaultColors.speakers[Math.abs(num - 1) % defaultColors.speakers.length],
                 sessionSpeaker: null
             };
         }
 
         // Кастомное имя - возвращаем как есть
-        return { name: speaker, color: defaultColors.sys, sessionSpeaker: null };
+        return { name: normalizedSpeaker, color: defaultColors.sys, sessionSpeaker: null };
     }, [sessionSpeakers]);
 
     // Handlers

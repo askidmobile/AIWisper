@@ -421,6 +421,7 @@ const FullStats: React.FC<{ stats: StatsData; totalDuration: number }> = ({ stat
 };
 
 function formatSpeakerName(speaker: string): string {
+    if (!speaker || speaker === 'unknown') return 'Неизвестно';
     if (speaker === 'mic') return 'Вы';
     if (speaker === 'sys') return 'Собеседник';
     if (speaker.startsWith('Speaker ')) {

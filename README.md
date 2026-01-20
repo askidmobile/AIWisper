@@ -4,7 +4,7 @@
 
 ![macOS](https://img.shields.io/badge/macOS-13+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-2.0.31-orange)
+![Version](https://img.shields.io/badge/version-2.0.33-orange)
 
 ## Возможности
 
@@ -241,6 +241,7 @@ OLLAMA_URL=http://localhost:11434
 │       ├── full.mp3    # Аудио
 │       └── chunks/     # Чанки + транскрипции
 ├── models/             # Скачанные модели
+├── logs/               # Логи приложения (автоочистка)
 ├── voiceprints/        # Голосовые профили
 └── config.json         # Настройки
 ```

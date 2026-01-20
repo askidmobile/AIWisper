@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.33] - 2026-01-21
+
+### Fixed
+- **Transcription queue slot leak**: Исправлена критическая ошибка зависания очереди транскрипции при панике потока.
+  - **Проблема**: Когда поток транскрипции падал с паникой, вызов `release_transcription_slot()` не выполнялся, семафор оставался занятым.
+  - **Результат**: После нескольких паник все 3 слота семафора блокировались, новые чанки накапливались в pending очереди без обработки.
+  - **Решение**: Добавлен `TranscriptionSlotGuard` (RAII guard) с автоматическим освобождением слота при drop, включая панику.
+
+### Added
+- **TranscriptionSlotGuard**: RAII guard для безопасного освобождения слотов транскрипции.
+  - Гарантирует вызов `release_transcription_slot()` даже при панике потока.
+  - Использует `AtomicBool` для предотвращения двойного освобождения.
+
+### Changed
+- **Parallel MIC/SYS channel transcription**: Стерео чанки теперь обрабатываются параллельно (~2x ускорение).
+  - `transcribe_chunk_stereo` использует `std::thread::scope` для параллельного запуска MIC и SYS транскрипции.
+  - VAD и диаризация сохранены внутри параллельных потоков.
+
+### Technical
+- `rust/src-tauri/src/state/recording.rs`:
+  - Добавлен `TranscriptionSlotGuard` struct (lines ~70-97)
+  - Переписан `transcribe_chunk_stereo` с параллельной обработкой каналов
+  - Обновлены все места spawn потоков для использования Guard вместо ручного release
+
+## [2.0.32] - 2026-01-20
+
+### Fixed
+- **Запись без гибрида**: во время записи используется только основная модель, без вторичной нагрузки.
+- **Ретранскрибирование по запросу**: гибрид остаётся доступным только для ручной ретранскрибции (полной или по чанкам).
+- **Логи приложения**: перенесены в директорию данных приложения и автоматически очищаются по сроку хранения.
+
 ## [2.0.31] - 2026-01-15
 
 ### Fixed

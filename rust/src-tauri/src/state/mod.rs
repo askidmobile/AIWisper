@@ -830,7 +830,7 @@ impl AppState {
         let transcription_config = recording::TranscriptionConfig {
             model_id: model_id.clone(),
             language: language.clone(),
-            hybrid_enabled: settings.hybrid_enabled,
+            hybrid_enabled: false,
             hybrid_secondary_model_id: settings.hybrid_secondary_model_id.clone(),
             hotwords: settings.hotwords.clone(),
             diarization_enabled,
@@ -3525,6 +3525,7 @@ impl AppState {
         let mut dialogue: Vec<DialogueSegment> = Vec::new();
         let mut mic_text = String::new();
         let mut sys_text = String::new();
+        let mut excluded = false;
 
         // Check if using cloud provider
         let use_cloud = stt_provider != "local" && !stt_provider.is_empty();
@@ -3665,23 +3666,55 @@ impl AppState {
 
             dialogue = segments
                 .into_iter()
-                .map(|seg| DialogueSegment {
-                    start: seg.start + start_ms,
-                    end: seg.end + start_ms,
-                    text: seg.text,
-                    speaker: seg.speaker,
+                .map(|seg| {
+                    let speaker = seg
+                        .speaker
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .or_else(|| Some("unknown".to_string()));
+
+                    DialogueSegment {
+                        start: seg.start + start_ms,
+                        end: seg.end + start_ms,
+                        text: seg.text,
+                        speaker,
+                    }
                 })
                 .collect();
         }
 
+        let transcription = dialogue
+            .iter()
+            .map(|d| d.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if recording::is_hallucination(&transcription) {
+            excluded = true;
+            dialogue.clear();
+            mic_text.clear();
+            sys_text.clear();
+        }
+
         // 4. Update chunk in session (including corrected timestamps)
         let duration_ns = self.update_chunk_transcription(
-            session_id, chunk_id, start_ms, end_ms, &dialogue, &mic_text, &sys_text
+            session_id, chunk_id, start_ms, end_ms, &dialogue, &mic_text, &sys_text, excluded
         );
 
         // 5. Build response and emit event
         let result = Self::build_chunk_event_payload(
-            session_id, chunk_id, chunk_index, start_ms, end_ms, duration_ns, &dialogue, &mic_text, &sys_text
+            session_id,
+            chunk_id,
+            chunk_index,
+            start_ms,
+            end_ms,
+            duration_ns,
+            &dialogue,
+            &mic_text,
+            &sys_text,
+            excluded,
         );
         let _ = window.emit("chunk_transcribed", &result);
 
@@ -3855,6 +3888,7 @@ impl AppState {
             let mut dialogue: Vec<DialogueSegment> = Vec::new();
             let mut mic_text = String::new();
             let mut sys_text = String::new();
+            let mut excluded = false;
 
             if is_stereo {
                 // Stereo mode: transcribe channels separately
@@ -3882,17 +3916,17 @@ impl AppState {
                         ).await
                     };
                     
-                    if let Ok(segments) = result {
-                        mic_text = segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
-                        for seg in segments {
-                            dialogue.push(DialogueSegment {
-                                start: seg.start + start_ms,
-                                end: seg.end + start_ms,
-                                text: seg.text,
-                                speaker: Some("Вы".to_string()),
-                            });
-                        }
+                if let Ok(segments) = result {
+                    mic_text = segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+                    for seg in segments {
+                        dialogue.push(DialogueSegment {
+                            start: seg.start + start_ms,
+                            end: seg.end + start_ms,
+                            text: seg.text,
+                            speaker: Some("Вы".to_string()),
+                        });
                     }
+                }
                 } else if mic_is_silent {
                     tracing::debug!("Skipping MIC channel for chunk {} - silent", chunk_index);
                 }
@@ -3916,17 +3950,17 @@ impl AppState {
                         ).await
                     };
                     
-                    if let Ok(segments) = result {
-                        sys_text = segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
-                        for seg in segments {
-                            dialogue.push(DialogueSegment {
-                                start: seg.start + start_ms,
-                                end: seg.end + start_ms,
-                                text: seg.text,
-                                speaker: Some("Собеседник".to_string()),
-                            });
-                        }
+                if let Ok(segments) = result {
+                    sys_text = segments.iter().map(|s| s.text.as_str()).collect::<Vec<_>>().join(" ");
+                    for seg in segments {
+                        dialogue.push(DialogueSegment {
+                            start: seg.start + start_ms,
+                            end: seg.end + start_ms,
+                            text: seg.text,
+                            speaker: Some("Собеседник".to_string()),
+                        });
                     }
+                }
                 } else if sys_is_silent {
                     tracing::debug!("Skipping SYS channel for chunk {} - silent", chunk_index);
                 }
@@ -3964,22 +3998,54 @@ impl AppState {
                 if let Ok(segments) = result {
                     dialogue = segments
                         .into_iter()
-                        .map(|seg| DialogueSegment {
-                            start: seg.start + start_ms,
-                            end: seg.end + start_ms,
-                            text: seg.text,
-                            speaker: seg.speaker,
+                        .map(|seg| {
+                            let speaker = seg
+                                .speaker
+                                .as_deref()
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(|s| s.to_string())
+                                .or_else(|| Some("unknown".to_string()));
+
+                            DialogueSegment {
+                                start: seg.start + start_ms,
+                                end: seg.end + start_ms,
+                                text: seg.text,
+                                speaker,
+                            }
                         })
                         .collect();
                 }
             }
 
+            let transcription = dialogue
+                .iter()
+                .map(|d| d.text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            if recording::is_hallucination(&transcription) {
+                excluded = true;
+                dialogue.clear();
+                mic_text.clear();
+                sys_text.clear();
+            }
+
             // Update chunk (including corrected timestamps) and emit event
             let duration_ns = self.update_chunk_transcription(
-                session_id, &chunk_id, start_ms, end_ms, &dialogue, &mic_text, &sys_text
+                session_id, &chunk_id, start_ms, end_ms, &dialogue, &mic_text, &sys_text, excluded
             );
             let event_payload = Self::build_chunk_event_payload(
-                session_id, &chunk_id, chunk_index, start_ms, end_ms, duration_ns, &dialogue, &mic_text, &sys_text
+                session_id,
+                &chunk_id,
+                chunk_index,
+                start_ms,
+                end_ms,
+                duration_ns,
+                &dialogue,
+                &mic_text,
+                &sys_text,
+                excluded,
             );
             let _ = window.emit("chunk_transcribed", event_payload);
         }
@@ -4339,6 +4405,7 @@ impl AppState {
         dialogue: &[crate::commands::session::DialogueSegment],
         mic_text: &str,
         sys_text: &str,
+        excluded: bool,
     ) -> i64 {
         let duration_ns = (end_ms - start_ms) * 1_000_000;
         
@@ -4359,6 +4426,7 @@ impl AppState {
                 chunk.sys_text = if sys_text.is_empty() { None } else { Some(sys_text.to_string()) };
                 // Отмечаем чанк завершённым
                 chunk.status = "completed".to_string();
+                chunk.excluded = excluded;
 
                 let _ = Self::save_chunk_to_disk(session_id, chunk);
             }
@@ -4378,6 +4446,7 @@ impl AppState {
         dialogue: &[crate::commands::session::DialogueSegment],
         mic_text: &str,
         sys_text: &str,
+        excluded: bool,
     ) -> serde_json::Value {
         serde_json::json!({
             "sessionId": session_id,
@@ -4391,6 +4460,7 @@ impl AppState {
                 "micText": if mic_text.is_empty() { None } else { Some(mic_text) },
                 "sysText": if sys_text.is_empty() { None } else { Some(sys_text) },
                 "status": "completed",
+                "excluded": excluded,
             }
         })
     }

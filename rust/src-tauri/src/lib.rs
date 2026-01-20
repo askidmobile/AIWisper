@@ -14,13 +14,28 @@ pub mod workers;
 use state::AppState;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+const LOG_RETENTION_DAYS: u64 = 7;
+const LOG_CLEANUP_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
 /// Initialize and run the Tauri application
 pub fn run() {
-    // Set up file appender for logging
-    let file_appender = tracing_appender::rolling::daily(
-        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")),
-        "aiwisper.log",
-    );
+    let logs_dir = dirs::data_local_dir()
+        .map(|p| p.join("aiwisper").join("logs"))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let logs_dir_display = logs_dir.to_string_lossy().to_string();
+    let logs_dir_for_cleanup = logs_dir.clone();
+
+    if let Err(err) = std::fs::create_dir_all(&logs_dir) {
+        eprintln!("Не удалось создать директорию логов: {}", err);
+    }
+
+    cleanup_old_logs(&logs_dir, LOG_RETENTION_DAYS);
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(LOG_CLEANUP_INTERVAL_SECS));
+        cleanup_old_logs(&logs_dir_for_cleanup, LOG_RETENTION_DAYS);
+    });
+
+    let file_appender = tracing_appender::rolling::daily(logs_dir, "aiwisper.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
     // Initialize tracing
@@ -41,7 +56,7 @@ pub fn run() {
         .init();
 
     tracing::info!("Starting AIWisper application");
-    tracing::info!("Logging initialized to file in home directory");
+    tracing::info!("Logging initialized at: {}", logs_dir_display);
     
     // Log GPU/accelerator status at startup
     commands::system::log_gpu_status();
@@ -142,4 +157,38 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn cleanup_old_logs(logs_dir: &std::path::Path, retention_days: u64) {
+    let Ok(entries) = std::fs::read_dir(logs_dir) else {
+        return;
+    };
+
+    let retention = std::time::Duration::from_secs(retention_days * 24 * 60 * 60);
+    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if !file_name.starts_with("aiwisper.log") {
+            continue;
+        }
+
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let Ok(modified) = modified.duration_since(std::time::UNIX_EPOCH) else {
+            continue;
+        };
+
+        if now.saturating_sub(modified) > retention {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }

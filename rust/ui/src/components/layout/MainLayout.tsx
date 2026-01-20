@@ -502,7 +502,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                 });
                 addLog('Recording started');
                 if (hybridTranscription.enabled && hybridTranscription.secondaryModelId) {
-                    addLog(`Hybrid transcription enabled: secondary model = ${hybridTranscription.secondaryModelId}`);
+                    addLog('Гибридная модель будет доступна при ретранскрибировании.');
                 }
             } catch (e: any) {
                 addLog(`Error starting session: ${e.message}`);

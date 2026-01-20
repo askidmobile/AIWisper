@@ -8,6 +8,9 @@ const SPEAKER_COLORS = ['#2196f3', '#e91e63', '#ff9800', '#9c27b0', '#00bcd4', '
 
 // Определение имени и цвета спикера
 const getSpeakerInfo = (speaker?: string): { name: string; color: string } => {
+    if (!speaker || speaker === 'unknown') {
+        return { name: 'Неизвестно', color: '#9ca3af' };
+    }
     if (speaker === 'mic' || speaker === 'Вы') {
         return { name: 'Вы', color: '#4caf50' };
     } else if (speaker?.startsWith('Speaker ')) {
@@ -19,7 +22,7 @@ const getSpeakerInfo = (speaker?: string): { name: string; color: string } => {
     } else if (speaker === 'sys') {
         return { name: 'Собеседник', color: '#2196f3' };
     } else {
-        return { name: speaker || 'Собеседник', color: '#2196f3' };
+        return { name: speaker, color: '#2196f3' };
     }
 };
 

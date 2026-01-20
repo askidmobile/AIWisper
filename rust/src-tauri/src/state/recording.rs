@@ -7,15 +7,15 @@
 //! - Transcription of chunks during recording
 
 use aiwisper_audio::{
-    calculate_rms, is_silent, resample, AudioCapture, AudioChannel, ChunkBuffer, SegmentedMp3Writer,
-    SystemAudioCapture, SystemCaptureConfig, SystemCaptureMethod, VadConfig,
+    calculate_rms, is_silent, resample, AudioCapture, AudioChannel, ChunkBuffer,
+    SegmentedMp3Writer, SystemAudioCapture, SystemCaptureConfig, SystemCaptureMethod, VadConfig,
 };
 use aiwisper_ml::{SileroVad, SileroVadConfig};
-use std::sync::mpsc;
 use anyhow::Result;
+use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use parking_lot::RwLock;
+use std::sync::mpsc;
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 use uuid::Uuid;
@@ -30,7 +30,8 @@ const TRANSCRIPTION_SAMPLE_RATE: u32 = 16000;
 const MAX_CONCURRENT_TRANSCRIPTIONS: usize = 3;
 
 /// Счётчик активных транскрипций (глобальный семафор)
-static ACTIVE_TRANSCRIPTIONS: LazyLock<Arc<AtomicUsize>> = LazyLock::new(|| Arc::new(AtomicUsize::new(0)));
+static ACTIVE_TRANSCRIPTIONS: LazyLock<Arc<AtomicUsize>> =
+    LazyLock::new(|| Arc::new(AtomicUsize::new(0)));
 
 /// Попытка захватить слот для транскрипции
 /// Возвращает true если слот захвачен, false если достигнут лимит
@@ -67,6 +68,31 @@ pub fn get_active_transcriptions() -> usize {
     ACTIVE_TRANSCRIPTIONS.load(Ordering::SeqCst)
 }
 
+/// RAII Guard для автоматического освобождения слота транскрипции.
+/// Гарантирует, что слот будет освобождён даже при панике потока.
+struct TranscriptionSlotGuard {
+    released: std::sync::atomic::AtomicBool,
+}
+
+impl TranscriptionSlotGuard {
+    /// Создать guard (слот уже должен быть захвачен через try_acquire_transcription_slot)
+    fn new() -> Self {
+        Self {
+            released: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl Drop for TranscriptionSlotGuard {
+    fn drop(&mut self) {
+        // Защита от двойного освобождения
+        if !self.released.swap(true, Ordering::SeqCst) {
+            release_transcription_slot();
+            tracing::trace!("TranscriptionSlotGuard: slot released via Drop");
+        }
+    }
+}
+
 /// Известные паттерны галлюцинаций Whisper на тишине
 /// Модель часто генерирует эти фразы когда на входе тишина или очень тихий звук
 const HALLUCINATION_PATTERNS: &[&str] = &[
@@ -94,28 +120,32 @@ const HALLUCINATION_PATTERNS: &[&str] = &[
 ];
 
 /// Проверяет, является ли текст галлюцинацией модели
-/// 
+///
 /// Галлюцинацией считается:
 /// 1. Текст содержит известные паттерны галлюцинаций
 /// 2. Очень короткий текст (< 5 символов) — скорее всего артефакт
-fn is_hallucination(text: &str) -> bool {
+pub(crate) fn is_hallucination(text: &str) -> bool {
     let text_lower = text.to_lowercase();
     let text_trimmed = text_lower.trim();
-    
+
     // Очень короткий текст — подозрительно
     if text_trimmed.len() < 5 {
         tracing::debug!("Hallucination detected: too short text '{}'", text);
         return true;
     }
-    
+
     // Проверяем известные паттерны
     for pattern in HALLUCINATION_PATTERNS {
         if text_trimmed.contains(pattern) {
-            tracing::info!("Hallucination detected: '{}' matches pattern '{}'", text, pattern);
+            tracing::info!(
+                "Hallucination detected: '{}' matches pattern '{}'",
+                text,
+                pattern
+            );
             return true;
         }
     }
-    
+
     false
 }
 
@@ -139,12 +169,11 @@ fn find_vad_model_path() -> Option<PathBuf> {
 }
 
 fn get_vad_engine() -> Result<parking_lot::RwLockReadGuard<'static, Option<SileroVad>>> {
-    static VAD_ENGINE: LazyLock<RwLock<Option<SileroVad>>> =
-        LazyLock::new(|| RwLock::new(None));
+    static VAD_ENGINE: LazyLock<RwLock<Option<SileroVad>>> = LazyLock::new(|| RwLock::new(None));
 
     if VAD_ENGINE.read().is_none() {
-        let model_path = find_vad_model_path()
-            .ok_or_else(|| anyhow::anyhow!("VAD модель не найдена"))?;
+        let model_path =
+            find_vad_model_path().ok_or_else(|| anyhow::anyhow!("VAD модель не найдена"))?;
         let mut config = SileroVadConfig::default();
         config.model_path = model_path.to_string_lossy().to_string();
         let vad = SileroVad::new(config)?;
@@ -487,11 +516,8 @@ impl RecordingHandle {
 
         // Update session metadata with final state
         let end_time = chrono::Utc::now();
-        self.session.save_meta(
-            Some(end_time),
-            result.duration_ms,
-            result.chunks.len(),
-        )?;
+        self.session
+            .save_meta(Some(end_time), result.duration_ms, result.chunks.len())?;
 
         Ok(result)
     }
@@ -559,7 +585,7 @@ pub fn start_recording(
 /// Recording thread function
 fn recording_thread(
     session_id: String,
-    _mp3_path: PathBuf,  // Теперь используется SegmentedMp3Writer с data_dir
+    _mp3_path: PathBuf, // Теперь используется SegmentedMp3Writer с data_dir
     data_dir: PathBuf,
     device_id: Option<String>,
     capture_system: bool,
@@ -617,18 +643,19 @@ fn recording_thread(
 
     // Create segmented MP3 writer (15 минут = 900 сек на сегмент)
     // Это предотвращает бесконечный рост памяти при длительных записях
-    let mut mp3_writer = match SegmentedMp3Writer::new(&data_dir, SAMPLE_RATE, channels, "128k", 900) {
-        Ok(w) => w,
-        Err(e) => {
-            tracing::error!("Failed to create segmented MP3 writer: {}", e);
-            return RecordingResult {
-                session_id,
-                duration_ms: 0,
-                sample_count: 0,
-                chunks: Vec::new(),
-            };
-        }
-    };
+    let mut mp3_writer =
+        match SegmentedMp3Writer::new(&data_dir, SAMPLE_RATE, channels, "128k", 900) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::error!("Failed to create segmented MP3 writer: {}", e);
+                return RecordingResult {
+                    session_id,
+                    duration_ms: 0,
+                    sample_count: 0,
+                    chunks: Vec::new(),
+                };
+            }
+        };
 
     // Канал для сигналов очистки буфера после транскрипции
     let (drain_tx, drain_rx) = mpsc::channel::<i64>();
@@ -706,9 +733,11 @@ fn recording_thread(
     // УДАЛЕНО: last_mic_sample_count больше не нужен, т.к. используем clear() после чтения
 
     // Create VoicePrintMatcher for speaker recognition (wrapped in Arc for thread-safe sharing)
-    let voiceprint_matcher: Option<Arc<aiwisper_ml::VoicePrintMatcher>> = 
-        transcription_config.voiceprint_data_dir.as_ref().and_then(|data_dir| {
-            match aiwisper_ml::VoicePrintMatcher::new(data_dir.clone()) {
+    let voiceprint_matcher: Option<Arc<aiwisper_ml::VoicePrintMatcher>> = transcription_config
+        .voiceprint_data_dir
+        .as_ref()
+        .and_then(
+            |data_dir| match aiwisper_ml::VoicePrintMatcher::new(data_dir.clone()) {
                 Ok(matcher) => {
                     let count = matcher.get_all().len();
                     tracing::info!("VoicePrintMatcher initialized with {} voiceprints", count);
@@ -718,8 +747,8 @@ fn recording_thread(
                     tracing::warn!("Failed to initialize VoicePrintMatcher: {}", e);
                     None
                 }
-            }
-        });
+            },
+        );
 
     // Buffers for stereo recording (микрофон и система накапливаются до выравнивания)
     let mut sys_buffer: Vec<f32> = Vec::new();
@@ -727,13 +756,13 @@ fn recording_thread(
 
     // For debug logging
     let mut loop_count: u64 = 0;
-    
+
     // Счётчик итераций без новых системных данных (для детекции застоя)
     let mut sys_empty_streak: u32 = 0;
     const SYS_EMPTY_WARNING_THRESHOLD: u32 = 40; // 2 секунды (40 * 50ms)
     let mut sys_disconnected = false;
     let mut sys_fallback_logged = false;
-    
+
     // Очередь pending транскрипций для retry когда слоты заняты
     struct PendingTranscription {
         chunk_meta: ChunkMeta,
@@ -743,7 +772,8 @@ fn recording_thread(
         sample_rate: u32,
         is_stereo: bool,
     }
-    let mut pending_transcriptions: std::collections::VecDeque<PendingTranscription> = std::collections::VecDeque::new();
+    let mut pending_transcriptions: std::collections::VecDeque<PendingTranscription> =
+        std::collections::VecDeque::new();
 
     // Main recording loop
     loop {
@@ -754,20 +784,20 @@ fn recording_thread(
 
         // Sleep briefly
         std::thread::sleep(std::time::Duration::from_millis(50));
-        
+
         // Обработка pending транскрипций (retry для тех, что не смогли захватить слот)
         while !pending_transcriptions.is_empty() {
             if !try_acquire_transcription_slot() {
                 break; // Слоты всё ещё заняты, попробуем на следующей итерации
             }
-            
+
             let pending = pending_transcriptions.pop_front().unwrap();
             tracing::info!(
                 "Retrying transcription for chunk {} (pending queue: {} remaining)",
                 pending.chunk_meta.index,
                 pending_transcriptions.len()
             );
-            
+
             // Emit chunk_transcribing event
             let _ = app_handle.emit(
                 "chunk_transcribing",
@@ -777,7 +807,7 @@ fn recording_thread(
                     "chunkIndex": pending.chunk_meta.index,
                 }),
             );
-            
+
             // Клонируем данные для фонового потока
             let bg_chunk_meta = pending.chunk_meta;
             let bg_chunk_path = pending.chunk_path;
@@ -787,13 +817,16 @@ fn recording_thread(
             let bg_drain_tx = drain_tx.clone();
             let bg_voiceprint_matcher = voiceprint_matcher.clone();
             let chunk_end_ms = bg_chunk_meta.end_ms;
-            
+
             if pending.is_stereo {
                 let mic_samples = pending.mic_samples;
                 let sys_samples = pending.sys_samples;
                 let sample_rate = pending.sample_rate;
-                
+
                 std::thread::spawn(move || {
+                    // Guard гарантирует освобождение слота даже при панике
+                    let _guard = TranscriptionSlotGuard::new();
+
                     let transcribed = transcribe_chunk_stereo(
                         bg_chunk_meta,
                         &mic_samples,
@@ -808,13 +841,16 @@ fn recording_thread(
                         tracing::error!("Failed to save transcribed chunk: {}", e);
                     }
                     let _ = bg_drain_tx.send(chunk_end_ms);
-                    release_transcription_slot();
+                    // Guard освободит слот при выходе из scope
                 });
             } else {
                 let chunk_samples = pending.mic_samples; // В моно режиме mic_samples содержит все данные
                 let sample_rate = pending.sample_rate;
-                
+
                 std::thread::spawn(move || {
+                    // Guard гарантирует освобождение слота даже при панике
+                    let _guard = TranscriptionSlotGuard::new();
+
                     let transcribed = transcribe_chunk_samples(
                         bg_chunk_meta,
                         &chunk_samples,
@@ -827,7 +863,7 @@ fn recording_thread(
                         tracing::error!("Failed to save transcribed chunk: {}", e);
                     }
                     let _ = bg_drain_tx.send(chunk_end_ms);
-                    release_transcription_slot();
+                    // Guard освободит слот при выходе из scope
                 });
             }
         }
@@ -885,7 +921,7 @@ fn recording_thread(
                     }
                 }
             }
-            
+
             // Отслеживание застоя системного аудио
             if sys_recv_count > 0 {
                 sys_empty_streak = 0; // Сброс счётчика
@@ -921,33 +957,45 @@ fn recording_thread(
                 is_sys_muted
             );
         }
-        
+
         // Log mute state changes (only when they change)
-        static LAST_MIC_MUTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        static LAST_SYS_MUTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        
+        static LAST_MIC_MUTED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        static LAST_SYS_MUTED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+
         let last_mic = LAST_MIC_MUTED.swap(is_mic_muted, Ordering::Relaxed);
         let last_sys = LAST_SYS_MUTED.swap(is_sys_muted, Ordering::Relaxed);
-        
+
         if last_mic != is_mic_muted || last_sys != is_sys_muted {
-            tracing::info!("🔇 Mute state changed: mic_muted={}, sys_muted={}", is_mic_muted, is_sys_muted);
+            tracing::info!(
+                "🔇 Mute state changed: mic_muted={}, sys_muted={}",
+                is_mic_muted,
+                is_sys_muted
+            );
         }
 
         if sys_capture.is_some() {
             // FALLBACK: Если системный канал отключился или долго не отвечает,
             // генерируем тишину для системного аудио чтобы не блокировать запись
-            if (sys_disconnected || sys_empty_streak >= SYS_EMPTY_WARNING_THRESHOLD) && sys_buffer.is_empty() && !mic_buffer.is_empty() {
+            if (sys_disconnected || sys_empty_streak >= SYS_EMPTY_WARNING_THRESHOLD)
+                && sys_buffer.is_empty()
+                && !mic_buffer.is_empty()
+            {
                 // Генерируем тишину в размере микрофонного буфера
                 let silence_len = mic_buffer.len();
                 sys_buffer.extend(std::iter::repeat(0.0f32).take(silence_len));
-                
+
                 // Логируем только первый раз после обнаружения проблемы
                 if !sys_fallback_logged {
-                    tracing::warn!("🔇 System audio unavailable, using silence fallback ({} samples)", silence_len);
+                    tracing::warn!(
+                        "🔇 System audio unavailable, using silence fallback ({} samples)",
+                        silence_len
+                    );
                     sys_fallback_logged = true;
                 }
             }
-            
+
             // Стерео режим: пишем и обрабатываем только выровненные пары mic/sys
             let min_len = mic_buffer.len().min(sys_buffer.len());
             if min_len > 0 {
@@ -982,7 +1030,7 @@ fn recording_thread(
             } else {
                 new_mic_samples.clone()
             };
-            
+
             if let Err(e) = mp3_writer.write(&mic_samples_final) {
                 tracing::error!("Failed to write MP3: {}", e);
             }
@@ -995,7 +1043,7 @@ fn recording_thread(
         while let Some(event) = chunk_buffer.try_recv() {
             // ИСПРАВЛЕНО: Всегда транскрибируем чанки, даже при остановке
             // Чанк уже создан и должен быть обработан для полноты данных
-            
+
             let chunk_meta = ChunkMeta::from_event(&event, &session_id);
             let chunk_path = data_dir
                 .join("chunks")
@@ -1045,7 +1093,7 @@ fn recording_thread(
                     MAX_CONCURRENT_TRANSCRIPTIONS,
                     chunk_meta.index
                 );
-                
+
                 // Добавляем в очередь pending для retry на следующей итерации
                 let is_stereo = chunk_buffer.has_separate_channels();
                 let (mic_samples, sys_samples, sample_rate) = if is_stereo {
@@ -1056,7 +1104,7 @@ fn recording_thread(
                     let samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
                     (samples, Vec::new(), chunk_buffer.sample_rate())
                 };
-                
+
                 pending_transcriptions.push_back(PendingTranscription {
                     chunk_meta: chunk_meta.clone(),
                     chunk_path: chunk_path.clone(),
@@ -1065,7 +1113,7 @@ fn recording_thread(
                     sample_rate,
                     is_stereo,
                 });
-                
+
                 // Сохраняем чанк как pending
                 if let Err(e) = chunk_meta.save(&chunk_path) {
                     tracing::error!("Failed to save chunk meta: {}", e);
@@ -1083,15 +1131,18 @@ fn recording_thread(
             let bg_drain_tx = drain_tx.clone();
             let bg_voiceprint_matcher = voiceprint_matcher.clone();
             let chunk_end_ms = event.end_ms;
-            
+
             if chunk_buffer.has_separate_channels() {
-                // Stereo mode: transcribe each channel separately
+                // Stereo mode: transcribe each channel separately (parallel inside)
                 let mic_samples = chunk_buffer.get_mic_samples_range(event.start_ms, event.end_ms);
                 let sys_samples = chunk_buffer.get_sys_samples_range(event.start_ms, event.end_ms);
                 let sample_rate = chunk_buffer.sample_rate();
-                
+
                 if !mic_samples.is_empty() || !sys_samples.is_empty() {
                     std::thread::spawn(move || {
+                        // Guard гарантирует освобождение слота даже при панике
+                        let _guard = TranscriptionSlotGuard::new();
+
                         let transcribed = transcribe_chunk_stereo(
                             bg_chunk_meta,
                             &mic_samples,
@@ -1108,8 +1159,7 @@ fn recording_thread(
                         }
                         // Сигнал на очистку буфера после транскрипции
                         let _ = bg_drain_tx.send(chunk_end_ms);
-                        // Освобождаем слот транскрипции
-                        release_transcription_slot();
+                        // Guard освободит слот при выходе из scope
                     });
                 } else {
                     // Нет данных для транскрипции - освобождаем слот
@@ -1119,9 +1169,12 @@ fn recording_thread(
                 // Mono mode
                 let chunk_samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
                 let sample_rate = chunk_buffer.sample_rate();
-                
+
                 if !chunk_samples.is_empty() {
                     std::thread::spawn(move || {
+                        // Guard гарантирует освобождение слота даже при панике
+                        let _guard = TranscriptionSlotGuard::new();
+
                         let transcribed = transcribe_chunk_samples(
                             bg_chunk_meta,
                             &chunk_samples,
@@ -1136,8 +1189,7 @@ fn recording_thread(
                         }
                         // Сигнал на очистку буфера после транскрипции
                         let _ = bg_drain_tx.send(chunk_end_ms);
-                        // Освобождаем слот транскрипции
-                        release_transcription_slot();
+                        // Guard освободит слот при выходе из scope
                     });
                 } else {
                     // Нет данных для транскрипции - освобождаем слот
@@ -1171,7 +1223,7 @@ fn recording_thread(
         } else {
             0.0
         };
-        
+
         // Apply mute to displayed levels
         let mic_level = if is_mic_muted { 0.0 } else { actual_mic_level };
         let sys_level_final = if is_sys_muted { 0.0 } else { sys_level };
@@ -1207,19 +1259,19 @@ fn recording_thread(
             "Processing {} pending transcriptions before session end",
             pending_transcriptions.len()
         );
-        
+
         while let Some(pending) = pending_transcriptions.pop_front() {
             // Ждём слот (блокирующе, т.к. сессия уже останавливается)
             while !try_acquire_transcription_slot() {
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
-            
+
             tracing::info!(
                 "Processing pending chunk {} (remaining: {})",
                 pending.chunk_meta.index,
                 pending_transcriptions.len()
             );
-            
+
             // Emit chunk_transcribing event
             let _ = app_handle.emit(
                 "chunk_transcribing",
@@ -1229,7 +1281,7 @@ fn recording_thread(
                     "chunkIndex": pending.chunk_meta.index,
                 }),
             );
-            
+
             let bg_chunk_meta = pending.chunk_meta;
             let bg_chunk_path = pending.chunk_path;
             let bg_session_id = session_id.clone();
@@ -1238,13 +1290,16 @@ fn recording_thread(
             let bg_drain_tx = drain_tx.clone();
             let bg_voiceprint_matcher = voiceprint_matcher.clone();
             let chunk_end_ms = bg_chunk_meta.end_ms;
-            
+
             if pending.is_stereo {
                 let mic_samples = pending.mic_samples;
                 let sys_samples = pending.sys_samples;
                 let sample_rate = pending.sample_rate;
-                
+
                 std::thread::spawn(move || {
+                    // Guard гарантирует освобождение слота даже при панике
+                    let _guard = TranscriptionSlotGuard::new();
+
                     let transcribed = transcribe_chunk_stereo(
                         bg_chunk_meta,
                         &mic_samples,
@@ -1259,13 +1314,16 @@ fn recording_thread(
                         tracing::error!("Failed to save transcribed chunk: {}", e);
                     }
                     let _ = bg_drain_tx.send(chunk_end_ms);
-                    release_transcription_slot();
+                    // Guard освободит слот при выходе из scope
                 });
             } else {
                 let chunk_samples = pending.mic_samples;
                 let sample_rate = pending.sample_rate;
-                
+
                 std::thread::spawn(move || {
+                    // Guard гарантирует освобождение слота даже при панике
+                    let _guard = TranscriptionSlotGuard::new();
+
                     let transcribed = transcribe_chunk_samples(
                         bg_chunk_meta,
                         &chunk_samples,
@@ -1278,12 +1336,12 @@ fn recording_thread(
                         tracing::error!("Failed to save transcribed chunk: {}", e);
                     }
                     let _ = bg_drain_tx.send(chunk_end_ms);
-                    release_transcription_slot();
+                    // Guard освободит слот при выходе из scope
                 });
             }
         }
     }
-    
+
     // ===== ФИНАЛЬНАЯ ОБРАБОТКА БУФЕРОВ =====
     // После break из цикла могут остаться необработанные семплы:
     // 1. В mic_buffer/sys_buffer (невыровненные данные)
@@ -1357,7 +1415,10 @@ fn recording_thread(
             }
             chunk_buffer.process_stereo(&mic_buffer, &silence);
             mic_buffer.clear();
-            tracing::info!("Final mic samples (with silence for sys): {} samples", remaining_mic);
+            tracing::info!(
+                "Final mic samples (with silence for sys): {} samples",
+                remaining_mic
+            );
         }
     } else {
         // Моно режим - обрабатываем только микрофон
@@ -1378,107 +1439,108 @@ fn recording_thread(
 
     // Flush remaining audio as final chunk
     // ИСПРАВЛЕНО: Ожидаем завершения транскрипции финального чанка
-    let final_transcription_handle: Option<std::thread::JoinHandle<()>> = if let Some(event) = chunk_buffer.flush_all() {
-        let chunk_meta = ChunkMeta::from_event(&event, &session_id);
-        let chunk_path = data_dir
-            .join("chunks")
-            .join(format!("chunk_{:04}.json", event.index));
+    let final_transcription_handle: Option<std::thread::JoinHandle<()>> =
+        if let Some(event) = chunk_buffer.flush_all() {
+            let chunk_meta = ChunkMeta::from_event(&event, &session_id);
+            let chunk_path = data_dir
+                .join("chunks")
+                .join(format!("chunk_{:04}.json", event.index));
 
-        tracing::info!(
-            "Final chunk created: {} ({}-{} ms), starting transcription",
-            event.index,
-            event.start_ms,
-            event.end_ms
-        );
+            tracing::info!(
+                "Final chunk created: {} ({}-{} ms), starting transcription",
+                event.index,
+                event.start_ms,
+                event.end_ms
+            );
 
-        // Emit chunk_created event (status: pending)
-        let final_duration_ns = (chunk_meta.end_ms - chunk_meta.start_ms) as u64 * 1_000_000;
-        let _ = app_handle.emit(
-            "chunk_created",
-            serde_json::json!({
-                "sessionId": session_id,
-                "chunk": {
-                    "id": chunk_meta.id,
-                    "index": chunk_meta.index,
-                    "startMs": chunk_meta.start_ms,
-                    "endMs": chunk_meta.end_ms,
-                    "duration": final_duration_ns,
-                    "status": "pending",
-                    "isStereo": chunk_buffer.has_separate_channels(),
+            // Emit chunk_created event (status: pending)
+            let final_duration_ns = (chunk_meta.end_ms - chunk_meta.start_ms) as u64 * 1_000_000;
+            let _ = app_handle.emit(
+                "chunk_created",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "chunk": {
+                        "id": chunk_meta.id,
+                        "index": chunk_meta.index,
+                        "startMs": chunk_meta.start_ms,
+                        "endMs": chunk_meta.end_ms,
+                        "duration": final_duration_ns,
+                        "status": "pending",
+                        "isStereo": chunk_buffer.has_separate_channels(),
+                    }
+                }),
+            );
+
+            // Клонируем данные для фонового потока
+            let bg_chunk_meta = chunk_meta.clone();
+            let bg_chunk_path = chunk_path.clone();
+            let bg_session_id = session_id.clone();
+            let bg_app_handle = app_handle.clone();
+            let bg_transcription_config = transcription_config.clone();
+            let bg_voiceprint_matcher = voiceprint_matcher.clone();
+
+            // Отправляем событие о начале транскрипции
+            let _ = app_handle.emit(
+                "chunk_transcribing",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "chunkId": chunk_meta.id,
+                    "chunkIndex": chunk_meta.index,
+                }),
+            );
+
+            // Запускаем транскрипцию и сохраняем handle для ожидания
+            let handle = if chunk_buffer.has_separate_channels() {
+                let mic_samples = chunk_buffer.get_mic_samples_range(event.start_ms, event.end_ms);
+                let sys_samples = chunk_buffer.get_sys_samples_range(event.start_ms, event.end_ms);
+                let sample_rate = chunk_buffer.sample_rate();
+
+                if !mic_samples.is_empty() || !sys_samples.is_empty() {
+                    Some(std::thread::spawn(move || {
+                        let transcribed = transcribe_chunk_stereo(
+                            bg_chunk_meta,
+                            &mic_samples,
+                            &sys_samples,
+                            sample_rate,
+                            &bg_transcription_config,
+                            &bg_session_id,
+                            &bg_app_handle,
+                            bg_voiceprint_matcher.as_deref(),
+                        );
+                        let _ = transcribed.save(&bg_chunk_path);
+                    }))
+                } else {
+                    None
                 }
-            }),
-        );
-
-        // Клонируем данные для фонового потока
-        let bg_chunk_meta = chunk_meta.clone();
-        let bg_chunk_path = chunk_path.clone();
-        let bg_session_id = session_id.clone();
-        let bg_app_handle = app_handle.clone();
-        let bg_transcription_config = transcription_config.clone();
-        let bg_voiceprint_matcher = voiceprint_matcher.clone();
-        
-        // Отправляем событие о начале транскрипции
-        let _ = app_handle.emit(
-            "chunk_transcribing",
-            serde_json::json!({
-                "sessionId": session_id,
-                "chunkId": chunk_meta.id,
-                "chunkIndex": chunk_meta.index,
-            }),
-        );
-        
-        // Запускаем транскрипцию и сохраняем handle для ожидания
-        let handle = if chunk_buffer.has_separate_channels() {
-            let mic_samples = chunk_buffer.get_mic_samples_range(event.start_ms, event.end_ms);
-            let sys_samples = chunk_buffer.get_sys_samples_range(event.start_ms, event.end_ms);
-            let sample_rate = chunk_buffer.sample_rate();
-            
-            if !mic_samples.is_empty() || !sys_samples.is_empty() {
-                Some(std::thread::spawn(move || {
-                    let transcribed = transcribe_chunk_stereo(
-                        bg_chunk_meta,
-                        &mic_samples,
-                        &sys_samples,
-                        sample_rate,
-                        &bg_transcription_config,
-                        &bg_session_id,
-                        &bg_app_handle,
-                        bg_voiceprint_matcher.as_deref(),
-                    );
-                    let _ = transcribed.save(&bg_chunk_path);
-                }))
             } else {
-                None
-            }
+                let chunk_samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
+                let sample_rate = chunk_buffer.sample_rate();
+
+                if !chunk_samples.is_empty() {
+                    Some(std::thread::spawn(move || {
+                        let transcribed = transcribe_chunk_samples(
+                            bg_chunk_meta,
+                            &chunk_samples,
+                            sample_rate,
+                            &bg_transcription_config,
+                            &bg_session_id,
+                            &bg_app_handle,
+                        );
+                        let _ = transcribed.save(&bg_chunk_path);
+                    }))
+                } else {
+                    None
+                }
+            };
+
+            // Сохраняем чанк со статусом pending (транскрипция обновит файл)
+            let _ = chunk_meta.save(&chunk_path);
+            chunks.push(chunk_meta);
+
+            handle
         } else {
-            let chunk_samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
-            let sample_rate = chunk_buffer.sample_rate();
-            
-            if !chunk_samples.is_empty() {
-                Some(std::thread::spawn(move || {
-                    let transcribed = transcribe_chunk_samples(
-                        bg_chunk_meta,
-                        &chunk_samples,
-                        sample_rate,
-                        &bg_transcription_config,
-                        &bg_session_id,
-                        &bg_app_handle,
-                    );
-                    let _ = transcribed.save(&bg_chunk_path);
-                }))
-            } else {
-                None
-            }
+            None
         };
-
-        // Сохраняем чанк со статусом pending (транскрипция обновит файл)
-        let _ = chunk_meta.save(&chunk_path);
-        chunks.push(chunk_meta);
-        
-        handle
-    } else {
-        None
-    };
 
     // Stop system audio capture first
     if let Some(ref mut sys) = sys_capture {
@@ -1488,7 +1550,7 @@ fn recording_thread(
     // Stop mic capture
     let samples = mic_capture.stop();
     let sample_count = samples.len();
-    
+
     let duration_ms = mp3_writer.duration_ms();
     let segment_count = mp3_writer.segment_count();
 
@@ -1514,7 +1576,7 @@ fn recording_thread(
         );
 
         tracing::info!("Concatenating {} MP3 segments...", segment_count);
-        
+
         match mp3_writer.concatenate() {
             Ok(final_path) => {
                 tracing::info!("MP3 segments concatenated successfully: {:?}", final_path);
@@ -1535,7 +1597,7 @@ fn recording_thread(
     // перед отправкой session_stopped
     if let Some(handle) = final_transcription_handle {
         tracing::info!("Waiting for final chunk transcription to complete...");
-        
+
         // Emit event что ждём завершения транскрипции
         let _ = app_handle.emit(
             "session_finalizing",
@@ -1545,7 +1607,7 @@ fn recording_thread(
                 "message": "Завершение транскрипции...",
             }),
         );
-        
+
         match handle.join() {
             Ok(_) => {
                 tracing::info!("Final chunk transcription completed successfully");
@@ -1562,8 +1624,11 @@ fn recording_thread(
     while get_active_transcriptions() > 0 {
         if wait_count == 0 {
             let pending = get_active_transcriptions();
-            tracing::info!("Waiting for {} pending transcription(s) to complete...", pending);
-            
+            tracing::info!(
+                "Waiting for {} pending transcription(s) to complete...",
+                pending
+            );
+
             let _ = app_handle.emit(
                 "session_finalizing",
                 serde_json::json!({
@@ -1574,25 +1639,34 @@ fn recording_thread(
                 }),
             );
         }
-        
+
         std::thread::sleep(std::time::Duration::from_millis(100));
         wait_count += 1;
-        
+
         // Логируем прогресс каждые 5 секунд
         if wait_count % 50 == 0 {
             let remaining = get_active_transcriptions();
-            tracing::info!("Still waiting for {} pending transcription(s)...", remaining);
+            tracing::info!(
+                "Still waiting for {} pending transcription(s)...",
+                remaining
+            );
         }
-        
+
         // Таймаут 5 минут чтобы не застрять навечно
         if wait_count > 3000 {
-            tracing::warn!("Timeout waiting for pending transcriptions, {} still active", get_active_transcriptions());
+            tracing::warn!(
+                "Timeout waiting for pending transcriptions, {} still active",
+                get_active_transcriptions()
+            );
             break;
         }
     }
-    
+
     if wait_count > 0 {
-        tracing::info!("All pending transcriptions completed after {}ms", wait_count * 100);
+        tracing::info!(
+            "All pending transcriptions completed after {}ms",
+            wait_count * 100
+        );
     }
 
     // Emit session_stopped event
@@ -1703,7 +1777,11 @@ fn transcribe_chunk_samples(
                 chunk_meta.index,
                 dialogue.len(),
                 chunk_meta.transcription.len(),
-                if chunk_meta.excluded { " (auto-excluded)" } else { "" }
+                if chunk_meta.excluded {
+                    " (auto-excluded)"
+                } else {
+                    ""
+                }
             );
 
             // Emit chunk_transcribed event
@@ -1747,6 +1825,7 @@ fn transcribe_chunk_samples(
 }
 
 /// Transcribe stereo chunk (separate mic and sys channels)
+/// Uses parallel processing for mic and sys channels via std::thread::scope
 fn transcribe_chunk_stereo(
     mut chunk_meta: ChunkMeta,
     mic_samples: &[f32],
@@ -1760,164 +1839,208 @@ fn transcribe_chunk_stereo(
     #[allow(unused_imports)]
     use tauri::Emitter;
 
-    // Check for silent channels to avoid hallucinations like "Продолжение следует..."
-    let mic_is_silent = is_silent_with_vad(mic_samples, source_sample_rate);
-    let sys_is_silent = is_silent_with_vad(sys_samples, source_sample_rate);
-    
     // Calculate RMS for debugging
     let mic_rms = calculate_rms(mic_samples);
     let sys_rms = calculate_rms(sys_samples);
-    
+    let chunk_index = chunk_meta.index;
+
     tracing::info!(
-        "Transcribing stereo chunk {}: mic={} sys={} samples @ {}Hz, rms=(mic:{:.6}, sys:{:.6}), silent=(mic:{}, sys:{})",
-        chunk_meta.index,
+        "Transcribing stereo chunk {}: mic={} sys={} samples @ {}Hz, rms=(mic:{:.6}, sys:{:.6})",
+        chunk_index,
         mic_samples.len(),
         sys_samples.len(),
         source_sample_rate,
         mic_rms,
-        sys_rms,
-        mic_is_silent,
-        sys_is_silent
+        sys_rms
     );
 
-    // Collect segments from both channels for word-level merge
-    let mut mic_segments: Vec<aiwisper_types::TranscriptSegment> = Vec::new();
-    let mut sys_segments: Vec<aiwisper_types::TranscriptSegment> = Vec::new();
+    // ===== ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА КАНАЛОВ =====
+    // Используем std::thread::scope для безопасного параллельного выполнения
+    // Оба канала обрабатываются одновременно, что сокращает время почти в 2 раза
+    let (mic_segments, sys_segments) = std::thread::scope(|s| {
+        // --- MIC channel (Left) ---
+        let mic_handle = s.spawn(|| {
+            let mut segments: Vec<aiwisper_types::TranscriptSegment> = Vec::new();
 
-    // Transcribe mic channel (skip if silent)
-    if !mic_samples.is_empty() && !mic_is_silent {
-        let mic_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
-            resample(mic_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE)
-                .unwrap_or_else(|_| mic_samples.to_vec())
-        } else {
-            mic_samples.to_vec()
-        };
-
-        if let Ok(segments) = transcribe_samples_sync(
-            &mic_16k,
-            &config.model_id,
-            &config.language,
-            config.hybrid_enabled,
-            &config.hybrid_secondary_model_id,
-            &config.hotwords,
-            config.hybrid_use_llm,
-            &config.hybrid_mode,
-            &config.ollama_model,
-            &config.ollama_url,
-        ) {
-            // Tag segments with "mic" speaker for merge algorithm
-            for mut seg in segments {
-                seg.speaker = Some("mic".to_string());
-                mic_segments.push(seg);
+            if mic_samples.is_empty() {
+                return segments;
             }
-        }
-    } else if mic_is_silent {
-        tracing::debug!("Skipping MIC channel for chunk {} - silent", chunk_meta.index);
-    }
 
-    // Transcribe sys channel with optional diarization (skip if silent)
-    if !sys_samples.is_empty() && !sys_is_silent {
-        let sys_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
-            resample(sys_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE)
-                .unwrap_or_else(|_| sys_samples.to_vec())
-        } else {
-            sys_samples.to_vec()
-        };
+            // VAD check for mic
+            let mic_is_silent = is_silent_with_vad(mic_samples, source_sample_rate);
+            if mic_is_silent {
+                tracing::debug!("Skipping MIC channel for chunk {} - silent", chunk_index);
+                return segments;
+            }
 
-        // First transcribe
-        if let Ok(segments) = transcribe_samples_sync(
-            &sys_16k,
-            &config.model_id,
-            &config.language,
-            config.hybrid_enabled,
-            &config.hybrid_secondary_model_id,
-            &config.hotwords,
-            config.hybrid_use_llm,
-            &config.hybrid_mode,
-            &config.ollama_model,
-            &config.ollama_url,
-        ) {
-            // If diarization enabled, apply speaker labels
-            if config.diarization_enabled && config.diarization_provider == "coreml" {
-                // Run diarization on sys channel with embeddings for voiceprint matching
-                match diarize_samples_with_embeddings(&sys_16k) {
-                    Ok(diarization_result) if !diarization_result.segments.is_empty() => {
-                        tracing::info!(
-                            "Diarization found {} speaker segments, {} embeddings in sys channel",
-                            diarization_result.segments.len(),
-                            diarization_result.speaker_embeddings.len()
-                        );
-                        
-                        // Build speaker_id -> recognized name mapping using voiceprints
-                        let mut speaker_names: std::collections::HashMap<i32, String> = std::collections::HashMap::new();
-                        
-                        if let Some(matcher) = voiceprint_matcher {
-                            for emb in &diarization_result.speaker_embeddings {
-                                // Try to match embedding against saved voiceprints
-                                if let Some(match_result) = matcher.match_with_auto_update(&emb.embedding) {
-                                    tracing::info!(
-                                        "Speaker {} matched to '{}' (similarity={:.2}, confidence={:?})",
-                                        emb.speaker,
-                                        match_result.voiceprint.name,
-                                        match_result.similarity,
-                                        match_result.confidence
-                                    );
-                                    speaker_names.insert(emb.speaker, match_result.voiceprint.name.clone());
-                                } else {
-                                    tracing::debug!(
-                                        "Speaker {} not matched to any voiceprint (embedding len={})",
-                                        emb.speaker,
-                                        emb.embedding.len()
-                                    );
-                                }
-                            }
-                        }
-                        
-                        // Apply speaker labels to transcription segments
-                        for mut seg in segments {
-                            let speaker_id = find_speaker_for_segment(
-                                seg.start as f32 / 1000.0,  // convert ms to seconds
-                                seg.end as f32 / 1000.0,
-                                &diarization_result.segments,
-                            );
-                            // Use recognized name if available, otherwise "Собеседник N"
-                            let speaker_name = speaker_names
-                                .get(&speaker_id)
-                                .cloned()
-                                .unwrap_or_else(|| format!("Собеседник {}", speaker_id + 1));
-                            seg.speaker = Some(speaker_name);
-                            sys_segments.push(seg);
-                        }
-                    }
-                    Ok(_) => {
-                        // No diarization segments, use default "sys"
-                        tracing::debug!("No diarization segments found, using 'sys'");
-                        for mut seg in segments {
-                            seg.speaker = Some("sys".to_string());
-                            sys_segments.push(seg);
-                        }
-                    }
+            // Resample to 16kHz
+            let mic_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
+                match resample(mic_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE) {
+                    Ok(r) => r,
                     Err(e) => {
-                        tracing::warn!("Diarization failed, falling back to 'sys': {}", e);
-                        for mut seg in segments {
-                            seg.speaker = Some("sys".to_string());
-                            sys_segments.push(seg);
-                        }
+                        tracing::error!("Failed to resample mic: {}", e);
+                        mic_samples.to_vec()
                     }
                 }
             } else {
-                // No diarization, use simple "sys" label
-                for mut seg in segments {
-                    seg.speaker = Some("sys".to_string());
-                    sys_segments.push(seg);
+                mic_samples.to_vec()
+            };
+
+            // Transcribe
+            match transcribe_samples_sync(
+                &mic_16k,
+                &config.model_id,
+                &config.language,
+                config.hybrid_enabled,
+                &config.hybrid_secondary_model_id,
+                &config.hotwords,
+                config.hybrid_use_llm,
+                &config.hybrid_mode,
+                &config.ollama_model,
+                &config.ollama_url,
+            ) {
+                Ok(result) => {
+                    for mut seg in result {
+                        seg.speaker = Some("mic".to_string());
+                        segments.push(seg);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("MIC transcription failed for chunk {}: {}", chunk_index, e);
                 }
             }
-        }
-    }
+
+            segments
+        });
+
+        // --- SYS channel (Right) ---
+        let sys_handle = s.spawn(|| {
+            let mut segments: Vec<aiwisper_types::TranscriptSegment> = Vec::new();
+
+            if sys_samples.is_empty() {
+                return segments;
+            }
+
+            // VAD check for sys
+            let sys_is_silent = is_silent_with_vad(sys_samples, source_sample_rate);
+            if sys_is_silent {
+                tracing::debug!("Skipping SYS channel for chunk {} - silent", chunk_index);
+                return segments;
+            }
+
+            // Resample to 16kHz
+            let sys_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
+                match resample(sys_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::error!("Failed to resample sys: {}", e);
+                        sys_samples.to_vec()
+                    }
+                }
+            } else {
+                sys_samples.to_vec()
+            };
+
+            // Transcribe
+            match transcribe_samples_sync(
+                &sys_16k,
+                &config.model_id,
+                &config.language,
+                config.hybrid_enabled,
+                &config.hybrid_secondary_model_id,
+                &config.hotwords,
+                config.hybrid_use_llm,
+                &config.hybrid_mode,
+                &config.ollama_model,
+                &config.ollama_url,
+            ) {
+                Ok(result) => {
+                    // Apply diarization if enabled
+                    if config.diarization_enabled && config.diarization_provider == "coreml" {
+                        match diarize_samples_with_embeddings(&sys_16k) {
+                            Ok(diarization_result) if !diarization_result.segments.is_empty() => {
+                                tracing::info!(
+                                    "Diarization found {} speaker segments in sys channel",
+                                    diarization_result.segments.len()
+                                );
+
+                                // Build speaker name mapping
+                                let mut speaker_names: std::collections::HashMap<i32, String> =
+                                    std::collections::HashMap::new();
+
+                                if let Some(matcher) = voiceprint_matcher {
+                                    for emb in &diarization_result.speaker_embeddings {
+                                        if let Some(match_result) =
+                                            matcher.match_with_auto_update(&emb.embedding)
+                                        {
+                                            speaker_names.insert(
+                                                emb.speaker,
+                                                match_result.voiceprint.name.clone(),
+                                            );
+                                        }
+                                    }
+                                }
+
+                                for mut seg in result {
+                                    let speaker_id = find_speaker_for_segment(
+                                        seg.start as f32 / 1000.0,
+                                        seg.end as f32 / 1000.0,
+                                        &diarization_result.segments,
+                                    );
+                                    let speaker_name =
+                                        speaker_names.get(&speaker_id).cloned().unwrap_or_else(
+                                            || format!("Собеседник {}", speaker_id + 1),
+                                        );
+                                    seg.speaker = Some(speaker_name);
+                                    segments.push(seg);
+                                }
+                            }
+                            Ok(_) => {
+                                for mut seg in result {
+                                    seg.speaker = Some("sys".to_string());
+                                    segments.push(seg);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("Diarization failed: {}", e);
+                                for mut seg in result {
+                                    seg.speaker = Some("sys".to_string());
+                                    segments.push(seg);
+                                }
+                            }
+                        }
+                    } else {
+                        // No diarization
+                        for mut seg in result {
+                            seg.speaker = Some("sys".to_string());
+                            segments.push(seg);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("SYS transcription failed for chunk {}: {}", chunk_index, e);
+                }
+            }
+
+            segments
+        });
+
+        // Wait for both threads (scope guarantees join)
+        let mic_res = mic_handle.join().unwrap_or_else(|e| {
+            tracing::error!("MIC thread panicked: {:?}", e);
+            Vec::new()
+        });
+        let sys_res = sys_handle.join().unwrap_or_else(|e| {
+            tracing::error!("SYS thread panicked: {:?}", e);
+            Vec::new()
+        });
+
+        (mic_res, sys_res)
+    });
 
     // Use word-level dialogue merge algorithm
     let merged_segments = aiwisper_ml::merge_words_to_dialogue(mic_segments, sys_segments);
-    
+
     tracing::debug!(
         "Dialogue merge for chunk {}: {} merged segments",
         chunk_meta.index,
@@ -1973,7 +2096,11 @@ fn transcribe_chunk_stereo(
         "Stereo chunk {} transcribed: {} segments total{}",
         chunk_meta.index,
         all_dialogue.len(),
-        if chunk_meta.excluded { " (auto-excluded)" } else { "" }
+        if chunk_meta.excluded {
+            " (auto-excluded)"
+        } else {
+            ""
+        }
     );
 
     // Emit chunk_transcribed event
@@ -2035,16 +2162,17 @@ fn transcribe_samples_sync(
             hybrid_use_llm
         );
 
-        let secondary_engine = match get_or_create_engine_cached(hybrid_secondary_model_id, language) {
-            Ok(e) => Some(e),
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to create secondary engine: {}, using primary only",
-                    e
-                );
-                None
-            }
-        };
+        let secondary_engine =
+            match get_or_create_engine_cached(hybrid_secondary_model_id, language) {
+                Ok(e) => Some(e),
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to create secondary engine: {}, using primary only",
+                        e
+                    );
+                    None
+                }
+            };
 
         // Парсим режим из настроек
         let mode = match hybrid_mode.to_lowercase().as_str() {
@@ -2097,7 +2225,7 @@ fn diarize_samples_with_embeddings(samples: &[f32]) -> Result<aiwisper_ml::Diari
     }
 
     let config = FluidDiarizationConfig {
-        binary_path: None,  // Auto-detect
+        binary_path: None, // Auto-detect
         clustering_threshold: 0.70,
         min_segment_duration: 0.2,
         vbx_max_iterations: 30,
@@ -2116,18 +2244,18 @@ fn find_speaker_for_segment(
     speaker_segments: &[aiwisper_types::SpeakerSegment],
 ) -> i32 {
     let mid_point = (start_sec + end_sec) / 2.0;
-    
+
     // Find segment that contains the midpoint
     for seg in speaker_segments {
         if seg.start <= mid_point && mid_point <= seg.end {
             return seg.speaker;
         }
     }
-    
+
     // Fallback: find closest segment
     let mut closest_speaker = 0;
     let mut min_distance = f32::MAX;
-    
+
     for seg in speaker_segments {
         let seg_mid = (seg.start + seg.end) / 2.0;
         let distance = (mid_point - seg_mid).abs();
@@ -2136,6 +2264,6 @@ fn find_speaker_for_segment(
             closest_speaker = seg.speaker;
         }
     }
-    
+
     closest_speaker
 }
