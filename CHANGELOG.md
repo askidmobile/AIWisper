@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.36] - 2026-01-21
+
+### Fixed
+- **Chunk Buffer Race Condition**: Исправлена критическая ошибка, из-за которой ~50% чанков оставались в статусе "pending" без транскрипции.
+  - **Проблема**: Когда чанк N завершает транскрипцию, он вызывает `drain_processed_samples(end_ms_N)` асинхронно. Тем временем чанки N+1, N+2 уже созданы, но их сэмплы читаются ПОСЛЕ drain.
+  - **Результат**: `get_*_samples_range()` возвращал пустые данные, потому что `drained_offset` превышал абсолютный временной диапазон чанка.
+  - **Решение**: Сэмплы теперь читаются СРАЗУ при создании чанка (до любого drain), а не перед запуском потока транскрипции.
+
+- **Local Time Display**: Заголовок сессии теперь показывает локальное время вместо UTC.
+  - **Проблема**: Время в заголовке сессии (например, "08:04") показывалось в UTC вместо локального времени (например, "11:04" для UTC+3).
+  - **Решение**: Добавлена конвертация через `chrono::Local` перед форматированием времени.
+
+### Technical
+- `rust/src-tauri/src/state/recording.rs`:
+  - Строки ~1046-1200: Рефакторинг обработки чанков — сэмплы читаются немедленно после `chunk_buffer.try_recv()`
+  - Строки ~361-364: Конвертация в локальное время для заголовка сессии
+- `rust/src-tauri/src/state/mod.rs`:
+  - Строки ~920-971: Конвертация в локальное время для заголовка сессии после остановки записи
+
+## [2.0.35] - 2026-01-21
+
+### Fixed
+- **Transcription Deadlock (Complete Fix)**: Полное исправление зависания транскрипции после первого чанка.
+  - **Проблема**: Внутри `transcribe_chunk_stereo` использовался `std::thread::scope` для параллельной транскрипции MIC и SYS каналов, что вызывало deadlock в ONNX Runtime даже при одном слоте.
+  - **Симптомы**: Chunk 0 распознавался успешно, но chunk 1+ зависали на "Распознаётся..." бесконечно.
+  - **Решение**: MIC и SYS каналы теперь обрабатываются **последовательно** вместо параллельно.
+
+### Changed
+- **Sequential MIC/SYS processing**: Каналы обрабатываются один за другим для предотвращения конкурентного доступа к GigaAM.
+
+### Technical
+- `rust/src-tauri/src/state/recording.rs`: удалён `std::thread::scope` из `transcribe_chunk_stereo`, заменён на последовательную обработку
+
+## [2.0.34] - 2026-01-21
+
+### Fixed
+- **Transcription Deadlock (Partial)**: Частичное исправление deadlock в транскрипции.
+  - **Проблема**: CoreML ExecutionProvider вызывал deadlock при конкурентном доступе к GigaAM ONNX-сессии из нескольких потоков.
+  - **Решение**: Отключён CoreML для GigaAM, уменьшено MAX_CONCURRENT_TRANSCRIPTIONS до 1.
+  - **Примечание**: Это не полностью решило проблему, полный фикс в 2.0.35.
+
+### Changed
+- **GigaAM CPU inference**: Модель теперь использует CPU вместо CoreML для стабильности.
+- **Sequential transcription**: Транскрипция выполняется последовательно (1 чанк) вместо параллельной (3 чанка).
+
+### Technical
+- `rust/crates/aiwisper-ml/src/gigaam.rs`: отключён `enable_coreml` (line 345-350)
+- `rust/src-tauri/src/state/recording.rs`: `MAX_CONCURRENT_TRANSCRIPTIONS = 1` (line 28-32)
+- `rust/crates/aiwisper-worker/src/main.rs`: исправлен unstable `get_or_try_init()` API
+
 ## [2.0.33] - 2026-01-21
 
 ### Fixed

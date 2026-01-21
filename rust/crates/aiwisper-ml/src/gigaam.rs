@@ -95,19 +95,27 @@ impl TranscriptionEngine for GigaAMEngine {
         // Run inference - extract and copy data while holding lock, then release
         // GigaAM CTC models use "features"/"feature_lengths" as input names
         // GigaAM RNNT models use "audio_signal"/"length" as input names
-        
+
         // Debug: log mel spectrogram stats
         tracing::debug!(
             "GigaAM: mel_spec shape={}x{}, mel_min={:.3}, mel_max={:.3}",
             num_frames,
             N_MELS,
-            mel_spec.iter().flat_map(|f| f.iter()).cloned().fold(f32::INFINITY, f32::min),
-            mel_spec.iter().flat_map(|f| f.iter()).cloned().fold(f32::NEG_INFINITY, f32::max)
+            mel_spec
+                .iter()
+                .flat_map(|f| f.iter())
+                .cloned()
+                .fold(f32::INFINITY, f32::min),
+            mel_spec
+                .iter()
+                .flat_map(|f| f.iter())
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max)
         );
-        
+
         let logits = {
             let mut session_guard = self.session.lock();
-            
+
             // Try CTC input names first (most common for e2e-ctc models)
             let outputs = session_guard.run(ort::inputs![
                 "features" => input_tensor,
@@ -123,7 +131,7 @@ impl TranscriptionEngine for GigaAMEngine {
 
             // Extract tensor data - ort 2.x returns (&Shape, &[T])
             let (output_shape, output_data) = output.try_extract_tensor::<f32>()?;
-            
+
             tracing::debug!(
                 "GigaAM: output shape={:?}, data_len={}",
                 output_shape,
@@ -133,22 +141,25 @@ impl TranscriptionEngine for GigaAMEngine {
             // Convert to 2D [time, vocab] - copy data before releasing lock
             let time_steps = output_shape[1] as usize;
             let vocab_size = output_shape[2] as usize;
-            
+
             tracing::debug!(
                 "GigaAM: time_steps={}, vocab_size={}, expected_vocab={}",
                 time_steps,
                 vocab_size,
                 self.vocab.len()
             );
-            
+
             // Debug: check first frame values
             if !output_data.is_empty() {
                 let first_frame = &output_data[0..vocab_size.min(output_data.len())];
-                let max_val = first_frame.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let max_val = first_frame
+                    .iter()
+                    .cloned()
+                    .fold(f32::NEG_INFINITY, f32::max);
                 let min_val = first_frame.iter().cloned().fold(f32::INFINITY, f32::min);
                 let has_nan = first_frame.iter().any(|v| v.is_nan());
                 let all_zero = first_frame.iter().all(|v| *v == 0.0);
-                
+
                 tracing::debug!(
                     "GigaAM: first_frame min={:.4}, max={:.4}, has_nan={}, all_zero={}",
                     min_val,
@@ -156,7 +167,7 @@ impl TranscriptionEngine for GigaAMEngine {
                     has_nan,
                     all_zero
                 );
-                
+
                 // Also check what token index would win for first frame
                 let (argmax_idx, argmax_val) = first_frame
                     .iter()
@@ -183,7 +194,7 @@ impl TranscriptionEngine for GigaAMEngine {
 
         // Decode based on model type
         let audio_duration = samples.len() as f64 / SAMPLE_RATE as f64;
-        
+
         // Debug: log logits statistics
         if !logits.is_empty() {
             let first_frame = &logits[0];
@@ -192,7 +203,7 @@ impl TranscriptionEngine for GigaAMEngine {
                 .enumerate()
                 .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
                 .unwrap_or((0, &0.0));
-            
+
             // Count blank predictions across all frames
             let mut blank_count = 0;
             let mut non_blank_count = 0;
@@ -208,7 +219,7 @@ impl TranscriptionEngine for GigaAMEngine {
                     non_blank_count += 1;
                 }
             }
-            
+
             tracing::debug!(
                 "GigaAM decode: {} frames, vocab_size={}, blank_id={}, first_frame_max_idx={}, max_val={:.3}, blank_frames={}, non_blank_frames={}",
                 logits.len(),
@@ -220,7 +231,7 @@ impl TranscriptionEngine for GigaAMEngine {
                 non_blank_count
             );
         }
-        
+
         let segments = match self.model_type {
             GigaAMModelType::E2e => self.decode_e2e_with_timestamps(&logits, audio_duration),
             GigaAMModelType::Ctc => self.decode_ctc_with_timestamps(&logits, audio_duration),
@@ -271,7 +282,7 @@ impl GigaAMEngine {
         // CoreML adds overhead for INT8 quantization conversion
         let is_int8 = model_path.to_lowercase().contains("int8");
         let use_coreml = !is_int8;
-        
+
         Self::new_with_options(model_path, vocab_path, use_coreml)
     }
 
@@ -329,13 +340,18 @@ impl GigaAMEngine {
         );
 
         // Detect if we're on Apple Silicon for CoreML support
-        let is_apple_silicon = cfg!(target_os = "macos") && cfg!(target_arch = "aarch64");
-        
+        let _is_apple_silicon = cfg!(target_os = "macos") && cfg!(target_arch = "aarch64");
+
         // INT8 models run faster on CPU - CoreML adds conversion overhead
-        let enable_coreml = use_coreml && is_apple_silicon && !is_int8;
-        
+        // ВАЖНО: CoreML отключён из-за deadlock при конкурентном доступе из нескольких потоков.
+        // При параллельной транскрипции нескольких чанков CoreML ExecutionProvider
+        // блокируется навсегда. CPU inference достаточно быстр (RTF > 10).
+        let enable_coreml = false; // use_coreml && is_apple_silicon && !is_int8;
+
         if is_int8 && use_coreml {
-            tracing::info!("GigaAM: INT8 model detected, using CPU (faster than CoreML for quantized models)");
+            tracing::info!(
+                "GigaAM: INT8 model detected, using CPU (faster than CoreML for quantized models)"
+            );
         }
 
         // Create ONNX session with CoreML if available
@@ -377,7 +393,9 @@ impl GigaAMEngine {
 
         tracing::info!(
             "GigaAM model loaded: type={:?}, int8={}, coreml={}",
-            model_type, is_int8, actual_coreml
+            model_type,
+            is_int8,
+            actual_coreml
         );
 
         Ok(Self {
@@ -513,7 +531,7 @@ impl GigaAMEngine {
         let mut words: Vec<TranscriptWord> = vec![];
         let mut current_tokens: Vec<BpeTokenInfo> = vec![];
         let mut prev_token = self.blank_id;
-        
+
         // Debug: collect first few non-blank tokens
         let mut debug_tokens: Vec<(usize, String, f32)> = vec![];
         let mut total_non_blank = 0;
@@ -527,7 +545,7 @@ impl GigaAMEngine {
 
             let frame_time = (t as f64 * frame_ms) as i64;
             let current_confidence = softmax_max(frame);
-            
+
             // Debug: log some non-blank tokens
             if max_idx != self.blank_id {
                 total_non_blank += 1;
@@ -573,7 +591,7 @@ impl GigaAMEngine {
             }
             prev_token = max_idx;
         }
-        
+
         // Debug output
         if !debug_tokens.is_empty() {
             tracing::debug!(
@@ -803,7 +821,11 @@ impl MelProcessor {
 
             // Apply window and zero-pad to n_fft
             input_buffer.fill(0.0);
-            for (i, (&sample, &window)) in padded[start..end].iter().zip(self.window.iter()).enumerate() {
+            for (i, (&sample, &window)) in padded[start..end]
+                .iter()
+                .zip(self.window.iter())
+                .enumerate()
+            {
                 input_buffer[i] = sample * window;
             }
 
@@ -862,9 +884,7 @@ fn create_mel_filterbank(sample_rate: u32, n_fft: usize, n_mels: usize) -> Vec<V
         .collect();
 
     // Differences between adjacent points (for normalization)
-    let f_diff: Vec<f32> = (0..n_mels + 1)
-        .map(|i| f_pts[i + 1] - f_pts[i])
-        .collect();
+    let f_diff: Vec<f32> = (0..n_mels + 1).map(|i| f_pts[i + 1] - f_pts[i]).collect();
 
     // Create triangular filters (as in torchaudio)
     let mut filterbank = vec![vec![0.0f32; num_bins]; n_mels];

@@ -26,8 +26,11 @@ const SAMPLE_RATE: u32 = 24000;
 const TRANSCRIPTION_SAMPLE_RATE: u32 = 16000;
 
 /// Максимальное количество параллельных транскрипций
-/// Увеличено с 2 до 3 для лучшей производительности при длинных записях
-const MAX_CONCURRENT_TRANSCRIPTIONS: usize = 3;
+/// ВАЖНО: Установлено в 1 для предотвращения deadlock в ONNX Runtime.
+/// GigaAM использует Mutex<Session>, но при конкурентном доступе через
+/// глобальный кэш движков возникает взаимная блокировка.
+/// Последовательная обработка безопасна и достаточно быстра (RTF > 10).
+const MAX_CONCURRENT_TRANSCRIPTIONS: usize = 1;
 
 /// Счётчик активных транскрипций (глобальный семафор)
 static ACTIVE_TRANSCRIPTIONS: LazyLock<Arc<AtomicUsize>> =
@@ -355,8 +358,11 @@ impl RecordingSession {
     ) -> Result<()> {
         // При записи (end_time = None) используем простой формат без длительности
         // При завершении показываем длительность в минутах/секундах
+        // Конвертируем UTC время в локальное для отображения пользователю
+        let local_time: chrono::DateTime<chrono::Local> = self.start_time.into();
+
         let title = if end_time.is_none() {
-            format!("Запись {}", self.start_time.format("%d.%m %H:%M"))
+            format!("Запись {}", local_time.format("%d.%m %H:%M"))
         } else {
             let total_secs = duration_ms / 1000;
             let mins = total_secs / 60;
@@ -364,16 +370,12 @@ impl RecordingSession {
             if mins > 0 {
                 format!(
                     "Запись {} · {} мин {} сек",
-                    self.start_time.format("%d.%m %H:%M"),
+                    local_time.format("%d.%m %H:%M"),
                     mins,
                     secs
                 )
             } else {
-                format!(
-                    "Запись {} · {} сек",
-                    self.start_time.format("%d.%m %H:%M"),
-                    secs
-                )
+                format!("Запись {} · {} сек", local_time.format("%d.%m %H:%M"), secs)
             }
         };
 
@@ -1056,6 +1058,20 @@ fn recording_thread(
                 event.end_ms
             );
 
+            // КРИТИЧНО: Читаем сэмплы СРАЗУ при создании чанка, ДО того как может произойти drain!
+            // Это предотвращает потерю данных при асинхронном drain после завершения транскрипции
+            // предыдущего чанка.
+            let is_stereo = chunk_buffer.has_separate_channels();
+            let sample_rate = chunk_buffer.sample_rate();
+            let (mic_samples, sys_samples) = if is_stereo {
+                let mic = chunk_buffer.get_mic_samples_range(event.start_ms, event.end_ms);
+                let sys = chunk_buffer.get_sys_samples_range(event.start_ms, event.end_ms);
+                (mic, sys)
+            } else {
+                let samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
+                (samples, Vec::new())
+            };
+
             // Emit chunk_created event (status: pending)
             let duration_ns = (chunk_meta.end_ms - chunk_meta.start_ms) as u64 * 1_000_000;
             let _ = app_handle.emit(
@@ -1069,13 +1085,13 @@ fn recording_thread(
                         "endMs": chunk_meta.end_ms,
                         "duration": duration_ns,
                         "status": "pending",
-                        "isStereo": chunk_buffer.has_separate_channels(),
+                        "isStereo": is_stereo,
                     }
                 }),
             );
 
             // ИСПРАВЛЕНО: Всегда запускаем транскрипцию (убрали условие is_stopping)
-            // ✅ Транскрипция в ФОНОВОМ ПОТОКЕ, чтобы не блокировать запись и audio_level
+            // Транскрипция в ФОНОВОМ ПОТОКЕ, чтобы не блокировать запись и audio_level
             // Emit chunk_transcribing event
             let _ = app_handle.emit(
                 "chunk_transcribing",
@@ -1094,17 +1110,7 @@ fn recording_thread(
                     chunk_meta.index
                 );
 
-                // Добавляем в очередь pending для retry на следующей итерации
-                let is_stereo = chunk_buffer.has_separate_channels();
-                let (mic_samples, sys_samples, sample_rate) = if is_stereo {
-                    let mic = chunk_buffer.get_mic_samples_range(event.start_ms, event.end_ms);
-                    let sys = chunk_buffer.get_sys_samples_range(event.start_ms, event.end_ms);
-                    (mic, sys, chunk_buffer.sample_rate())
-                } else {
-                    let samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
-                    (samples, Vec::new(), chunk_buffer.sample_rate())
-                };
-
+                // Добавляем в очередь pending с УЖЕ СЧИТАННЫМИ сэмплами
                 pending_transcriptions.push_back(PendingTranscription {
                     chunk_meta: chunk_meta.clone(),
                     chunk_path: chunk_path.clone(),
@@ -1132,12 +1138,10 @@ fn recording_thread(
             let bg_voiceprint_matcher = voiceprint_matcher.clone();
             let chunk_end_ms = event.end_ms;
 
-            if chunk_buffer.has_separate_channels() {
+            // Сэмплы уже считаны выше (mic_samples, sys_samples)!
+            // Это критически важно - сэмплы должны быть прочитаны ДО возможного drain.
+            if is_stereo {
                 // Stereo mode: transcribe each channel separately (parallel inside)
-                let mic_samples = chunk_buffer.get_mic_samples_range(event.start_ms, event.end_ms);
-                let sys_samples = chunk_buffer.get_sys_samples_range(event.start_ms, event.end_ms);
-                let sample_rate = chunk_buffer.sample_rate();
-
                 if !mic_samples.is_empty() || !sys_samples.is_empty() {
                     std::thread::spawn(move || {
                         // Guard гарантирует освобождение слота даже при панике
@@ -1166,18 +1170,15 @@ fn recording_thread(
                     release_transcription_slot();
                 }
             } else {
-                // Mono mode
-                let chunk_samples = chunk_buffer.get_samples_range(event.start_ms, event.end_ms);
-                let sample_rate = chunk_buffer.sample_rate();
-
-                if !chunk_samples.is_empty() {
+                // Mono mode - сэмплы уже в mic_samples
+                if !mic_samples.is_empty() {
                     std::thread::spawn(move || {
                         // Guard гарантирует освобождение слота даже при панике
                         let _guard = TranscriptionSlotGuard::new();
 
                         let transcribed = transcribe_chunk_samples(
                             bg_chunk_meta,
-                            &chunk_samples,
+                            &mic_samples,
                             sample_rate,
                             &bg_transcription_config,
                             &bg_session_id,
@@ -1854,189 +1855,181 @@ fn transcribe_chunk_stereo(
         sys_rms
     );
 
-    // ===== ПАРАЛЛЕЛЬНАЯ ОБРАБОТКА КАНАЛОВ =====
-    // Используем std::thread::scope для безопасного параллельного выполнения
-    // Оба канала обрабатываются одновременно, что сокращает время почти в 2 раза
-    let (mic_segments, sys_segments) = std::thread::scope(|s| {
-        // --- MIC channel (Left) ---
-        let mic_handle = s.spawn(|| {
-            let mut segments: Vec<aiwisper_types::TranscriptSegment> = Vec::new();
+    // ===== ПОСЛЕДОВАТЕЛЬНАЯ ОБРАБОТКА КАНАЛОВ =====
+    // ВАЖНО: Параллельная обработка отключена из-за deadlock в ONNX Runtime.
+    // GigaAM модель не thread-safe при конкурентном доступе.
+    // MIC и SYS обрабатываются последовательно для стабильности.
 
-            if mic_samples.is_empty() {
-                return segments;
-            }
+    // --- MIC channel (Left) ---
+    let mic_segments: Vec<aiwisper_types::TranscriptSegment> = {
+        let mut segments: Vec<aiwisper_types::TranscriptSegment> = Vec::new();
 
+        if !mic_samples.is_empty() {
             // VAD check for mic
             let mic_is_silent = is_silent_with_vad(mic_samples, source_sample_rate);
             if mic_is_silent {
                 tracing::debug!("Skipping MIC channel for chunk {} - silent", chunk_index);
-                return segments;
-            }
-
-            // Resample to 16kHz
-            let mic_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
-                match resample(mic_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::error!("Failed to resample mic: {}", e);
-                        mic_samples.to_vec()
-                    }
-                }
             } else {
-                mic_samples.to_vec()
-            };
+                // Resample to 16kHz
+                let mic_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
+                    match resample(mic_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::error!("Failed to resample mic: {}", e);
+                            mic_samples.to_vec()
+                        }
+                    }
+                } else {
+                    mic_samples.to_vec()
+                };
 
-            // Transcribe
-            match transcribe_samples_sync(
-                &mic_16k,
-                &config.model_id,
-                &config.language,
-                config.hybrid_enabled,
-                &config.hybrid_secondary_model_id,
-                &config.hotwords,
-                config.hybrid_use_llm,
-                &config.hybrid_mode,
-                &config.ollama_model,
-                &config.ollama_url,
-            ) {
-                Ok(result) => {
-                    for mut seg in result {
-                        seg.speaker = Some("mic".to_string());
-                        segments.push(seg);
+                // Transcribe
+                match transcribe_samples_sync(
+                    &mic_16k,
+                    &config.model_id,
+                    &config.language,
+                    config.hybrid_enabled,
+                    &config.hybrid_secondary_model_id,
+                    &config.hotwords,
+                    config.hybrid_use_llm,
+                    &config.hybrid_mode,
+                    &config.ollama_model,
+                    &config.ollama_url,
+                ) {
+                    Ok(result) => {
+                        for mut seg in result {
+                            seg.speaker = Some("mic".to_string());
+                            segments.push(seg);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "MIC transcription failed for chunk {}: {}",
+                            chunk_index,
+                            e
+                        );
                     }
                 }
-                Err(e) => {
-                    tracing::error!("MIC transcription failed for chunk {}: {}", chunk_index, e);
-                }
             }
+        }
 
-            segments
-        });
+        segments
+    };
 
-        // --- SYS channel (Right) ---
-        let sys_handle = s.spawn(|| {
-            let mut segments: Vec<aiwisper_types::TranscriptSegment> = Vec::new();
+    // --- SYS channel (Right) ---
+    let sys_segments: Vec<aiwisper_types::TranscriptSegment> = {
+        let mut segments: Vec<aiwisper_types::TranscriptSegment> = Vec::new();
 
-            if sys_samples.is_empty() {
-                return segments;
-            }
-
+        if !sys_samples.is_empty() {
             // VAD check for sys
             let sys_is_silent = is_silent_with_vad(sys_samples, source_sample_rate);
             if sys_is_silent {
                 tracing::debug!("Skipping SYS channel for chunk {} - silent", chunk_index);
-                return segments;
-            }
-
-            // Resample to 16kHz
-            let sys_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
-                match resample(sys_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::error!("Failed to resample sys: {}", e);
-                        sys_samples.to_vec()
-                    }
-                }
             } else {
-                sys_samples.to_vec()
-            };
+                // Resample to 16kHz
+                let sys_16k = if source_sample_rate != TRANSCRIPTION_SAMPLE_RATE {
+                    match resample(sys_samples, source_sample_rate, TRANSCRIPTION_SAMPLE_RATE) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::error!("Failed to resample sys: {}", e);
+                            sys_samples.to_vec()
+                        }
+                    }
+                } else {
+                    sys_samples.to_vec()
+                };
 
-            // Transcribe
-            match transcribe_samples_sync(
-                &sys_16k,
-                &config.model_id,
-                &config.language,
-                config.hybrid_enabled,
-                &config.hybrid_secondary_model_id,
-                &config.hotwords,
-                config.hybrid_use_llm,
-                &config.hybrid_mode,
-                &config.ollama_model,
-                &config.ollama_url,
-            ) {
-                Ok(result) => {
-                    // Apply diarization if enabled
-                    if config.diarization_enabled && config.diarization_provider == "coreml" {
-                        match diarize_samples_with_embeddings(&sys_16k) {
-                            Ok(diarization_result) if !diarization_result.segments.is_empty() => {
-                                tracing::info!(
-                                    "Diarization found {} speaker segments in sys channel",
-                                    diarization_result.segments.len()
-                                );
+                // Transcribe
+                match transcribe_samples_sync(
+                    &sys_16k,
+                    &config.model_id,
+                    &config.language,
+                    config.hybrid_enabled,
+                    &config.hybrid_secondary_model_id,
+                    &config.hotwords,
+                    config.hybrid_use_llm,
+                    &config.hybrid_mode,
+                    &config.ollama_model,
+                    &config.ollama_url,
+                ) {
+                    Ok(result) => {
+                        // Apply diarization if enabled
+                        if config.diarization_enabled && config.diarization_provider == "coreml" {
+                            match diarize_samples_with_embeddings(&sys_16k) {
+                                Ok(diarization_result)
+                                    if !diarization_result.segments.is_empty() =>
+                                {
+                                    tracing::info!(
+                                        "Diarization found {} speaker segments in sys channel",
+                                        diarization_result.segments.len()
+                                    );
 
-                                // Build speaker name mapping
-                                let mut speaker_names: std::collections::HashMap<i32, String> =
-                                    std::collections::HashMap::new();
+                                    // Build speaker name mapping
+                                    let mut speaker_names: std::collections::HashMap<i32, String> =
+                                        std::collections::HashMap::new();
 
-                                if let Some(matcher) = voiceprint_matcher {
-                                    for emb in &diarization_result.speaker_embeddings {
-                                        if let Some(match_result) =
-                                            matcher.match_with_auto_update(&emb.embedding)
-                                        {
-                                            speaker_names.insert(
-                                                emb.speaker,
-                                                match_result.voiceprint.name.clone(),
-                                            );
+                                    if let Some(matcher) = voiceprint_matcher {
+                                        for emb in &diarization_result.speaker_embeddings {
+                                            if let Some(match_result) =
+                                                matcher.match_with_auto_update(&emb.embedding)
+                                            {
+                                                speaker_names.insert(
+                                                    emb.speaker,
+                                                    match_result.voiceprint.name.clone(),
+                                                );
+                                            }
                                         }
                                     }
-                                }
 
-                                for mut seg in result {
-                                    let speaker_id = find_speaker_for_segment(
-                                        seg.start as f32 / 1000.0,
-                                        seg.end as f32 / 1000.0,
-                                        &diarization_result.segments,
-                                    );
-                                    let speaker_name =
-                                        speaker_names.get(&speaker_id).cloned().unwrap_or_else(
-                                            || format!("Собеседник {}", speaker_id + 1),
+                                    for mut seg in result {
+                                        let speaker_id = find_speaker_for_segment(
+                                            seg.start as f32 / 1000.0,
+                                            seg.end as f32 / 1000.0,
+                                            &diarization_result.segments,
                                         );
-                                    seg.speaker = Some(speaker_name);
-                                    segments.push(seg);
+                                        let speaker_name =
+                                            speaker_names.get(&speaker_id).cloned().unwrap_or_else(
+                                                || format!("Собеседник {}", speaker_id + 1),
+                                            );
+                                        seg.speaker = Some(speaker_name);
+                                        segments.push(seg);
+                                    }
+                                }
+                                Ok(_) => {
+                                    for mut seg in result {
+                                        seg.speaker = Some("sys".to_string());
+                                        segments.push(seg);
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Diarization failed: {}", e);
+                                    for mut seg in result {
+                                        seg.speaker = Some("sys".to_string());
+                                        segments.push(seg);
+                                    }
                                 }
                             }
-                            Ok(_) => {
-                                for mut seg in result {
-                                    seg.speaker = Some("sys".to_string());
-                                    segments.push(seg);
-                                }
+                        } else {
+                            // No diarization
+                            for mut seg in result {
+                                seg.speaker = Some("sys".to_string());
+                                segments.push(seg);
                             }
-                            Err(e) => {
-                                tracing::warn!("Diarization failed: {}", e);
-                                for mut seg in result {
-                                    seg.speaker = Some("sys".to_string());
-                                    segments.push(seg);
-                                }
-                            }
-                        }
-                    } else {
-                        // No diarization
-                        for mut seg in result {
-                            seg.speaker = Some("sys".to_string());
-                            segments.push(seg);
                         }
                     }
-                }
-                Err(e) => {
-                    tracing::error!("SYS transcription failed for chunk {}: {}", chunk_index, e);
+                    Err(e) => {
+                        tracing::error!(
+                            "SYS transcription failed for chunk {}: {}",
+                            chunk_index,
+                            e
+                        );
+                    }
                 }
             }
+        }
 
-            segments
-        });
-
-        // Wait for both threads (scope guarantees join)
-        let mic_res = mic_handle.join().unwrap_or_else(|e| {
-            tracing::error!("MIC thread panicked: {:?}", e);
-            Vec::new()
-        });
-        let sys_res = sys_handle.join().unwrap_or_else(|e| {
-            tracing::error!("SYS thread panicked: {:?}", e);
-            Vec::new()
-        });
-
-        (mic_res, sys_res)
-    });
+        segments
+    };
 
     // Use word-level dialogue merge algorithm
     let merged_segments = aiwisper_ml::merge_words_to_dialogue(mic_segments, sys_segments);

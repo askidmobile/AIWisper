@@ -31,7 +31,16 @@ fn main() {
 
 fn get_diarizer() -> Result<&'static FluidDiarizationEngine> {
     static DIARIZER: OnceLock<FluidDiarizationEngine> = OnceLock::new();
-    DIARIZER.get_or_try_init(|| FluidDiarizationEngine::with_defaults())
+    // OnceLock::get_or_try_init нестабилен, используем get_or_init с обработкой паники
+    if let Some(d) = DIARIZER.get() {
+        return Ok(d);
+    }
+    let engine = FluidDiarizationEngine::with_defaults()?;
+    // Игнорируем ошибку если другой поток уже инициализировал
+    let _ = DIARIZER.set(engine);
+    DIARIZER
+        .get()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get diarizer"))
 }
 
 fn run_worker() -> Result<()> {

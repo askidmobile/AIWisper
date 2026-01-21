@@ -918,6 +918,8 @@ impl AppState {
 
         // Build session for in-memory store
         let now = chrono::Utc::now();
+        // Конвертируем в локальное время для отображения пользователю
+        let local_time: chrono::DateTime<chrono::Local> = now.into();
         let chunks: Vec<SessionChunk> = result
             .chunks
             .iter()
@@ -952,20 +954,21 @@ impl AppState {
             .collect();
 
         // Формируем title с учётом длительности в минутах и секундах
+        // Используем локальное время для отображения
         let total_secs = result.duration_ms / 1000;
         let mins = total_secs / 60;
         let secs = total_secs % 60;
         let title = if mins > 0 {
             format!(
                 "Запись {} · {} мин {} сек",
-                now.format("%d.%m %H:%M"),
+                local_time.format("%d.%m %H:%M"),
                 mins,
                 secs
             )
         } else {
             format!(
                 "Запись {} · {} сек",
-                now.format("%d.%m %H:%M"),
+                local_time.format("%d.%m %H:%M"),
                 secs
             )
         };
