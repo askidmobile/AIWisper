@@ -55,8 +55,8 @@ impl VadConfig {
         Self {
             mode: VadMode::Off,
             chunking_start_delay: Duration::from_secs(5), // ✅ Было 60, стало 5
-            min_chunk_duration: Duration::from_secs(10),   // ✅ Было 30, стало 10
-            max_chunk_duration: Duration::from_secs(15),   // ✅ Было 30, стало 15
+            min_chunk_duration: Duration::from_secs(10),  // ✅ Было 30, стало 10
+            max_chunk_duration: Duration::from_secs(15),  // ✅ Было 30, стало 15
             silence_duration: Duration::from_secs(1),
             silence_threshold: 0.02,
         }
@@ -107,7 +107,7 @@ pub struct ChunkBuffer {
     /// Канал для отправки событий
     output_tx: mpsc::Sender<ChunkEvent>,
     output_rx: mpsc::Receiver<ChunkEvent>,
-    
+
     /// Смещение для учёта удалённых семплов через drain_processed_samples
     /// Используется в get_*_samples_range для корректного доступа к семплам
     /// после того как начало буфера было удалено
@@ -236,7 +236,8 @@ impl ChunkBuffer {
         // Вычисляем таймстемпы (используем АБСОЛЮТНОЕ время от начала записи)
         let chunk_samples = split_point - self.emitted_samples;
         let start_ms = self.absolute_emitted_samples * 1000 / self.sample_rate as i64;
-        let end_ms = (self.absolute_emitted_samples + chunk_samples) * 1000 / self.sample_rate as i64;
+        let end_ms =
+            (self.absolute_emitted_samples + chunk_samples) * 1000 / self.sample_rate as i64;
         let duration = Duration::from_millis((end_ms - start_ms) as u64);
 
         let event = ChunkEvent {
@@ -330,7 +331,8 @@ impl ChunkBuffer {
         // Используем АБСОЛЮТНОЕ время от начала записи
         let chunk_samples = available;
         let start_ms = self.absolute_emitted_samples * 1000 / self.sample_rate as i64;
-        let end_ms = (self.absolute_emitted_samples + chunk_samples) * 1000 / self.sample_rate as i64;
+        let end_ms =
+            (self.absolute_emitted_samples + chunk_samples) * 1000 / self.sample_rate as i64;
         let duration = Duration::from_millis((end_ms - start_ms) as u64);
 
         let event = ChunkEvent {
@@ -363,7 +365,7 @@ impl ChunkBuffer {
 
     /// Получить аудио семплы для указанного диапазона времени
     /// Возвращает семплы из accumulated буфера
-    /// 
+    ///
     /// start_ms и end_ms - это АБСОЛЮТНОЕ время от начала записи.
     /// Функция учитывает drained_samples_offset для корректного доступа к буферу
     /// после того как начало было удалено через drain_processed_samples.
@@ -371,7 +373,7 @@ impl ChunkBuffer {
         // Конвертируем абсолютное время в абсолютные семплы
         let abs_start_sample = start_ms * self.sample_rate as i64 / 1000;
         let abs_end_sample = end_ms * self.sample_rate as i64 / 1000;
-        
+
         // Вычитаем смещение удалённых семплов для получения индекса в текущем буфере
         let start_sample = (abs_start_sample - self.drained_samples_offset).max(0) as usize;
         let end_sample = (abs_end_sample - self.drained_samples_offset).max(0) as usize;
@@ -407,7 +409,7 @@ impl ChunkBuffer {
     }
 
     /// Получить mic samples для указанного диапазона (только для стерео режима)
-    /// 
+    ///
     /// start_ms и end_ms - это АБСОЛЮТНОЕ время от начала записи.
     /// Функция учитывает drained_samples_offset для корректного доступа к буферу
     /// после того как начало было удалено через drain_processed_samples.
@@ -419,7 +421,7 @@ impl ChunkBuffer {
         // Конвертируем абсолютное время в абсолютные семплы
         let abs_start_sample = start_ms * self.sample_rate as i64 / 1000;
         let abs_end_sample = end_ms * self.sample_rate as i64 / 1000;
-        
+
         // Вычитаем смещение удалённых семплов для получения индекса в текущем буфере
         let start_sample = (abs_start_sample - self.drained_samples_offset).max(0) as usize;
         let end_sample = (abs_end_sample - self.drained_samples_offset).max(0) as usize;
@@ -432,8 +434,12 @@ impl ChunkBuffer {
                 "get_mic_samples_range: empty range after offset adjustment. \
                  abs_start={}, abs_end={}, drained_offset={}, \
                  adjusted_start={}, adjusted_end={}, buf_len={}",
-                abs_start_sample, abs_end_sample, self.drained_samples_offset,
-                start_sample, end_sample, self.mic_accumulated.len()
+                abs_start_sample,
+                abs_end_sample,
+                self.drained_samples_offset,
+                start_sample,
+                end_sample,
+                self.mic_accumulated.len()
             );
             return Vec::new();
         }
@@ -442,7 +448,7 @@ impl ChunkBuffer {
     }
 
     /// Получить sys samples для указанного диапазона (только для стерео режима)
-    /// 
+    ///
     /// start_ms и end_ms - это АБСОЛЮТНОЕ время от начала записи.
     /// Функция учитывает drained_samples_offset для корректного доступа к буферу
     /// после того как начало было удалено через drain_processed_samples.
@@ -454,7 +460,7 @@ impl ChunkBuffer {
         // Конвертируем абсолютное время в абсолютные семплы
         let abs_start_sample = start_ms * self.sample_rate as i64 / 1000;
         let abs_end_sample = end_ms * self.sample_rate as i64 / 1000;
-        
+
         // Вычитаем смещение удалённых семплов для получения индекса в текущем буфере
         let start_sample = (abs_start_sample - self.drained_samples_offset).max(0) as usize;
         let end_sample = (abs_end_sample - self.drained_samples_offset).max(0) as usize;
@@ -467,8 +473,12 @@ impl ChunkBuffer {
                 "get_sys_samples_range: empty range after offset adjustment. \
                  abs_start={}, abs_end={}, drained_offset={}, \
                  adjusted_start={}, adjusted_end={}, buf_len={}",
-                abs_start_sample, abs_end_sample, self.drained_samples_offset,
-                start_sample, end_sample, self.sys_accumulated.len()
+                abs_start_sample,
+                abs_end_sample,
+                self.drained_samples_offset,
+                start_sample,
+                end_sample,
+                self.sys_accumulated.len()
             );
             return Vec::new();
         }
@@ -502,13 +512,26 @@ impl ChunkBuffer {
     /// После вызова все временные метки в буфере остаются корректными,
     /// так как мы обновляем внутренние счётчики.
     pub fn drain_processed_samples(&mut self, up_to_ms: i64) {
-        // Конвертируем миллисекунды в количество семплов
-        let drain_samples = (up_to_ms * self.sample_rate as i64 / 1000) as usize;
+        // Конвертируем миллисекунды в АБСОЛЮТНОЕ количество семплов от начала записи
+        let abs_drain_samples = up_to_ms * self.sample_rate as i64 / 1000;
+
+        // Вычисляем сколько РЕАЛЬНО нужно удалить из ТЕКУЩЕГО буфера
+        // с учётом уже удалённых ранее семплов (drained_samples_offset)
+        let relative_drain_samples = abs_drain_samples - self.drained_samples_offset;
 
         // Проверяем что есть что удалять
-        if drain_samples == 0 {
+        if relative_drain_samples <= 0 {
+            tracing::debug!(
+                "ChunkBuffer: drain_processed_samples({} ms) skipped - already drained. \
+                 abs_drain={}, drained_offset={}",
+                up_to_ms,
+                abs_drain_samples,
+                self.drained_samples_offset
+            );
             return;
         }
+
+        let drain_samples = relative_drain_samples as usize;
 
         // Удаляем из основного буфера
         let actual_drain = drain_samples.min(self.accumulated.len());
@@ -536,7 +559,7 @@ impl ChunkBuffer {
         let drain_i64 = actual_drain as i64;
         self.emitted_samples = (self.emitted_samples - drain_i64).max(0);
         self.total_samples = (self.total_samples - drain_i64).max(0);
-        
+
         // Обновляем смещение для get_*_samples_range функций
         self.drained_samples_offset += drain_i64;
 
@@ -556,9 +579,10 @@ impl ChunkBuffer {
     /// Получить текущий размер буферов в байтах (для мониторинга памяти)
     pub fn memory_usage_bytes(&self) -> usize {
         let f32_size = std::mem::size_of::<f32>();
-        (self.accumulated.capacity() + 
-         self.mic_accumulated.capacity() + 
-         self.sys_accumulated.capacity()) * f32_size
+        (self.accumulated.capacity()
+            + self.mic_accumulated.capacity()
+            + self.sys_accumulated.capacity())
+            * f32_size
     }
 }
 

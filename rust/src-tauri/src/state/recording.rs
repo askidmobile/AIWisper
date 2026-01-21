@@ -1421,6 +1421,21 @@ fn recording_thread(
                 remaining_mic
             );
         }
+
+        // Если остались только системные семплы (микрофон отстал) - добавляем тишину для mic
+        if !sys_buffer.is_empty() {
+            let remaining_sys = sys_buffer.len();
+            let silence = vec![0.0f32; remaining_sys];
+            if let Err(e) = mp3_writer.write_stereo(&silence, &sys_buffer) {
+                tracing::error!("Failed to write final silence+sys to MP3: {}", e);
+            }
+            chunk_buffer.process_stereo(&silence, &sys_buffer);
+            sys_buffer.clear();
+            tracing::info!(
+                "Final sys samples (with silence for mic): {} samples",
+                remaining_sys
+            );
+        }
     } else {
         // Моно режим - обрабатываем только микрофон
         if !mic_buffer.is_empty() {

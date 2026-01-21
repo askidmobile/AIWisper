@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.38] - 2026-01-21
+
+### Fixed
+- **Lost System Audio on Stop**: Исправлена потеря системного звука при остановке записи.
+  - **Проблема**: При остановке записи `sys_buffer` содержал накопленные сэмплы системного звука (~53 сек), но они не обрабатывались потому что `mic_buffer` был пуст.
+  - **Причина**: В основном цикле записи данные выравниваются по `min(mic_buffer, sys_buffer)`. Если системный звук приходит быстрее микрофона, разница накапливается в `sys_buffer`.
+  - **Симптомы**: Последние секунды записи (до 1 минуты!) могли теряться при остановке.
+  - **Решение**: Добавлена обработка оставшегося `sys_buffer` с тишиной для `mic` при финализации записи.
+
+### Technical
+- `rust/src-tauri/src/state/recording.rs`:
+  - Добавлен блок обработки оставшегося `sys_buffer` (строки ~1423-1434)
+  - Оставшиеся sys сэмплы записываются в MP3 с тишиной для mic канала
+  - Данные передаются в `chunk_buffer.process_stereo()` для транскрипции
+
+## [2.0.37] - 2026-01-21
+
+### Fixed
+- **Chunk Buffer Over-Drain Bug**: Исправлена критическая ошибка, из-за которой `drain_processed_samples()` удалял больше сэмплов чем нужно.
+  - **Проблема**: Функция вычисляла количество сэмплов для удаления от НАЧАЛА записи, не учитывая уже удалённые ранее сэмплы (`drained_samples_offset`).
+  - **Результат**: При вызове `drain(210000ms)` после предыдущих drain, удалялись ВСЕ сэмплы из буфера (включая новые для следующих чанков).
+  - **Симптомы**: Чанки 21, 23, 25, 27, 29, 31 получали пустые данные и оставались в статусе "pending".
+  - **Решение**: `drain_processed_samples()` теперь вычисляет `relative_drain_samples = abs_drain_samples - drained_samples_offset` и удаляет только нужное количество сэмплов.
+
+### Technical
+- `rust/crates/aiwisper-audio/src/chunk_buffer.rs`:
+  - `drain_processed_samples()`: Добавлено вычисление `relative_drain_samples` с учётом `drained_samples_offset`
+  - Добавлен debug лог при пропуске drain (если уже удалено)
+
 ## [2.0.36] - 2026-01-21
 
 ### Fixed
