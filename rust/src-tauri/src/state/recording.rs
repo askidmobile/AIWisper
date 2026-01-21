@@ -752,6 +752,9 @@ fn recording_thread(
             },
         );
 
+    // Create SessionSpeakerRegistry for tracking unknown speakers within this session
+    let session_registry = Arc::new(aiwisper_ml::SessionSpeakerRegistry::new());
+
     // Buffers for stereo recording (микрофон и система накапливаются до выравнивания)
     let mut sys_buffer: Vec<f32> = Vec::new();
     let mut mic_buffer: Vec<f32> = Vec::new();
@@ -773,6 +776,8 @@ fn recording_thread(
         sys_samples: Vec<f32>,
         sample_rate: u32,
         is_stereo: bool,
+        voiceprint_matcher: Option<Arc<aiwisper_ml::VoicePrintMatcher>>,
+        session_registry: Arc<aiwisper_ml::SessionSpeakerRegistry>,
     }
     let mut pending_transcriptions: std::collections::VecDeque<PendingTranscription> =
         std::collections::VecDeque::new();
@@ -817,7 +822,8 @@ fn recording_thread(
             let bg_app_handle = app_handle.clone();
             let bg_transcription_config = transcription_config.clone();
             let bg_drain_tx = drain_tx.clone();
-            let bg_voiceprint_matcher = voiceprint_matcher.clone();
+            let bg_voiceprint_matcher = pending.voiceprint_matcher.clone();
+            let bg_session_registry = pending.session_registry.clone();
             let chunk_end_ms = bg_chunk_meta.end_ms;
 
             if pending.is_stereo {
@@ -838,6 +844,7 @@ fn recording_thread(
                         &bg_session_id,
                         &bg_app_handle,
                         bg_voiceprint_matcher.as_deref(),
+                        &bg_session_registry,
                     );
                     if let Err(e) = transcribed.save(&bg_chunk_path) {
                         tracing::error!("Failed to save transcribed chunk: {}", e);
@@ -1118,6 +1125,8 @@ fn recording_thread(
                     sys_samples,
                     sample_rate,
                     is_stereo,
+                    voiceprint_matcher: voiceprint_matcher.clone(),
+                    session_registry: session_registry.clone(),
                 });
 
                 // Сохраняем чанк как pending
@@ -1136,6 +1145,7 @@ fn recording_thread(
             let bg_transcription_config = transcription_config.clone();
             let bg_drain_tx = drain_tx.clone();
             let bg_voiceprint_matcher = voiceprint_matcher.clone();
+            let bg_session_registry = session_registry.clone();
             let chunk_end_ms = event.end_ms;
 
             // Сэмплы уже считаны выше (mic_samples, sys_samples)!
@@ -1156,6 +1166,7 @@ fn recording_thread(
                             &bg_session_id,
                             &bg_app_handle,
                             bg_voiceprint_matcher.as_deref(),
+                            &bg_session_registry,
                         );
                         // Сохраняем результат транскрипции
                         if let Err(e) = transcribed.save(&bg_chunk_path) {
@@ -1289,7 +1300,8 @@ fn recording_thread(
             let bg_app_handle = app_handle.clone();
             let bg_transcription_config = transcription_config.clone();
             let bg_drain_tx = drain_tx.clone();
-            let bg_voiceprint_matcher = voiceprint_matcher.clone();
+            let bg_voiceprint_matcher = pending.voiceprint_matcher.clone();
+            let bg_session_registry = pending.session_registry.clone();
             let chunk_end_ms = bg_chunk_meta.end_ms;
 
             if pending.is_stereo {
@@ -1298,9 +1310,6 @@ fn recording_thread(
                 let sample_rate = pending.sample_rate;
 
                 std::thread::spawn(move || {
-                    // Guard гарантирует освобождение слота даже при панике
-                    let _guard = TranscriptionSlotGuard::new();
-
                     let transcribed = transcribe_chunk_stereo(
                         bg_chunk_meta,
                         &mic_samples,
@@ -1310,6 +1319,7 @@ fn recording_thread(
                         &bg_session_id,
                         &bg_app_handle,
                         bg_voiceprint_matcher.as_deref(),
+                        &bg_session_registry,
                     );
                     if let Err(e) = transcribed.save(&bg_chunk_path) {
                         tracing::error!("Failed to save transcribed chunk: {}", e);
@@ -1494,6 +1504,7 @@ fn recording_thread(
             let bg_app_handle = app_handle.clone();
             let bg_transcription_config = transcription_config.clone();
             let bg_voiceprint_matcher = voiceprint_matcher.clone();
+            let bg_session_registry = session_registry.clone();
 
             // Отправляем событие о начале транскрипции
             let _ = app_handle.emit(
@@ -1522,6 +1533,7 @@ fn recording_thread(
                             &bg_session_id,
                             &bg_app_handle,
                             bg_voiceprint_matcher.as_deref(),
+                            &bg_session_registry,
                         );
                         let _ = transcribed.save(&bg_chunk_path);
                     }))
@@ -1851,6 +1863,7 @@ fn transcribe_chunk_stereo(
     session_id: &str,
     app_handle: &tauri::AppHandle,
     voiceprint_matcher: Option<&aiwisper_ml::VoicePrintMatcher>,
+    session_registry: &aiwisper_ml::SessionSpeakerRegistry,
 ) -> ChunkMeta {
     #[allow(unused_imports)]
     use tauri::Emitter;
@@ -1983,16 +1996,40 @@ fn transcribe_chunk_stereo(
                                     let mut speaker_names: std::collections::HashMap<i32, String> =
                                         std::collections::HashMap::new();
 
-                                    if let Some(matcher) = voiceprint_matcher {
-                                        for emb in &diarization_result.speaker_embeddings {
+                                    // Identify speakers using Global Matcher -> Session Registry -> New
+                                    for emb in &diarization_result.speaker_embeddings {
+                                        let mut matched_name: Option<String> = None;
+
+                                        // 1. Try global matcher (known saved speakers)
+                                        if let Some(matcher) = voiceprint_matcher {
                                             if let Some(match_result) =
                                                 matcher.match_with_auto_update(&emb.embedding)
                                             {
-                                                speaker_names.insert(
-                                                    emb.speaker,
-                                                    match_result.voiceprint.name.clone(),
-                                                );
+                                                matched_name = Some(match_result.voiceprint.name);
                                             }
+                                        }
+
+                                        // 2. Try session registry (unknown speakers tracked in this session)
+                                        if matched_name.is_none() {
+                                            if let Some(match_result) =
+                                                session_registry.find_best_match(&emb.embedding)
+                                            {
+                                                matched_name = Some(match_result.voiceprint.name);
+                                                // Update existing profile (adaptive)
+                                                session_registry.update_speaker(
+                                                    &match_result.voiceprint.id,
+                                                    &emb.embedding,
+                                                );
+                                            } else {
+                                                // 3. Register new session speaker
+                                                let vp = session_registry
+                                                    .register_speaker(emb.embedding.clone());
+                                                matched_name = Some(vp.name);
+                                            }
+                                        }
+
+                                        if let Some(name) = matched_name {
+                                            speaker_names.insert(emb.speaker, name);
                                         }
                                     }
 

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.39] - 2026-01-21
+
+### Fixed
+- **Unstable Speaker Identification**: Исправлена проблема, когда идентификаторы спикеров ("Собеседник 1", "Собеседник 2") менялись местами между фрагментами записи.
+  - **Проблема**: Если спикер отсутствовал в глобальной базе, система назначала ему временный ID на основе локальной нумерации в чанке (кто первый заговорил). Это приводило к потере контекста между чанками.
+  - **Решение**: Внедрен `SessionSpeakerRegistry` — временная память для отслеживания неизвестных спикеров в рамках одной сессии. Теперь система запоминает новых собеседников и стабильно узнает их на протяжении всей записи.
+
+### Technical
+- `rust/crates/aiwisper-ml`:
+  - Добавлена структура `SessionSpeakerRegistry` для in-memory хранения эмбеддингов
+  - Реализован поиск по косинусному сходству с порогом 0.70
+- `rust/src-tauri/src/state/recording.rs`:
+  - Интеграция реестра в процесс записи и транскрипции
+  - Обновлена логика диаризации: Global Match -> Session Match -> New Session Speaker
+
 ## [2.0.38] - 2026-01-21
 
 ### Fixed

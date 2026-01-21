@@ -31,8 +31,8 @@ pub use llm::{LLMConfig, LLMSelector};
 pub use traits::{DiarizationEngine, TranscriptionEngine, VadEngine};
 pub use vad::{SileroVad, SileroVadConfig, VadSegment};
 pub use voiceprint::{
-    cosine_distance, cosine_similarity, MatchConfidence, MatchResult, VoicePrint,
-    VoicePrintMatcher, THRESHOLD_HIGH, THRESHOLD_LOW, THRESHOLD_MEDIUM, THRESHOLD_MIN,
+    cosine_distance, cosine_similarity, MatchConfidence, MatchResult, SessionSpeakerRegistry,
+    VoicePrint, VoicePrintMatcher, THRESHOLD_HIGH, THRESHOLD_LOW, THRESHOLD_MEDIUM, THRESHOLD_MIN,
 };
 pub use whisper::WhisperEngine;
 

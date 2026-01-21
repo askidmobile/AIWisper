@@ -10,10 +10,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Thresholds for matching (cosine similarity)
-pub const THRESHOLD_HIGH: f32 = 0.85;   // High confidence - automatic assignment
-pub const THRESHOLD_MEDIUM: f32 = 0.70; // Medium - suggest to user  
-pub const THRESHOLD_LOW: f32 = 0.50;    // Low - possible match
-pub const THRESHOLD_MIN: f32 = 0.50;    // Minimum for any matching
+pub const THRESHOLD_HIGH: f32 = 0.85; // High confidence - automatic assignment
+pub const THRESHOLD_MEDIUM: f32 = 0.70; // Medium - suggest to user
+pub const THRESHOLD_LOW: f32 = 0.50; // Low - possible match
+pub const THRESHOLD_MIN: f32 = 0.50; // Minimum for any matching
 
 /// Confidence level for a match
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,44 +108,42 @@ impl VoicePrintMatcher {
     /// * `data_dir` - Base data directory (speakers.json will be created here)
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         let path = data_dir.join("speakers.json");
-        
+
         let data = if path.exists() {
-            let content = std::fs::read_to_string(&path)
-                .context("Failed to read speakers.json")?;
-            serde_json::from_str(&content)
-                .context("Failed to parse speakers.json")?
+            let content = std::fs::read_to_string(&path).context("Failed to read speakers.json")?;
+            serde_json::from_str(&content).context("Failed to parse speakers.json")?
         } else {
             VoicePrintStore::default()
         };
-        
+
         tracing::info!(
             "VoicePrintMatcher: loaded {} voiceprints from {:?}",
             data.voiceprints.len(),
             path
         );
-        
+
         Ok(Self {
             path,
             data: Arc::new(RwLock::new(data)),
         })
     }
-    
+
     /// Find the best matching voiceprint for an embedding
     ///
     /// Returns None if no match above THRESHOLD_MIN is found
     pub fn find_best_match(&self, embedding: &[f32]) -> Option<MatchResult> {
         let data = self.data.read();
-        
+
         if data.voiceprints.is_empty() {
             return None;
         }
-        
+
         let mut best_match: Option<MatchResult> = None;
         let mut best_similarity: f32 = 0.0;
-        
+
         for vp in &data.voiceprints {
             let similarity = cosine_similarity(embedding, &vp.embedding);
-            
+
             if similarity > best_similarity && similarity >= THRESHOLD_MIN {
                 best_similarity = similarity;
                 best_match = Some(MatchResult {
@@ -155,7 +153,7 @@ impl VoicePrintMatcher {
                 });
             }
         }
-        
+
         if let Some(ref m) = best_match {
             tracing::info!(
                 "[VoicePrint] Match found: {} (similarity={:.2}, confidence={})",
@@ -164,14 +162,14 @@ impl VoicePrintMatcher {
                 m.confidence
             );
         }
-        
+
         best_match
     }
-    
+
     /// Find all matches above a threshold (sorted by similarity descending)
     pub fn find_all_matches(&self, embedding: &[f32], threshold: f32) -> Vec<MatchResult> {
         let data = self.data.read();
-        
+
         let mut matches: Vec<MatchResult> = data
             .voiceprints
             .iter()
@@ -188,17 +186,17 @@ impl VoicePrintMatcher {
                 }
             })
             .collect();
-        
+
         // Sort by similarity descending
         matches.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
-        
+
         matches
     }
-    
+
     /// Match and auto-update embedding if high confidence
     pub fn match_with_auto_update(&self, embedding: &[f32]) -> Option<MatchResult> {
         let result = self.find_best_match(embedding);
-        
+
         if let Some(ref m) = result {
             if m.confidence == MatchConfidence::High {
                 if let Err(e) = self.update_embedding(&m.voiceprint.id, embedding) {
@@ -206,14 +204,19 @@ impl VoicePrintMatcher {
                 }
             }
         }
-        
+
         result
     }
-    
+
     /// Add a new voiceprint
-    pub fn add(&self, name: &str, embedding: Vec<f32>, source: Option<String>) -> Result<VoicePrint> {
+    pub fn add(
+        &self,
+        name: &str,
+        embedding: Vec<f32>,
+        source: Option<String>,
+    ) -> Result<VoicePrint> {
         let now = chrono::Utc::now().to_rfc3339();
-        
+
         let vp = VoicePrint {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
@@ -226,29 +229,34 @@ impl VoicePrintMatcher {
             source,
             notes: None,
         };
-        
+
         {
             let mut data = self.data.write();
             data.voiceprints.push(vp.clone());
         }
-        
+
         self.save()?;
-        
+
         tracing::info!("[VoicePrint] Added: {} ({})", vp.name, &vp.id[..8]);
-        
+
         Ok(vp)
     }
-    
+
     /// Get all voiceprints
     pub fn get_all(&self) -> Vec<VoicePrint> {
         self.data.read().voiceprints.clone()
     }
-    
+
     /// Get a voiceprint by ID
     pub fn get(&self, id: &str) -> Option<VoicePrint> {
-        self.data.read().voiceprints.iter().find(|vp| vp.id == id).cloned()
+        self.data
+            .read()
+            .voiceprints
+            .iter()
+            .find(|vp| vp.id == id)
+            .cloned()
     }
-    
+
     /// Update voiceprint name
     pub fn update_name(&self, id: &str, name: &str) -> Result<()> {
         {
@@ -260,11 +268,11 @@ impl VoicePrintMatcher {
                 anyhow::bail!("VoicePrint not found: {}", id);
             }
         }
-        
+
         self.save()?;
         Ok(())
     }
-    
+
     /// Update embedding with weighted average
     pub fn update_embedding(&self, id: &str, new_embedding: &[f32]) -> Result<()> {
         {
@@ -274,21 +282,21 @@ impl VoicePrintMatcher {
                 let old_weight = (vp.seen_count.min(10)) as f32;
                 let new_weight = 1.0f32;
                 let total_weight = old_weight + new_weight;
-                
+
                 for (i, old_val) in vp.embedding.iter_mut().enumerate() {
                     if let Some(&new_val) = new_embedding.get(i) {
                         *old_val = (*old_val * old_weight + new_val * new_weight) / total_weight;
                     }
                 }
-                
+
                 // Normalize the result
                 vp.embedding = normalize_vector(&vp.embedding);
-                
+
                 vp.seen_count += 1;
                 let now = chrono::Utc::now().to_rfc3339();
                 vp.last_seen_at = now.clone();
                 vp.updated_at = now;
-                
+
                 tracing::info!(
                     "[VoicePrint] Embedding updated: {} (seen_count={})",
                     vp.name,
@@ -298,11 +306,11 @@ impl VoicePrintMatcher {
                 anyhow::bail!("VoicePrint not found: {}", id);
             }
         }
-        
+
         self.save()?;
         Ok(())
     }
-    
+
     /// Delete a voiceprint
     pub fn delete(&self, id: &str) -> Result<()> {
         let name = {
@@ -316,33 +324,33 @@ impl VoicePrintMatcher {
                 anyhow::bail!("VoicePrint not found: {}", id);
             }
         };
-        
+
         self.save()?;
         tracing::info!("[VoicePrint] Deleted: {} ({})", name, &id[..8]);
-        
+
         Ok(())
     }
-    
+
     /// Count of voiceprints
     pub fn count(&self) -> usize {
         self.data.read().voiceprints.len()
     }
-    
+
     /// Save to disk (atomic write)
     fn save(&self) -> Result<()> {
         let data = self.data.read();
-        
+
         // Create parent directory if needed
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        
+
         // Atomic write via temp file
         let tmp_path = self.path.with_extension("json.tmp");
         let content = serde_json::to_string_pretty(&*data)?;
         std::fs::write(&tmp_path, content)?;
         std::fs::rename(&tmp_path, &self.path)?;
-        
+
         Ok(())
     }
 }
@@ -354,11 +362,11 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
-    
+
     let mut dot_product: f64 = 0.0;
     let mut norm_a: f64 = 0.0;
     let mut norm_b: f64 = 0.0;
-    
+
     for i in 0..a.len() {
         let a_val = a[i] as f64;
         let b_val = b[i] as f64;
@@ -366,11 +374,11 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         norm_a += a_val * a_val;
         norm_b += b_val * b_val;
     }
-    
+
     if norm_a == 0.0 || norm_b == 0.0 {
         return 0.0;
     }
-    
+
     (dot_product / (norm_a.sqrt() * norm_b.sqrt())) as f32
 }
 
@@ -382,19 +390,116 @@ pub fn cosine_distance(a: &[f32], b: &[f32]) -> f64 {
 /// Normalize a vector to unit length
 fn normalize_vector(v: &[f32]) -> Vec<f32> {
     let sum_sq: f64 = v.iter().map(|&x| (x as f64) * (x as f64)).sum();
-    
+
     if sum_sq < 1e-10 {
         return v.to_vec();
     }
-    
+
     let norm = (1.0 / sum_sq.sqrt()) as f32;
     v.iter().map(|&x| x * norm).collect()
+}
+
+/// In-memory registry for tracking speakers within a single session
+pub struct SessionSpeakerRegistry {
+    speakers: RwLock<Vec<VoicePrint>>,
+}
+
+impl Default for SessionSpeakerRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SessionSpeakerRegistry {
+    pub fn new() -> Self {
+        Self {
+            speakers: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Find best match among session-local speakers
+    pub fn find_best_match(&self, embedding: &[f32]) -> Option<MatchResult> {
+        let speakers = self.speakers.read();
+        let mut best_match: Option<MatchResult> = None;
+        let mut best_similarity: f32 = 0.0;
+
+        for vp in speakers.iter() {
+            let similarity = cosine_similarity(embedding, &vp.embedding);
+
+            // Use MEDIUM threshold (0.70) for session matching
+            // This ensures we don't merge speakers too aggressively,
+            // but keeps track of clearly similar voices
+            if similarity > best_similarity && similarity >= THRESHOLD_MEDIUM {
+                best_similarity = similarity;
+                best_match = Some(MatchResult {
+                    voiceprint: vp.clone(),
+                    similarity,
+                    confidence: MatchConfidence::from_similarity(similarity),
+                });
+            }
+        }
+
+        best_match
+    }
+
+    /// Register a new speaker in the session registry
+    pub fn register_speaker(&self, embedding: Vec<f32>) -> VoicePrint {
+        let mut speakers = self.speakers.write();
+        // Start from 1 ("Собеседник 1")
+        // Check if "Собеседник 1" exists, if so try 2, etc. to fill gaps or append
+        let id = speakers.len() + 1;
+        let name = format!("Собеседник {}", id);
+
+        // Use normalized embedding
+        let normalized = normalize_vector(&embedding);
+
+        let vp = VoicePrint {
+            id: id.to_string(), // Simple string ID "1", "2"
+            name,
+            embedding: normalized,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            last_seen_at: chrono::Utc::now().to_rfc3339(),
+            seen_count: 1,
+            sample_path: None,
+            source: Some("session".to_string()),
+            notes: None,
+        };
+
+        speakers.push(vp.clone());
+        vp
+    }
+
+    /// Update an existing session speaker (adaptive learning)
+    pub fn update_speaker(&self, id: &str, embedding: &[f32]) {
+        let mut speakers = self.speakers.write();
+        if let Some(vp) = speakers.iter_mut().find(|s| s.id == id) {
+            // Weighted average update
+            let old_weight = (vp.seen_count.min(20)) as f32; // Higher inertia for session speakers
+            let new_weight = 1.0f32;
+            let total_weight = old_weight + new_weight;
+
+            for (i, old_val) in vp.embedding.iter_mut().enumerate() {
+                if let Some(&new_val) = embedding.get(i) {
+                    *old_val = (*old_val * old_weight + new_val * new_weight) / total_weight;
+                }
+            }
+            vp.embedding = normalize_vector(&vp.embedding);
+            vp.seen_count += 1;
+            vp.last_seen_at = chrono::Utc::now().to_rfc3339();
+        }
+    }
+
+    /// Get all registered speakers
+    pub fn get_all(&self) -> Vec<VoicePrint> {
+        self.speakers.read().clone()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_cosine_similarity_identical() {
         let a = vec![1.0, 0.0, 0.0];
@@ -402,7 +507,7 @@ mod tests {
         let sim = cosine_similarity(&a, &b);
         assert!((sim - 1.0).abs() < 0.001);
     }
-    
+
     #[test]
     fn test_cosine_similarity_orthogonal() {
         let a = vec![1.0, 0.0, 0.0];
@@ -410,7 +515,7 @@ mod tests {
         let sim = cosine_similarity(&a, &b);
         assert!(sim.abs() < 0.001);
     }
-    
+
     #[test]
     fn test_cosine_similarity_opposite() {
         let a = vec![1.0, 0.0, 0.0];
@@ -418,7 +523,7 @@ mod tests {
         let sim = cosine_similarity(&a, &b);
         assert!((sim + 1.0).abs() < 0.001);
     }
-    
+
     #[test]
     fn test_normalize_vector() {
         let v = vec![3.0, 4.0];
@@ -426,12 +531,46 @@ mod tests {
         let length: f32 = normalized.iter().map(|&x| x * x).sum::<f32>().sqrt();
         assert!((length - 1.0).abs() < 0.001);
     }
-    
+
     #[test]
     fn test_confidence_from_similarity() {
-        assert_eq!(MatchConfidence::from_similarity(0.90), MatchConfidence::High);
-        assert_eq!(MatchConfidence::from_similarity(0.75), MatchConfidence::Medium);
+        assert_eq!(
+            MatchConfidence::from_similarity(0.90),
+            MatchConfidence::High
+        );
+        assert_eq!(
+            MatchConfidence::from_similarity(0.75),
+            MatchConfidence::Medium
+        );
         assert_eq!(MatchConfidence::from_similarity(0.55), MatchConfidence::Low);
-        assert_eq!(MatchConfidence::from_similarity(0.40), MatchConfidence::None);
+        assert_eq!(
+            MatchConfidence::from_similarity(0.40),
+            MatchConfidence::None
+        );
+    }
+
+    #[test]
+    fn test_session_registry() {
+        let registry = SessionSpeakerRegistry::new();
+        let emb1 = vec![1.0, 0.0, 0.0];
+        let emb2 = vec![0.0, 1.0, 0.0];
+        let emb3 = vec![0.9, 0.1, 0.0]; // Close to emb1
+
+        // Register speaker 1
+        let vp1 = registry.register_speaker(emb1.clone());
+        assert_eq!(vp1.name, "Собеседник 1");
+
+        // Try match emb2 (different)
+        let match2 = registry.find_best_match(&emb2);
+        assert!(match2.is_none());
+
+        // Register speaker 2
+        let vp2 = registry.register_speaker(emb2.clone());
+        assert_eq!(vp2.name, "Собеседник 2");
+
+        // Try match emb3 (close to emb1)
+        let match3 = registry.find_best_match(&emb3);
+        assert!(match3.is_some());
+        assert_eq!(match3.unwrap().voiceprint.name, "Собеседник 1");
     }
 }
