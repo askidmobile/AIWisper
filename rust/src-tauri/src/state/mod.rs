@@ -10,7 +10,9 @@ pub mod recording;
 
 #[allow(unused_imports)]
 use aiwisper_audio::{are_channels_similar, calculate_rms, is_silent, AudioCapture};
-use aiwisper_ml::{SileroVad, SileroVadConfig, TranscriptionEngine, VoicePrintMatcher};
+use aiwisper_ml::{
+    FluidDiarizationEngine, SileroVad, SileroVadConfig, TranscriptionEngine, VoicePrintMatcher,
+};
 use aiwisper_types::{
     AudioDevice, ModelInfo, RecordingState, Settings, TranscriptSegment, TranscriptionResult,
 };
@@ -2240,6 +2242,78 @@ impl AppState {
         Ok(speakers)
     }
 
+    /// Helper: Extract speaker embedding from session audio
+    async fn extract_speaker_embedding(&self, session_id: &str, speaker_id: &str) -> Result<Vec<f32>> {
+        use aiwisper_audio::Mp3Decoder;
+
+        // 1. Collect segments
+        let (mp3_path, mut segments) = {
+            let sessions = self.inner.sessions.read();
+            let session = sessions.iter().find(|s| s.id == session_id)
+                .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+            
+            let mp3_path = PathBuf::from(&session.data_dir).join("full.mp3");
+            
+            let mut segments = Vec::new();
+            for chunk in &session.chunks {
+                for segment in &chunk.dialogue {
+                    if segment.speaker.as_deref() == Some(speaker_id) {
+                        segments.push((segment.start, segment.end));
+                    }
+                }
+            }
+            (mp3_path, segments)
+        };
+
+        if segments.is_empty() {
+            anyhow::bail!("No segments for speaker");
+        }
+        
+        if !mp3_path.exists() {
+             anyhow::bail!("Audio file not found");
+        }
+
+        // 2. Extract samples (limit to 30 seconds for embedding)
+        // Sort by duration descending to get best samples
+        segments.sort_by(|a, b| (b.1 - b.0).cmp(&(a.1 - a.0)));
+
+        let mut all_samples = Vec::new();
+        let mut total_ms = 0;
+        
+        for (start, end) in segments {
+            if total_ms > 30_000 { break; } 
+            
+            // Decode mono for ASR/Diarization (16kHz)
+            if let Ok(samples) = Mp3Decoder::decode_segment_mono(&mp3_path, start, end) {
+                all_samples.extend(samples);
+                total_ms += end - start;
+            }
+        }
+
+        if all_samples.len() < 16000 { // Need at least 1 sec (16k samples)
+             anyhow::bail!("Not enough audio for embedding ({:.1}s)", all_samples.len() as f32 / 16000.0);
+        }
+
+        tracing::debug!("Extracted {:.1}s audio for embedding generation", all_samples.len() as f32 / 16000.0);
+
+        // 3. Extract embedding via FluidDiarizationEngine
+        // Run in blocking task because it spawns process and waits
+        let embedding = tokio::task::spawn_blocking(move || {
+            // Use defaults (threshold 0.70 is fine for single-speaker extraction)
+            let engine = FluidDiarizationEngine::with_defaults()?;
+            let result = engine.diarize_with_embeddings(&all_samples)?;
+            
+            // Find embedding with max duration (should be the speaker)
+            result.speaker_embeddings
+                .into_iter()
+                .max_by(|a, b| a.duration.partial_cmp(&b.duration).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|e| e.embedding)
+                .ok_or_else(|| anyhow::anyhow!("No embedding extracted from diarization result"))
+        }).await??;
+
+        Ok(embedding)
+    }
+
     /// Rename a speaker within a session
     /// Updates all dialogue entries with the old speaker name to use the new name
     pub async fn rename_session_speaker(
@@ -2247,8 +2321,33 @@ impl AppState {
         session_id: &str,
         speaker_id: &str,
         new_name: &str,
+        save_voiceprint: bool,
     ) -> Result<()> {
-        // Update in-memory
+        // 1. If saving voiceprint, extract embedding from audio BEFORE renaming
+        // We do this first because we need the old speaker_id to find segments
+        let embedding = if save_voiceprint {
+            match self.extract_speaker_embedding(session_id, speaker_id).await {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    tracing::warn!("Failed to extract embedding for voiceprint: {}", e);
+                    // Continue with renaming, but don't save voiceprint
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // 2. Create voiceprint if embedding extracted
+        if let Some(emb) = embedding {
+            if let Err(e) = self.create_voiceprint(new_name, emb, Some(format!("session:{}", session_id))).await {
+                tracing::error!("Failed to save voiceprint: {}", e);
+            } else {
+                tracing::info!("Saved voiceprint for '{}'", new_name);
+            }
+        }
+
+        // 3. Update in-memory
         {
             let mut sessions = self.inner.sessions.write();
             let session = sessions

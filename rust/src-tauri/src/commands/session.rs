@@ -346,16 +346,18 @@ pub async fn rename_session_speaker(
     session_id: String,
     speaker_id: String,
     new_name: String,
+    save_voiceprint: bool,
 ) -> Result<(), String> {
     tracing::info!(
-        "Renaming speaker '{}' to '{}' in session {}",
+        "Renaming speaker '{}' to '{}' in session {} (save_voiceprint={})",
         speaker_id,
         new_name,
-        session_id
+        session_id,
+        save_voiceprint
     );
 
     state
-        .rename_session_speaker(&session_id, &speaker_id, &new_name)
+        .rename_session_speaker(&session_id, &speaker_id, &new_name, save_voiceprint)
         .await
         .map_err(|e| e.to_string())
 }

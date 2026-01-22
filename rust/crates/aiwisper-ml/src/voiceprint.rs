@@ -110,6 +110,11 @@ impl VoicePrintMatcher {
     pub fn new(data_dir: PathBuf) -> Result<Self> {
         let path = data_dir.join("speakers.json");
 
+        // Ensure directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).context("Failed to create voiceprints directory")?;
+        }
+
         let data = if path.exists() {
             let content = std::fs::read_to_string(&path).context("Failed to read speakers.json")?;
             serde_json::from_str(&content).context("Failed to parse speakers.json")?
