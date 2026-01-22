@@ -12,6 +12,7 @@ use std::sync::Arc;
 /// Thresholds for matching (cosine similarity)
 pub const THRESHOLD_HIGH: f32 = 0.85; // High confidence - automatic assignment
 pub const THRESHOLD_MEDIUM: f32 = 0.70; // Medium - suggest to user
+pub const THRESHOLD_SESSION: f32 = 0.55; // Session - more lenient for within-session matching
 pub const THRESHOLD_LOW: f32 = 0.50; // Low - possible match
 pub const THRESHOLD_MIN: f32 = 0.50; // Minimum for any matching
 
@@ -426,10 +427,10 @@ impl SessionSpeakerRegistry {
         for vp in speakers.iter() {
             let similarity = cosine_similarity(embedding, &vp.embedding);
 
-            // Use MEDIUM threshold (0.70) for session matching
+            // Use SESSION threshold (0.55) for session matching
             // This ensures we don't merge speakers too aggressively,
             // but keeps track of clearly similar voices
-            if similarity > best_similarity && similarity >= THRESHOLD_MEDIUM {
+            if similarity > best_similarity && similarity >= THRESHOLD_SESSION {
                 best_similarity = similarity;
                 best_match = Some(MatchResult {
                     voiceprint: vp.clone(),
@@ -554,13 +555,20 @@ mod tests {
         let registry = SessionSpeakerRegistry::new();
         let emb1 = vec![1.0, 0.0, 0.0];
         let emb2 = vec![0.0, 1.0, 0.0];
-        let emb3 = vec![0.9, 0.1, 0.0]; // Close to emb1
+        let emb3 = vec![0.9, 0.1, 0.0]; // Close to emb1 (sim ~0.99)
+        let _emb4 = vec![0.6, 0.4, 0.0]; // Somewhat close to emb1 (sim ~0.83) but distinct
+                                         // Test lower threshold
+                                         // Vector with ~0.6 similarity to emb1 [1,0,0]: [0.6, 0.0, 0.8]
+                                         // 0.6^2 + 0.8^2 = 0.36 + 0.64 = 1.0 (normalized)
+                                         // dot(emb1) = 0.6
+                                         // dot(emb2) = 0.0 (orthogonal to [0,1,0])
+        let emb5 = vec![0.6, 0.0, 0.8];
 
         // Register speaker 1
         let vp1 = registry.register_speaker(emb1.clone());
         assert_eq!(vp1.name, "Собеседник 1");
 
-        // Try match emb2 (different)
+        // Try match emb2 (different, sim=0)
         let match2 = registry.find_best_match(&emb2);
         assert!(match2.is_none());
 
@@ -568,9 +576,18 @@ mod tests {
         let vp2 = registry.register_speaker(emb2.clone());
         assert_eq!(vp2.name, "Собеседник 2");
 
-        // Try match emb3 (close to emb1)
+        // Try match emb3 (very close, sim~0.99) - should match
         let match3 = registry.find_best_match(&emb3);
         assert!(match3.is_some());
         assert_eq!(match3.unwrap().voiceprint.name, "Собеседник 1");
+
+        // Try match emb5 (sim=0.6) - should match with new threshold (0.55)
+        // With old threshold (0.70) this would fail
+        let match5 = registry.find_best_match(&emb5);
+        assert!(match5.is_some());
+
+        let result = match5.unwrap();
+        assert_eq!(result.voiceprint.name, "Собеседник 1");
+        assert!(result.similarity >= 0.55);
     }
 }
