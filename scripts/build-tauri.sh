@@ -68,6 +68,108 @@ log_info "AIWisper Tauri Build"
 log_info "========================================"
 
 # =============================================================================
+# Проверка FFmpeg
+# =============================================================================
+RESOURCES_DIR="$RUST_DIR/src-tauri/resources"
+
+check_ffmpeg() {
+    local arch=$1
+    local ffmpeg_path="$RESOURCES_DIR/ffmpeg-$arch"
+    
+    if [ -f "$ffmpeg_path" ]; then
+        log_success "FFmpeg for $arch: OK"
+        return 0
+    else
+        return 1
+    fi
+}
+
+log_info "Checking FFmpeg binaries..."
+
+# Определяем какие архитектуры нужны
+NEED_ARM64=false
+NEED_X86_64=false
+
+case "$TARGET_ARCH" in
+    arm64|aarch64)
+        NEED_ARM64=true
+        ;;
+    x64|x86_64|intel)
+        NEED_X86_64=true
+        ;;
+    universal)
+        NEED_ARM64=true
+        NEED_X86_64=true
+        ;;
+    "")
+        # Native architecture
+        if [ "$(uname -m)" = "arm64" ]; then
+            NEED_ARM64=true
+        else
+            NEED_X86_64=true
+        fi
+        ;;
+esac
+
+FFMPEG_MISSING=false
+
+if [ "$NEED_ARM64" = true ]; then
+    if ! check_ffmpeg "arm64" && ! check_ffmpeg "aarch64"; then
+        log_warn "FFmpeg for arm64 not found"
+        FFMPEG_MISSING=true
+    fi
+fi
+
+if [ "$NEED_X86_64" = true ]; then
+    if ! check_ffmpeg "x86_64"; then
+        log_warn "FFmpeg for x86_64 not found"
+        FFMPEG_MISSING=true
+    fi
+fi
+
+if [ "$FFMPEG_MISSING" = true ]; then
+    log_warn ""
+    log_warn "FFmpeg binaries are missing!"
+    log_warn "Run: ./scripts/download-ffmpeg.sh --all"
+    log_warn ""
+    log_warn "Or download manually:"
+    log_warn "  - ARM64: brew install ffmpeg && cp \$(which ffmpeg) $RESOURCES_DIR/ffmpeg-arm64"
+    log_warn "  - x86_64: Download from https://evermeet.cx/ffmpeg/"
+    log_warn ""
+    
+    # Спрашиваем пользователя
+    read -p "Try to download FFmpeg automatically? [Y/n] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        log_info "Running download-ffmpeg.sh..."
+        if [ "$NEED_ARM64" = true ] && [ "$NEED_X86_64" = true ]; then
+            "$SCRIPT_DIR/download-ffmpeg.sh" --all
+        elif [ "$NEED_ARM64" = true ]; then
+            "$SCRIPT_DIR/download-ffmpeg.sh" --arm64
+        else
+            "$SCRIPT_DIR/download-ffmpeg.sh" --x86_64
+        fi
+        
+        # Проверяем снова
+        FFMPEG_MISSING=false
+        if [ "$NEED_ARM64" = true ] && ! check_ffmpeg "arm64"; then
+            FFMPEG_MISSING=true
+        fi
+        if [ "$NEED_X86_64" = true ] && ! check_ffmpeg "x86_64"; then
+            FFMPEG_MISSING=true
+        fi
+        
+        if [ "$FFMPEG_MISSING" = true ]; then
+            log_error "FFmpeg download failed. Please install manually."
+            exit 1
+        fi
+    else
+        log_error "Build cancelled. FFmpeg is required for the application."
+        exit 1
+    fi
+fi
+
+# =============================================================================
 # Сборка UI
 # =============================================================================
 log_info "Building UI..."
