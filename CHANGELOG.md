@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.43] - 2026-01-26
+
+### Fixed
+- **FFmpeg Bundled**: FFmpeg теперь включён в бандл приложения (47MB статический бинарник для arm64)
+  - **Проблема**: Запись не начиналась из-за отсутствия FFmpeg — GUI приложения на macOS не наследуют PATH из терминала
+  - **Решение**: Статический FFmpeg 7.0 для arm64 добавлен в `resources/ffmpeg`
+  - Добавлены fallback пути для системного FFmpeg (`/opt/homebrew/bin`, `/usr/local/bin`)
+  - Улучшено логирование поиска FFmpeg для диагностики
+
+### Technical
+- `rust/crates/aiwisper-audio/src/mp3_writer.rs`: Добавлены явные пути homebrew/macports в `find_ffmpeg()`
+- `rust/src-tauri/resources/ffmpeg`: Статический бинарник FFmpeg 7.0 (arm64, 47MB)
+
 ## [2.0.42] - 2026-01-26
 
 ### Added
