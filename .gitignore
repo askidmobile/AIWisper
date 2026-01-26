@@ -94,8 +94,10 @@ rust/ui/dist/
 rust/ui/.vite/
 rust/ui/*.tsbuildinfo
 
-# Tauri resources (local binaries)
+# Tauri resources (local binaries - large static binaries not in git)
 rust/src-tauri/resources/ffmpeg
+rust/src-tauri/resources/ffmpeg-aarch64
+rust/src-tauri/resources/ffmpeg-x86_64
 
 # Vendor binaries
 vendor/ffmpeg/ffmpeg

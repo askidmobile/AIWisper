@@ -193,37 +193,61 @@ impl Drop for Mp3Writer {
     }
 }
 
+/// Get architecture-specific FFmpeg binary name
+fn get_ffmpeg_binary_name() -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    {
+        "ffmpeg-aarch64"
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        "ffmpeg-x86_64"
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        "ffmpeg"
+    }
+}
+
 /// Find FFmpeg binary
 ///
 /// Search order:
-/// 1. App bundle Resources directory (macOS) - Tauri bundled resources
-/// 2. Next to executable
-/// 3. Current working directory
-/// 4. Homebrew paths (macOS) - GUI apps don't inherit PATH from terminal
-/// 5. System PATH
+/// 1. App bundle Resources directory (macOS) - Tauri bundled resources (arch-specific)
+/// 2. App bundle Resources directory (macOS) - generic ffmpeg
+/// 3. Next to executable
+/// 4. Current working directory
+/// 5. Homebrew paths (macOS) - GUI apps don't inherit PATH from terminal
+/// 6. System PATH
 fn find_ffmpeg() -> Result<PathBuf> {
     let mut search_paths = Vec::new();
+    let arch_ffmpeg = get_ffmpeg_binary_name();
 
     // Get executable directory
     if let Ok(exe_path) = std::env::current_exe() {
         let exe_dir = exe_path.parent().unwrap_or(Path::new("."));
 
-        // macOS app bundle: Contents/MacOS/../Resources/resources/ffmpeg (Tauri bundled)
+        // macOS app bundle: Architecture-specific FFmpeg first
+        // Contents/MacOS/../Resources/resources/ffmpeg-aarch64 or ffmpeg-x86_64
+        search_paths.push(exe_dir.join(format!("../Resources/resources/{}", arch_ffmpeg)));
+
+        // Generic ffmpeg as fallback
         search_paths.push(exe_dir.join("../Resources/resources/ffmpeg"));
 
         // Also check Contents/MacOS/../Resources/ffmpeg (legacy path)
         search_paths.push(exe_dir.join("../Resources/ffmpeg"));
 
         // Next to executable
+        search_paths.push(exe_dir.join(arch_ffmpeg));
         search_paths.push(exe_dir.join("ffmpeg"));
     }
 
     // Current working directory
     if let Ok(cwd) = std::env::current_dir() {
+        // Dev mode: check src-tauri resources with arch-specific name
+        search_paths.push(cwd.join(format!("src-tauri/resources/{}", arch_ffmpeg)));
+        search_paths.push(cwd.join("src-tauri/resources/ffmpeg"));
         search_paths.push(cwd.join("ffmpeg"));
         search_paths.push(cwd.join("vendor/ffmpeg/ffmpeg"));
-        // Also check src-tauri resources for dev mode
-        search_paths.push(cwd.join("src-tauri/resources/ffmpeg"));
     }
 
     // macOS: Check Homebrew paths explicitly
@@ -246,7 +270,11 @@ fn find_ffmpeg() -> Result<PathBuf> {
     }
 
     // Log all search paths for debugging
-    tracing::debug!("FFmpeg search paths: {:?}", search_paths);
+    tracing::debug!(
+        "FFmpeg search paths (arch={}): {:?}",
+        arch_ffmpeg,
+        search_paths
+    );
 
     // Check all paths
     for path in &search_paths {

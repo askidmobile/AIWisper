@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.44] - 2026-01-26
+
+### Fixed
+- **FFmpeg Universal Binary Support**: Отдельные статические FFmpeg для arm64 и x86_64
+  - `ffmpeg-aarch64` (47MB) — для Apple Silicon
+  - `ffmpeg-x86_64` (76MB) — для Intel Mac
+  - Автоматический выбор правильного бинарника по архитектуре при runtime
+  - Обновлена команда `/release` для Tauri с инструкциями по FFmpeg
+
+### Technical
+- `rust/crates/aiwisper-audio/src/mp3_writer.rs`:
+  - Новая функция `get_ffmpeg_binary_name()` возвращает имя по архитектуре
+  - `find_ffmpeg()` сначала ищет архитектурно-специфичный бинарник
+- `.opencode/commands/release.md`: Полностью переписана для Tauri workflow
+
 ## [2.0.43] - 2026-01-26
 
 ### Fixed
