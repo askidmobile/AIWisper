@@ -1,15 +1,17 @@
 /**
  * Dialog shown when Screen Recording permission is required but not granted.
- * Explains the need and provides button to open System Preferences.
+ * First tries to request permission (shows system dialog), then offers to open settings.
  */
 
-import React from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 
 interface ScreenRecordingPermissionDialogProps {
     isOpen: boolean;
     onClose: () => void;
     onOpenSettings: () => void;
     onDisableSystemAudio: () => void;
+    onRequestPermission?: () => Promise<boolean>;
+    onCheckPermission?: () => Promise<boolean>;
 }
 
 export const ScreenRecordingPermissionDialog: React.FC<ScreenRecordingPermissionDialogProps> = ({
@@ -17,7 +19,71 @@ export const ScreenRecordingPermissionDialog: React.FC<ScreenRecordingPermission
     onClose,
     onOpenSettings,
     onDisableSystemAudio,
+    onRequestPermission,
+    onCheckPermission,
 }) => {
+    const [isRequesting, setIsRequesting] = useState(false);
+    const [showManualInstructions, setShowManualInstructions] = useState(false);
+    const [requestAttempted, setRequestAttempted] = useState(false);
+
+    // Auto-request permission when dialog opens
+    useEffect(() => {
+        if (isOpen && onRequestPermission && !requestAttempted) {
+            setRequestAttempted(true);
+            handleRequestPermission();
+        }
+    }, [isOpen]);
+
+    // Reset state when dialog closes
+    useEffect(() => {
+        if (!isOpen) {
+            setRequestAttempted(false);
+            setShowManualInstructions(false);
+        }
+    }, [isOpen]);
+
+    const handleRequestPermission = useCallback(async () => {
+        if (!onRequestPermission) {
+            setShowManualInstructions(true);
+            return;
+        }
+
+        setIsRequesting(true);
+        try {
+            // Request permission - this should trigger system dialog
+            const granted = await onRequestPermission();
+            
+            if (granted) {
+                // Permission granted, close dialog
+                onClose();
+            } else {
+                // Permission denied or requires manual action
+                setShowManualInstructions(true);
+            }
+        } catch (error) {
+            console.error('[ScreenRecordingPermissionDialog] Request failed:', error);
+            setShowManualInstructions(true);
+        } finally {
+            setIsRequesting(false);
+        }
+    }, [onRequestPermission, onClose]);
+
+    const handleOpenSettings = useCallback(() => {
+        onOpenSettings();
+        // Start polling for permission after opening settings
+        if (onCheckPermission) {
+            const pollInterval = setInterval(async () => {
+                const granted = await onCheckPermission();
+                if (granted) {
+                    clearInterval(pollInterval);
+                    onClose();
+                }
+            }, 2000);
+            // Stop polling after 60 seconds
+            setTimeout(() => clearInterval(pollInterval), 60000);
+        }
+    }, [onOpenSettings, onCheckPermission, onClose]);
+
     if (!isOpen) return null;
 
     return (
@@ -113,31 +179,99 @@ export const ScreenRecordingPermissionDialog: React.FC<ScreenRecordingPermission
                     flexDirection: 'column',
                     gap: '0.75rem',
                 }}>
-                    <button
-                        onClick={onOpenSettings}
-                        style={{
-                            width: '100%',
-                            padding: '0.875rem 1.5rem',
-                            background: 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
-                            color: '#fff',
-                            border: 'none',
-                            borderRadius: '10px',
-                            cursor: 'pointer',
-                            fontWeight: 600,
-                            fontSize: '0.95rem',
-                            transition: 'transform 0.2s, box-shadow 0.2s',
-                        }}
-                        onMouseOver={(e) => {
-                            e.currentTarget.style.transform = 'translateY(-1px)';
-                            e.currentTarget.style.boxShadow = '0 4px 12px rgba(79, 70, 229, 0.4)';
-                        }}
-                        onMouseOut={(e) => {
-                            e.currentTarget.style.transform = 'translateY(0)';
-                            e.currentTarget.style.boxShadow = 'none';
-                        }}
-                    >
-                        Открыть Системные настройки
-                    </button>
+                    {/* Show loading state while requesting */}
+                    {isRequesting ? (
+                        <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '0.75rem',
+                            padding: '1rem',
+                            color: 'var(--text-secondary, #888)',
+                        }}>
+                            <div style={{
+                                width: '20px',
+                                height: '20px',
+                                border: '2px solid rgba(79, 70, 229, 0.3)',
+                                borderTopColor: '#4f46e5',
+                                borderRadius: '50%',
+                                animation: 'spin 1s linear infinite',
+                            }} />
+                            <span>Запрос разрешения...</span>
+                        </div>
+                    ) : showManualInstructions ? (
+                        <>
+                            {/* Manual instructions after auto-request failed */}
+                            <div style={{
+                                background: 'rgba(234, 179, 8, 0.1)',
+                                border: '1px solid rgba(234, 179, 8, 0.3)',
+                                borderRadius: '8px',
+                                padding: '0.75rem 1rem',
+                                marginBottom: '0.5rem',
+                            }}>
+                                <p style={{
+                                    margin: 0,
+                                    color: 'var(--text-secondary, #888)',
+                                    fontSize: '0.8rem',
+                                    lineHeight: 1.5,
+                                }}>
+                                    <strong style={{ color: '#eab308' }}>Требуется ручное действие:</strong> Откройте 
+                                    Системные настройки, найдите AIWisper в списке и включите переключатель.
+                                </p>
+                            </div>
+                            <button
+                                onClick={handleOpenSettings}
+                                style={{
+                                    width: '100%',
+                                    padding: '0.875rem 1.5rem',
+                                    background: 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
+                                    color: '#fff',
+                                    border: 'none',
+                                    borderRadius: '10px',
+                                    cursor: 'pointer',
+                                    fontWeight: 600,
+                                    fontSize: '0.95rem',
+                                    transition: 'transform 0.2s, box-shadow 0.2s',
+                                }}
+                                onMouseOver={(e) => {
+                                    e.currentTarget.style.transform = 'translateY(-1px)';
+                                    e.currentTarget.style.boxShadow = '0 4px 12px rgba(79, 70, 229, 0.4)';
+                                }}
+                                onMouseOut={(e) => {
+                                    e.currentTarget.style.transform = 'translateY(0)';
+                                    e.currentTarget.style.boxShadow = 'none';
+                                }}
+                            >
+                                Открыть Системные настройки
+                            </button>
+                        </>
+                    ) : (
+                        <button
+                            onClick={handleRequestPermission}
+                            style={{
+                                width: '100%',
+                                padding: '0.875rem 1.5rem',
+                                background: 'linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)',
+                                color: '#fff',
+                                border: 'none',
+                                borderRadius: '10px',
+                                cursor: 'pointer',
+                                fontWeight: 600,
+                                fontSize: '0.95rem',
+                                transition: 'transform 0.2s, box-shadow 0.2s',
+                            }}
+                            onMouseOver={(e) => {
+                                e.currentTarget.style.transform = 'translateY(-1px)';
+                                e.currentTarget.style.boxShadow = '0 4px 12px rgba(79, 70, 229, 0.4)';
+                            }}
+                            onMouseOut={(e) => {
+                                e.currentTarget.style.transform = 'translateY(0)';
+                                e.currentTarget.style.boxShadow = 'none';
+                            }}
+                        >
+                            Запросить разрешение
+                        </button>
+                    )}
 
                     <button
                         onClick={onDisableSystemAudio}
@@ -180,6 +314,13 @@ export const ScreenRecordingPermissionDialog: React.FC<ScreenRecordingPermission
                         Отмена
                     </button>
                 </div>
+                
+                {/* Spinner animation */}
+                <style>{`
+                    @keyframes spin {
+                        to { transform: rotate(360deg); }
+                    }
+                `}</style>
             </div>
         </div>
     );

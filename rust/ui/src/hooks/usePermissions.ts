@@ -153,26 +153,35 @@ export const usePermissions = (): UsePermissionsReturn => {
         }
 
         try {
+            // Use the shell plugin's open command with correct parameter name
             const core = getTauriCore();
             if (!core) return;
             
-            // Open System Preferences > Privacy & Security > Screen Recording
-            await core.invoke('plugin:shell|open', {
-                path: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+            // macOS 13+ uses new System Settings app
+            // Try the new format first, then fallback to old format
+            const urls = [
+                'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+                'x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenRecording',
+            ];
+            
+            for (const url of urls) {
+                try {
+                    console.log('[Permissions] Trying to open:', url);
+                    await core.invoke('plugin:shell|open', { path: url });
+                    return;
+                } catch (e) {
+                    console.warn('[Permissions] Failed with url:', url, e);
+                }
+            }
+            
+            // Ultimate fallback: use open command directly
+            console.log('[Permissions] Falling back to direct open command');
+            await core.invoke('plugin:shell|execute', {
+                program: 'open',
+                args: ['x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture']
             });
         } catch (error) {
             console.error('[Permissions] Failed to open system preferences:', error);
-            // Fallback: try general Security preferences
-            try {
-                const core = getTauriCore();
-                if (core) {
-                    await core.invoke('plugin:shell|open', {
-                        path: 'x-apple.systempreferences:com.apple.preference.security'
-                    });
-                }
-            } catch {
-                // Ignore
-            }
         }
     }, []);
 

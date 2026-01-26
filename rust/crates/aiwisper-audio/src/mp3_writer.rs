@@ -199,7 +199,8 @@ impl Drop for Mp3Writer {
 /// 1. App bundle Resources directory (macOS) - Tauri bundled resources
 /// 2. Next to executable
 /// 3. Current working directory
-/// 4. System PATH
+/// 4. Homebrew paths (macOS) - GUI apps don't inherit PATH from terminal
+/// 5. System PATH
 fn find_ffmpeg() -> Result<PathBuf> {
     let mut search_paths = Vec::new();
 
@@ -209,7 +210,7 @@ fn find_ffmpeg() -> Result<PathBuf> {
 
         // macOS app bundle: Contents/MacOS/../Resources/resources/ffmpeg (Tauri bundled)
         search_paths.push(exe_dir.join("../Resources/resources/ffmpeg"));
-        
+
         // Also check Contents/MacOS/../Resources/ffmpeg (legacy path)
         search_paths.push(exe_dir.join("../Resources/ffmpeg"));
 
@@ -225,6 +226,25 @@ fn find_ffmpeg() -> Result<PathBuf> {
         search_paths.push(cwd.join("src-tauri/resources/ffmpeg"));
     }
 
+    // macOS: Check Homebrew paths explicitly
+    // GUI apps don't inherit terminal PATH, so /opt/homebrew/bin is not available
+    #[cfg(target_os = "macos")]
+    {
+        // Apple Silicon Homebrew
+        search_paths.push(PathBuf::from("/opt/homebrew/bin/ffmpeg"));
+        // Intel Homebrew
+        search_paths.push(PathBuf::from("/usr/local/bin/ffmpeg"));
+        // MacPorts
+        search_paths.push(PathBuf::from("/opt/local/bin/ffmpeg"));
+    }
+
+    // Linux: Common paths
+    #[cfg(target_os = "linux")]
+    {
+        search_paths.push(PathBuf::from("/usr/bin/ffmpeg"));
+        search_paths.push(PathBuf::from("/usr/local/bin/ffmpeg"));
+    }
+
     // Log all search paths for debugging
     tracing::debug!("FFmpeg search paths: {:?}", search_paths);
 
@@ -236,7 +256,7 @@ fn find_ffmpeg() -> Result<PathBuf> {
         }
     }
 
-    // System PATH
+    // System PATH (may work in dev mode or terminal launch)
     if let Ok(path) = which::which("ffmpeg") {
         tracing::info!("Using system FFmpeg: {:?}", path);
         return Ok(path);
@@ -273,7 +293,7 @@ pub struct SegmentedMp3Writer {
     segment_duration_secs: u64,
     /// Список созданных файлов сегментов
     segment_files: Vec<PathBuf>,
-    
+
     /// Общее количество записанных семплов (для duration_ms)
     total_samples_written: u64,
 }
@@ -295,7 +315,7 @@ impl SegmentedMp3Writer {
         segment_duration_secs: u64,
     ) -> Result<Self> {
         let base_dir = base_dir.as_ref().to_path_buf();
-        
+
         tracing::info!(
             "Creating SegmentedMp3Writer: dir={:?}, rate={}, channels={}, segment_duration={}s",
             base_dir,
@@ -341,16 +361,23 @@ impl SegmentedMp3Writer {
         }
 
         // Имя файла: full_000.mp3, full_001.mp3, ...
-        let segment_path = self.base_dir.join(format!("full_{:03}.mp3", self.current_segment));
-        
+        let segment_path = self
+            .base_dir
+            .join(format!("full_{:03}.mp3", self.current_segment));
+
         tracing::info!(
             "Creating segment {}: {:?}",
             self.current_segment,
             segment_path
         );
 
-        let writer = Mp3Writer::new(&segment_path, self.sample_rate, self.channels, &self.bitrate)?;
-        
+        let writer = Mp3Writer::new(
+            &segment_path,
+            self.sample_rate,
+            self.channels,
+            &self.bitrate,
+        )?;
+
         self.segment_files.push(segment_path);
         self.current_writer = Some(writer);
         self.samples_in_segment = 0;
@@ -361,14 +388,14 @@ impl SegmentedMp3Writer {
     /// Проверить нужна ли ротация сегмента
     fn check_rotation(&mut self) -> Result<()> {
         let max_samples = self.segment_duration_secs * self.sample_rate as u64;
-        
+
         if self.samples_in_segment >= max_samples {
             tracing::info!(
                 "Segment {} reached {} samples, rotating to next segment",
                 self.current_segment,
                 self.samples_in_segment
             );
-            
+
             self.current_segment += 1;
             self.create_next_segment()?;
         }
@@ -388,7 +415,7 @@ impl SegmentedMp3Writer {
         // Пишем в текущий сегмент
         if let Some(ref mut writer) = self.current_writer {
             writer.write(samples)?;
-            
+
             let samples_per_channel = samples.len() as u64 / self.channels as u64;
             self.samples_in_segment += samples_per_channel;
             self.total_samples_written += samples_per_channel;
@@ -410,7 +437,7 @@ impl SegmentedMp3Writer {
         // Пишем в текущий сегмент
         if let Some(ref mut writer) = self.current_writer {
             writer.write_stereo(mic_samples, sys_samples)?;
-            
+
             self.samples_in_segment += min_len as u64;
             self.total_samples_written += min_len as u64;
         }
@@ -462,12 +489,9 @@ impl SegmentedMp3Writer {
             let first = &self.segment_files[0];
             std::fs::rename(first, &final_path)
                 .with_context(|| format!("Failed to rename {:?} to {:?}", first, final_path))?;
-            
-            tracing::info!(
-                "Single segment renamed to {:?}",
-                final_path
-            );
-            
+
+            tracing::info!("Single segment renamed to {:?}", final_path);
+
             self.segment_files.clear();
             return Ok(final_path);
         }
@@ -485,26 +509,24 @@ impl SegmentedMp3Writer {
         for segment in &self.segment_files {
             // FFmpeg требует относительные или абсолютные пути
             // Используем абсолютные для надёжности
-            let abs_path = segment.canonicalize()
-                .unwrap_or_else(|_| segment.clone());
+            let abs_path = segment.canonicalize().unwrap_or_else(|_| segment.clone());
             list_content.push_str(&format!("file '{}'\n", abs_path.display()));
         }
-        std::fs::write(&list_path, &list_content)
-            .context("Failed to write concat list")?;
+        std::fs::write(&list_path, &list_content).context("Failed to write concat list")?;
 
         // Запускаем FFmpeg concat
         let ffmpeg = find_ffmpeg()?;
-        
+
         let output = Command::new(&ffmpeg)
             .args([
-                "-y",           // Overwrite output
+                "-y", // Overwrite output
                 "-f", "concat", // Concat demuxer
-                "-safe", "0",   // Allow absolute paths
+                "-safe", "0", // Allow absolute paths
                 "-i",
             ])
             .arg(&list_path)
             .args([
-                "-c", "copy",   // Copy без перекодирования (быстро!)
+                "-c", "copy", // Copy без перекодирования (быстро!)
             ])
             .arg(&final_path)
             .output()
@@ -526,13 +548,13 @@ impl SegmentedMp3Writer {
         if let Err(e) = std::fs::remove_file(&list_path) {
             tracing::warn!("Failed to remove concat list: {}", e);
         }
-        
+
         for segment in &self.segment_files {
             if let Err(e) = std::fs::remove_file(segment) {
                 tracing::warn!("Failed to remove segment {:?}: {}", segment, e);
             }
         }
-        
+
         self.segment_files.clear();
 
         Ok(final_path)
@@ -567,12 +589,7 @@ mod tests {
     #[test]
     fn test_segmented_writer_creation() {
         let dir = tempdir().unwrap();
-        let writer = SegmentedMp3Writer::new_default(
-            dir.path(),
-            24000,
-            2,
-            "128k"
-        );
+        let writer = SegmentedMp3Writer::new_default(dir.path(), 24000, 2, "128k");
         // Может не работать без FFmpeg, но не должен паниковать
         if writer.is_ok() {
             assert_eq!(writer.unwrap().segment_count(), 1);

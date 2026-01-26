@@ -86,6 +86,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
         requestMicrophonePermission,
         checkMicrophonePermission,
         checkScreenRecordingPermission,
+        requestScreenRecordingPermission,
         openScreenRecordingSettings,
     } = usePermissions();
 
@@ -1093,15 +1094,23 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
             <ScreenRecordingPermissionDialog
                 isOpen={showPermissionDialog}
                 onClose={() => setShowPermissionDialog(false)}
-                onOpenSettings={() => {
-                    openScreenRecordingSettings();
-                    setShowPermissionDialog(false);
-                }}
+                onOpenSettings={openScreenRecordingSettings}
                 onDisableSystemAudio={() => {
                     setCaptureSystem(false);
                     setShowPermissionDialog(false);
                     addLog('System audio capture disabled');
                 }}
+                onRequestPermission={async () => {
+                    addLog('Requesting Screen Recording permission...');
+                    const granted = await requestScreenRecordingPermission();
+                    if (granted) {
+                        addLog('Screen Recording permission granted');
+                    } else {
+                        addLog('Screen Recording permission denied - manual action required');
+                    }
+                    return granted;
+                }}
+                onCheckPermission={checkScreenRecordingPermission}
             />
         </div>
     );
