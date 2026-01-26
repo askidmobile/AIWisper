@@ -1,12 +1,30 @@
 /**
- * Hook for managing macOS permissions
+ * Hook for managing macOS permissions in Tauri environment
+ * 
+ * Uses tauri-plugin-macos-permissions for permission checks.
+ * In non-Tauri environments (Electron, browser), returns granted permissions by default.
+ * 
+ * This hook uses the global __TAURI__ object instead of dynamic imports
+ * to avoid build issues when Tauri dependencies are not installed.
  */
 
 import { useState, useCallback, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 
-// Check if running in Tauri
+// Check if running in Tauri environment
 const isTauri = () => '__TAURI__' in window;
+
+// Get Tauri invoke function from global object
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const getTauriCore = (): { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<any> } | null => {
+    if (!isTauri()) return null;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tauriGlobal = (window as any).__TAURI__;
+    if (!tauriGlobal?.core?.invoke) {
+        console.warn('[Permissions] Tauri core.invoke not available');
+        return null;
+    }
+    return tauriGlobal.core;
+};
 
 export interface PermissionStatus {
     microphone: boolean;
@@ -22,6 +40,7 @@ export interface UsePermissionsReturn {
     checkScreenRecordingPermission: () => Promise<boolean>;
     requestScreenRecordingPermission: () => Promise<boolean>;
     checkAllPermissions: () => Promise<void>;
+    openScreenRecordingSettings: () => Promise<void>;
 }
 
 /**
@@ -30,9 +49,9 @@ export interface UsePermissionsReturn {
  */
 export const usePermissions = (): UsePermissionsReturn => {
     const [status, setStatus] = useState<PermissionStatus>({
-        microphone: false,
-        screenRecording: false,
-        loading: true,
+        microphone: !isTauri(), // In non-Tauri, assume granted
+        screenRecording: !isTauri(), // In non-Tauri, assume granted
+        loading: isTauri(), // Only loading in Tauri
         error: null,
     });
 
@@ -42,8 +61,10 @@ export const usePermissions = (): UsePermissionsReturn => {
         }
 
         try {
-            // Use the plugin command (prefixed with plugin:)
-            const granted = await invoke<boolean>('plugin:macos-permissions|check_microphone_permission');
+            const core = getTauriCore();
+            if (!core) return true;
+            
+            const granted = await core.invoke('plugin:macos-permissions|check_microphone_permission') as boolean;
             console.log('[Permissions] Microphone permission:', granted);
             setStatus(prev => ({ ...prev, microphone: granted }));
             return granted;
@@ -60,9 +81,13 @@ export const usePermissions = (): UsePermissionsReturn => {
         }
 
         try {
+            const core = getTauriCore();
+            if (!core) return true;
+            
             console.log('[Permissions] Requesting microphone permission...');
+            
             // Request permission
-            await invoke('plugin:macos-permissions|request_microphone_permission');
+            await core.invoke('plugin:macos-permissions|request_microphone_permission');
             
             // Wait a bit for the system dialog and then check status
             await new Promise(resolve => setTimeout(resolve, 1000));
@@ -83,7 +108,10 @@ export const usePermissions = (): UsePermissionsReturn => {
         }
 
         try {
-            const granted = await invoke<boolean>('plugin:macos-permissions|check_screen_recording_permission');
+            const core = getTauriCore();
+            if (!core) return true;
+            
+            const granted = await core.invoke('plugin:macos-permissions|check_screen_recording_permission') as boolean;
             console.log('[Permissions] Screen recording permission:', granted);
             setStatus(prev => ({ ...prev, screenRecording: granted }));
             return granted;
@@ -100,8 +128,11 @@ export const usePermissions = (): UsePermissionsReturn => {
         }
 
         try {
+            const core = getTauriCore();
+            if (!core) return true;
+            
             console.log('[Permissions] Requesting screen recording permission...');
-            await invoke('plugin:macos-permissions|request_screen_recording_permission');
+            await core.invoke('plugin:macos-permissions|request_screen_recording_permission');
             
             // Wait a bit for the system dialog
             await new Promise(resolve => setTimeout(resolve, 500));
@@ -115,6 +146,35 @@ export const usePermissions = (): UsePermissionsReturn => {
             return false;
         }
     }, [checkScreenRecordingPermission]);
+
+    const openScreenRecordingSettings = useCallback(async (): Promise<void> => {
+        if (!isTauri()) {
+            return;
+        }
+
+        try {
+            const core = getTauriCore();
+            if (!core) return;
+            
+            // Open System Preferences > Privacy & Security > Screen Recording
+            await core.invoke('plugin:shell|open', {
+                path: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'
+            });
+        } catch (error) {
+            console.error('[Permissions] Failed to open system preferences:', error);
+            // Fallback: try general Security preferences
+            try {
+                const core = getTauriCore();
+                if (core) {
+                    await core.invoke('plugin:shell|open', {
+                        path: 'x-apple.systempreferences:com.apple.preference.security'
+                    });
+                }
+            } catch {
+                // Ignore
+            }
+        }
+    }, []);
 
     const checkAllPermissions = useCallback(async () => {
         if (!isTauri()) {
@@ -150,9 +210,11 @@ export const usePermissions = (): UsePermissionsReturn => {
         }
     }, [checkMicrophonePermission, checkScreenRecordingPermission]);
 
-    // Check permissions on mount
+    // Check permissions on mount (only in Tauri)
     useEffect(() => {
-        checkAllPermissions();
+        if (isTauri()) {
+            checkAllPermissions();
+        }
     }, [checkAllPermissions]);
 
     return {
@@ -162,6 +224,7 @@ export const usePermissions = (): UsePermissionsReturn => {
         checkScreenRecordingPermission,
         requestScreenRecordingPermission,
         checkAllPermissions,
+        openScreenRecordingSettings,
     };
 };
 

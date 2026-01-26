@@ -2,8 +2,6 @@ import React, { useRef, useEffect, useState } from 'react';
 import { Chunk, TranscriptSegment } from '../../types/session';
 import { StreamingTranscription } from '../StreamingTranscription';
 
-const API_BASE = `http://localhost:${(globalThis as any).AIWISPER_HTTP_PORT || 18080}`;
-
 interface SpeakerInfo {
     name: string;
     color: string;

@@ -34,3 +34,7 @@ export { useRecording, playBeep, formatDuration } from './useRecording';
 
 // Поиск сессий
 export { useSessionSearch } from './useSessionSearch';
+
+// Разрешения (macOS/Tauri)
+export { usePermissions } from './usePermissions';
+export type { PermissionStatus, UsePermissionsReturn } from './usePermissions';

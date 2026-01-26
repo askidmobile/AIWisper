@@ -11,6 +11,7 @@ import { useSettings } from '../../hooks/useSettings';
 import { useKeyboardShortcuts, createAppShortcuts } from '../../hooks/useKeyboardShortcuts';
 import { useDragDrop, dropOverlayStyles } from '../../hooks/useDragDrop';
 import { useExport } from '../../hooks/useExport';
+import { usePermissions } from '../../hooks/usePermissions';
 import { useSessionContext } from '../../context/SessionContext';
 import { useModelContext } from '../../context/ModelContext';
 import { useWebSocketContext } from '../../context/WebSocketContext';
@@ -18,6 +19,7 @@ import ModelManager from '../ModelManager';
 import { ErrorBoundary } from '../common/ErrorBoundary';
 import { AudioMeterBar } from '../common/AudioMeterBar';
 import { AudioMeterSidebar } from '../AudioMeterSidebar';
+import { ScreenRecordingPermissionDialog } from '../common/ScreenRecordingPermissionDialog';
 import { SessionSpeaker, VoicePrint } from '../../types/voiceprint';
 import { WaveformData, computeWaveform } from '../../utils/waveform';
 
@@ -56,6 +58,12 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
         ollamaUrl,
     } = useSettings();
     
+    // Permissions (macOS/Tauri)
+    const { 
+        checkScreenRecordingPermission, 
+        openScreenRecordingSettings 
+    } = usePermissions();
+    
     // Streaming настройки используются в useEffect для WebSocket
     void enableStreaming;
     void pauseThreshold;
@@ -64,6 +72,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
 
     // UI State
     const [showSettings, setShowSettings] = useState(false);
+    const [showPermissionDialog, setShowPermissionDialog] = useState(false);
     const [showModelManager, setShowModelManager] = useState(false);
     const [showHelp, setShowHelp] = useState(false);
     const [modelLoading, setModelLoading] = useState(false);
@@ -473,6 +482,17 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                 alert('Please select a model first');
                 return;
             }
+            
+            // Check Screen Recording permission if system audio capture is enabled
+            if (captureSystem) {
+                const hasPermission = await checkScreenRecordingPermission();
+                if (!hasPermission) {
+                    addLog('Screen Recording permission required for system audio capture');
+                    setShowPermissionDialog(true);
+                    return;
+                }
+            }
+            
             try {
                 await startSession({
                     model: activeModelId,
@@ -499,7 +519,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                 addLog(`Error starting session: ${e.message}`);
             }
         }
-    }, [isRecording, isFullTranscribing, stopSession, startSession, activeModelId, language, micDevice, captureSystem, useVoiceIsolation, echoCancel, pauseThreshold, hybridTranscription, addLog]);
+    }, [isRecording, isFullTranscribing, stopSession, startSession, activeModelId, language, micDevice, captureSystem, useVoiceIsolation, echoCancel, pauseThreshold, hybridTranscription, addLog, checkScreenRecordingPermission]);
 
     // Playback Handlers
     const handlePlayChunk = useCallback((url: string) => {
@@ -923,6 +943,21 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ addLog }) => {
                 isOpen={showHelp}
                 onClose={() => setShowHelp(false)}
                 appVersion={APP_VERSION}
+            />
+
+            {/* Screen Recording Permission Dialog */}
+            <ScreenRecordingPermissionDialog
+                isOpen={showPermissionDialog}
+                onClose={() => setShowPermissionDialog(false)}
+                onOpenSettings={() => {
+                    openScreenRecordingSettings();
+                    setShowPermissionDialog(false);
+                }}
+                onDisableSystemAudio={() => {
+                    setCaptureSystem(false);
+                    setShowPermissionDialog(false);
+                    addLog('System audio capture disabled');
+                }}
             />
 
             {/* Audio Meter Bar */}

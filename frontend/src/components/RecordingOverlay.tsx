@@ -249,6 +249,7 @@ export const RecordingOverlay: React.FC<RecordingOverlayProps> = ({ onStop }) =>
                 }
             `}</style>
         </div>
+        </>
     );
 };
 
