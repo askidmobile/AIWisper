@@ -9,7 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Screen Recording Permission Check**: Приложение теперь проверяет разрешение Screen Recording перед началом записи системного аудио
-  - Новый hook `usePermissions.ts` для проверки macOS разрешений через Tauri API
   - Новый компонент `ScreenRecordingPermissionDialog.tsx` с понятным UI для пользователя
   - При отсутствии разрешения показывается диалог с опциями:
     - Открыть Системные настройки macOS
@@ -18,13 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Интеграция проверки в `MainLayout.tsx` перед вызовом `startSession`
 
 ### Changed
-- **Project Cleanup**: Удалены deprecated модули
-  - Удалена директория `rust/` (deprecated Tauri приложение)
-  - Удалены пустые Swift модули из `swift/`
-
-### Fixed
-- **RecordingOverlay.tsx**: Исправлен незакрытый JSX fragment (`<>` без `</>`)
-- **LiveChunksView.tsx**: Удалена неиспользуемая переменная `API_BASE`
+- **Project Cleanup**: Удалены deprecated Electron/Go модули
+  - Удалена директория `frontend/` (legacy Electron UI)
+  - Удалена директория `backend/` (legacy Go backend)
+  - Основной код теперь только в `rust/` (Tauri) и `swift/`
 
 ## [2.0.41] - 2026-01-22
 

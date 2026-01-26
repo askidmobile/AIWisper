@@ -1,0 +1,21 @@
+[package]
+name = "aiwisper-worker"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "aiwisper-worker"
+path = "src/main.rs"
+
+[dependencies]
+# Core
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Types
+aiwisper-types = { path = "../aiwisper-types" }
+aiwisper-ml = { path = "../aiwisper-ml" }

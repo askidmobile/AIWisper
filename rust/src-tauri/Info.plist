@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Microphone usage description (required for macOS 10.14+) -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>AIWisper needs access to your microphone to record and transcribe speech.</string>
+    
+    <!-- Screen capture usage (for system audio via ScreenCaptureKit) -->
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>AIWisper needs screen capture access to record system audio.</string>
+    
+    <!-- Speech recognition (optional, for system ASR) -->
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>AIWisper uses speech recognition for transcription.</string>
+</dict>
+</plist>
