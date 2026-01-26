@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.45] - 2026-01-26
+
+### Added
+- **Автоматическое скачивание FFmpeg**: Новый скрипт `scripts/download-ffmpeg.sh` для локальной сборки
+  - Поддержка arm64 и x86_64 архитектур
+  - Несколько источников: osxexperts.net, evermeet.cx, Homebrew bottles
+  - Fallback на системный FFmpeg если скачивание не удалось
+- **Проверка FFmpeg в build-tauri.sh**: Сборка теперь проверяет наличие FFmpeg и предлагает скачать
+  - Автоматическое определение нужной архитектуры по `--target`
+  - Интерактивный запрос на скачивание при отсутствии
+
+### Changed
+- **FFmpeg бинарники в .gitignore**: Статические бинарники (~123MB) не коммитятся в репозиторий
+  - Разработчики должны выполнить `./scripts/download-ffmpeg.sh` перед первой сборкой
+  - Или собрать с `./scripts/build-tauri.sh` который предложит скачать автоматически
+
+### Technical
+- `scripts/download-ffmpeg.sh`: Новый скрипт (280 строк) с multiple fallback sources
+- `scripts/build-tauri.sh`: Добавлена проверка FFmpeg (~90 строк) перед сборкой UI
+
 ## [2.0.44] - 2026-01-26
 
 ### Fixed
